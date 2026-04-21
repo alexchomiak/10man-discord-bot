@@ -72,12 +72,24 @@ class DraftManager {
     return this.sessionsById.get(sessionId);
   }
 
+  async resolveGuild(interaction) {
+    if (interaction.guild) {
+      return interaction.guild;
+    }
+
+    if (interaction.guildId) {
+      return interaction.client.guilds.fetch(interaction.guildId).catch(() => null);
+    }
+
+    return null;
+  }
+
   async startDraft(interaction, config) {
-    if (!interaction.inGuild() || !interaction.guild) {
+    const guild = await this.resolveGuild(interaction);
+    if (!guild) {
       await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
       return;
     }
-    const guild = interaction.guild;
 
     if (this.sessionsByGuild.has(guild.id)) {
       await interaction.reply({
@@ -212,10 +224,14 @@ class DraftManager {
   }
 
   async spawnMockVoice(interaction, config) {
-    if (!interaction.inGuild() || !interaction.guild) {
+    const guild = await this.resolveGuild(interaction);
+    if (!guild) {
+      await interaction.followUp({
+        content: 'Mock voice can only be created from a server command context.',
+        ephemeral: true
+      }).catch(() => {});
       return;
     }
-    const guild = interaction.guild;
 
     if (this.mockVoiceByGuild.has(guild.id)) {
       await interaction.followUp({
