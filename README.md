@@ -6,6 +6,7 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
 
 - `/team-draft` slash command
 - `/team-draft-mock players:<even number> [spawn_voice:true|false]` for solo testing with fake users
+- Both commands are server-only (not available in DMs)
 - Dynamic team size from current voice member count (must be even)
   - 8 players => 4v4
   - 10 players => 5v5
@@ -22,8 +23,8 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
   - Manage Channels
   - Move Members
   - Connect / View Channels
-- Discord intents enabled in bot settings:
-  - Server Members Intent
+- Discord intent requirement:
+  - Enable **Server Members Intent** in Discord Developer Portal for this bot
 
 ## Environment Variables
 
@@ -78,3 +79,8 @@ docker run -d \
 - Bot ignores bot accounts when counting eligible players.
 - Team channels are intentionally hidden cross-team.
 - Mock drafts can optionally create a temporary private voice test channel and move you there (`spawn_voice`, default `true`).
+
+## Troubleshooting
+
+- If you see `Error: Used disallowed intents`, enable **Server Members Intent** in your bot settings in the Discord Developer Portal.
+- If `/team-draft` says it must be used in a server, re-invite/update the bot commands and run it in a guild text channel (not a DM/app home).
