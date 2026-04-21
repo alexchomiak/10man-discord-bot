@@ -25,19 +25,20 @@ const draftManager = new DraftManager();
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildVoiceStates
   ],
   partials: [Partials.GuildMember]
 });
 
 const teamDraftCommand = new SlashCommandBuilder()
   .setName('team-draft')
-  .setDescription('Start a random-captain snake draft for everyone in your current voice channel.');
+  .setDescription('Start a random-captain snake draft for everyone in your current voice channel.')
+  .setDMPermission(false);
 
 const teamDraftMockCommand = new SlashCommandBuilder()
   .setName('team-draft-mock')
   .setDescription('Run a mock draft with fake users so you can test solo.')
+  .setDMPermission(false)
   .addIntegerOption((option) =>
     option
       .setName('players')

@@ -23,7 +23,7 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
   - Move Members
   - Connect / View Channels
 - Discord intents enabled in bot settings:
-  - Server Members Intent
+  - No privileged intents are required for the default setup.
 
 ## Environment Variables
 
