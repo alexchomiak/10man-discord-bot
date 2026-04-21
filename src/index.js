@@ -3,6 +3,7 @@ require('dotenv').config();
 const {
   Client,
   GatewayIntentBits,
+  Partials,
   Events,
   SlashCommandBuilder
 } = require('discord.js');
@@ -24,8 +25,10 @@ const draftManager = new DraftManager();
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates
-  ]
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers
+  ],
+  partials: [Partials.GuildMember]
 });
 
 const teamDraftCommand = new SlashCommandBuilder()

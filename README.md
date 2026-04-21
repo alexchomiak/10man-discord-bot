@@ -23,6 +23,8 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
   - Manage Channels
   - Move Members
   - Connect / View Channels
+- Discord intent requirement:
+  - Enable **Server Members Intent** in Discord Developer Portal for this bot
 
 ## Environment Variables
 
@@ -80,6 +82,5 @@ docker run -d \
 
 ## Troubleshooting
 
-- If you see `Error: Used disallowed intents`, make sure you are running the latest code from this repo.
-  The bot only uses non-privileged intents (`Guilds` and `GuildVoiceStates`) and should not require enabling Member Intent.
+- If you see `Error: Used disallowed intents`, enable **Server Members Intent** in your bot settings in the Discord Developer Portal.
 - If `/team-draft` says it must be used in a server, re-invite/update the bot commands and run it in a guild text channel (not a DM/app home).
