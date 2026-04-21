@@ -17,6 +17,8 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
   - 10 players => 5v5
 - Random captain assignment
 - Snake draft pick flow via select menu
+- Draft pick updates are announced in chat after each selection
+- Draft completion requires pressing **Start** (green button) to create channels/move players, or **Cancel** (red button) to abort
 - Private temporary voice channels per team using temporary roles
 - Automatic cleanup when team channels empty
 
@@ -36,7 +38,8 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
 Copy `.env.example` to `.env`:
 
 - `DISCORD_TOKEN` (required)
-- `DISCORD_GUILD_ID` (optional, recommended for fast slash command registration)
+- `DISCORD_GUILD_ID` (optional, recommended for fast slash command registration; supports comma-separated guild IDs)
+- `KEEP_GLOBAL_COMMANDS` (optional, default `false`; set `true` only if you intentionally want both global and guild commands)
 - `TEAM_CATEGORY_ID` (optional category ID for team channels)
 - `MIN_PLAYERS` (optional, default `4`)
 
@@ -109,3 +112,5 @@ docker run -d \
 - If you see `Error: Used disallowed intents`, enable **Server Members Intent** in your bot settings in the Discord Developer Portal.
 - If `/team-draft` says it must be used in a server, re-invite/update the bot commands and run it in a guild text channel (not a DM/app home).
 - If mock voice says it is not in server context, the command is being executed outside a guild context (or stale command registration). Re-register commands and run from a server text channel.
+- If new/updated commands do not appear, set `DISCORD_GUILD_ID` and restart bot; global command updates can take up to ~1 hour to propagate.
+- If commands appear twice, you likely have both global and guild registrations. Keep `DISCORD_GUILD_ID` set and leave `KEEP_GLOBAL_COMMANDS` unset/`false` so startup clears globals.

@@ -16,7 +16,11 @@ if (!token) {
 }
 
 const config = {
-  guildId: process.env.DISCORD_GUILD_ID || null,
+  guildIds: [...new Set((process.env.DISCORD_GUILD_ID || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean))],
+  keepGlobalCommands: process.env.KEEP_GLOBAL_COMMANDS === 'true',
   minPlayers: Number.parseInt(process.env.MIN_PLAYERS || '4', 10),
   teamCategoryId: process.env.TEAM_CATEGORY_ID || null
 };
@@ -99,13 +103,23 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    if (config.guildId) {
-      const guild = await readyClient.guilds.fetch(config.guildId);
-      await guild.commands.set([teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand]);
-      console.log(`Registered /team-draft in guild ${guild.name} (${guild.id})`);
+    const commands = [teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand];
+
+    if (config.guildIds.length > 0) {
+      if (!config.keepGlobalCommands) {
+        await readyClient.application.commands.set([]);
+        console.log('Cleared global commands to avoid duplicate global+guild command entries.');
+      }
+
+      for (const guildId of config.guildIds) {
+        const guild = await readyClient.guilds.fetch(guildId);
+        await guild.commands.set(commands);
+        console.log(`Registered draft commands in guild ${guild.name} (${guild.id})`);
+      }
     } else {
-      await readyClient.application.commands.set([teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand]);
-      console.log('Registered draft commands globally.');
+      await readyClient.application.commands.set(commands);
+      console.log('Registered draft commands globally (can take up to 1 hour to appear).');
+      console.log('Tip: set DISCORD_GUILD_ID to your server ID for near-instant command updates.');
     }
   } catch (error) {
     console.error('Failed to register slash commands:', error);
@@ -144,6 +158,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('draftpick:')) {
       await draftManager.handlePick(interaction, config);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('draftstart:')) {
+      await draftManager.handleStartDraftButton(interaction, config);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('draftabort:')) {
+      await draftManager.handleAbortDraftButton(interaction);
     }
   } catch (error) {
     console.error('Interaction error:', error);
