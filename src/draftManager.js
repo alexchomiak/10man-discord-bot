@@ -73,11 +73,11 @@ class DraftManager {
   }
 
   async startDraft(interaction, config) {
-    const guild = interaction.guild;
-    if (!guild) {
+    if (!interaction.inGuild() || !interaction.guild) {
       await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
       return;
     }
+    const guild = interaction.guild;
 
     if (this.sessionsByGuild.has(guild.id)) {
       await interaction.reply({
@@ -87,7 +87,7 @@ class DraftManager {
       return;
     }
 
-    const member = interaction.member;
+    const member = await guild.members.fetch(interaction.user.id);
     const sourceVoice = member.voice?.channel;
     if (!sourceVoice || sourceVoice.type !== ChannelType.GuildVoice) {
       await interaction.reply({
@@ -212,10 +212,10 @@ class DraftManager {
   }
 
   async spawnMockVoice(interaction, config) {
-    const guild = interaction.guild;
-    if (!guild) {
+    if (!interaction.inGuild() || !interaction.guild) {
       return;
     }
+    const guild = interaction.guild;
 
     if (this.mockVoiceByGuild.has(guild.id)) {
       await interaction.followUp({
@@ -225,7 +225,7 @@ class DraftManager {
       return;
     }
 
-    const member = interaction.member;
+    const member = await guild.members.fetch(interaction.user.id);
     const suffix = String(Date.now()).slice(-4);
     const role = await guild.roles.create({ name: `draft-mock-${suffix}`, mentionable: false, hoist: false });
 
