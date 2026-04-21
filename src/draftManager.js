@@ -118,18 +118,71 @@ class DraftManager {
       return;
     }
 
-    if (players.size % 2 !== 0) {
+    const requestedPlayers = interaction.options?.getInteger('players');
+    const requestedCaptain1 = interaction.options?.getUser('captain1');
+    const requestedCaptain2 = interaction.options?.getUser('captain2');
+    let draftPlayerCount = players.size;
+
+    if ((requestedCaptain1 && !requestedCaptain2) || (!requestedCaptain1 && requestedCaptain2)) {
       await interaction.reply({
-        content: `Need an even number of players. You currently have ${players.size}.`,
+        content: 'If you set a captain manually, you must provide both `captain1` and `captain2`.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (requestedPlayers !== null && requestedPlayers !== undefined) {
+      if (requestedPlayers < config.minPlayers) {
+        await interaction.reply({
+          content: `\`players\` must be at least ${config.minPlayers}.`,
+          ephemeral: true
+        });
+        return;
+      }
+      if (requestedPlayers > players.size) {
+        await interaction.reply({
+          content: `\`players\` cannot exceed players currently in voice (${players.size}).`,
+          ephemeral: true
+        });
+        return;
+      }
+      draftPlayerCount = requestedPlayers;
+    }
+
+    if (draftPlayerCount % 2 !== 0) {
+      await interaction.reply({
+        content: `Need an even number of players in the draft pool. You currently selected ${draftPlayerCount}.`,
         ephemeral: true
       });
       return;
     }
 
     const playerIds = shuffle([...players.keys()]);
-    const [captainA, captainB, ...pool] = playerIds;
-    const teamSize = playerIds.length / 2;
-    const pickOrder = createSnakeOrder(pool.length, captainA, captainB);
+    let captainA = playerIds[0];
+    let captainB = playerIds[1];
+
+    if (requestedCaptain1 && requestedCaptain2) {
+      if (requestedCaptain1.id === requestedCaptain2.id) {
+        await interaction.reply({ content: 'Captain 1 and Captain 2 must be different users.', ephemeral: true });
+        return;
+      }
+
+      if (!players.has(requestedCaptain1.id) || !players.has(requestedCaptain2.id)) {
+        await interaction.reply({
+          content: 'Both captains must be in the same voice channel as the command invoker.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      captainA = requestedCaptain1.id;
+      captainB = requestedCaptain2.id;
+    }
+
+    const pool = playerIds.filter((id) => id !== captainA && id !== captainB);
+    const teamSize = draftPlayerCount / 2;
+    const picksNeeded = draftPlayerCount - 2;
+    const pickOrder = createSnakeOrder(picksNeeded, captainA, captainB);
 
     const sessionId = `${guild.id}-${Date.now()}`;
     const session = {
@@ -308,7 +361,7 @@ class DraftManager {
         { name: 'Team Bravo', value: formatMentions(session.teamB), inline: true },
         {
           name: 'Undrafted',
-          value: session.pool.length > 0 ? formatMentions(session.pool) : 'No players left.',
+          value: session.pool.length > 0 ? formatMentions(session.pool) : 'No players left in the call.',
           inline: false
         }
       );
@@ -361,7 +414,7 @@ class DraftManager {
 
     session.pickIndex += 1;
 
-    if (session.pool.length > 0) {
+    if (session.pickIndex < session.pickOrder.length) {
       await interaction.update({
         embeds: [this.buildDraftEmbed(session)],
         components: [this.buildPickMenu(session, interaction.guild)]
@@ -458,16 +511,7 @@ class DraftManager {
     if (mockSession && oldState.channelId === mockSession.channelId) {
       const mockChannel = oldState.guild.channels.cache.get(mockSession.channelId);
       if (mockChannel && mockChannel.members.size === 0) {
-        await mockChannel.delete('Temporary mock voice channel is empty').catch(() => {});
-        const role = oldState.guild.roles.cache.get(mockSession.roleId);
-        if (role) {
-          const holder = await oldState.guild.members.fetch(mockSession.memberId).catch(() => null);
-          if (holder && holder.roles.cache.has(role.id)) {
-            await holder.roles.remove(role).catch(() => {});
-          }
-          await role.delete('Mock draft cleanup').catch(() => {});
-        }
-        this.mockVoiceByGuild.delete(guildId);
+        await this.cleanupMockSession(oldState.guild, mockSession);
       }
     }
 
@@ -525,6 +569,114 @@ class DraftManager {
 
     this.sessionsByGuild.delete(session.guildId);
     this.sessionsById.delete(session.id);
+  }
+
+  async cleanupMockSession(guild, mockSession) {
+    const mockChannel = guild.channels.cache.get(mockSession.channelId);
+    if (mockChannel) {
+      await mockChannel.delete('Temporary mock voice channel is empty').catch(() => {});
+    }
+
+    const role = guild.roles.cache.get(mockSession.roleId);
+    if (role) {
+      const holder = await guild.members.fetch(mockSession.memberId).catch(() => null);
+      if (holder && holder.roles.cache.has(role.id)) {
+        await holder.roles.remove(role).catch(() => {});
+      }
+      await role.delete('Mock draft cleanup').catch(() => {});
+    }
+
+    this.mockVoiceByGuild.delete(guild.id);
+  }
+
+  async getDraftStatus(interaction) {
+    const guild = await this.resolveGuild(interaction);
+    if (!guild) {
+      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      return;
+    }
+
+    const session = this.sessionsByGuild.get(guild.id);
+    const mockSession = this.mockVoiceByGuild.get(guild.id);
+
+    if (!session && !mockSession) {
+      await interaction.reply({ content: 'No active draft or mock voice resources in this server.', ephemeral: true });
+      return;
+    }
+
+    const lines = [];
+    if (session) {
+      lines.push(`Active draft session: \`${session.id}\``);
+      lines.push(`Team size: ${session.teamSize}v${session.teamSize}`);
+      lines.push(`Drafted players: ${session.teamA.length + session.teamB.length}/${session.teamSize * 2}`);
+      lines.push(`Channels created: ${session.resources.channelAId ? 'yes' : 'no'}`);
+    }
+    if (mockSession) {
+      lines.push(`Mock voice channel active: <#${mockSession.channelId}>`);
+    }
+
+    await interaction.reply({ content: lines.join('\n'), ephemeral: true });
+  }
+
+  async cancelDraft(interaction) {
+    const guild = await this.resolveGuild(interaction);
+    if (!guild) {
+      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      return;
+    }
+
+    const session = this.sessionsByGuild.get(guild.id);
+    if (!session) {
+      await interaction.reply({ content: 'No active draft session to cancel.', ephemeral: true });
+      return;
+    }
+
+    for (const channelId of [session.resources.channelAId, session.resources.channelBId]) {
+      if (!channelId) {
+        continue;
+      }
+      const channel = guild.channels.cache.get(channelId);
+      if (channel) {
+        await channel.delete('Draft cancelled').catch(() => {});
+      }
+    }
+
+    await this.cleanupSession(guild, session);
+    await interaction.reply({ content: 'Draft cancelled and temporary resources cleaned up.', ephemeral: false });
+  }
+
+  async cleanupDraft(interaction) {
+    const guild = await this.resolveGuild(interaction);
+    if (!guild) {
+      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      return;
+    }
+
+    const session = this.sessionsByGuild.get(guild.id);
+    if (session) {
+      for (const channelId of [session.resources.channelAId, session.resources.channelBId]) {
+        if (!channelId) {
+          continue;
+        }
+        const channel = guild.channels.cache.get(channelId);
+        if (channel) {
+          await channel.delete('Forced draft cleanup').catch(() => {});
+        }
+      }
+      await this.cleanupSession(guild, session);
+    }
+
+    const mockSession = this.mockVoiceByGuild.get(guild.id);
+    if (mockSession) {
+      await this.cleanupMockSession(guild, mockSession);
+    }
+
+    if (!session && !mockSession) {
+      await interaction.reply({ content: 'No active draft resources found to clean up.', ephemeral: true });
+      return;
+    }
+
+    await interaction.reply({ content: 'Forced cleanup completed for active draft resources.', ephemeral: true });
   }
 }
 

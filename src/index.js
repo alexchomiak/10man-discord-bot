@@ -36,7 +36,23 @@ const teamDraftCommand = new SlashCommandBuilder()
   .setName('team-draft')
   .setDescription('Start a random-captain snake draft for everyone in your current voice channel.')
   .setContexts(InteractionContextType.Guild)
-  .setDMPermission(false);
+  .setDMPermission(false)
+  .addIntegerOption((option) =>
+    option
+      .setName('players')
+      .setDescription('Optional even total players to draft; all voice members remain draftable.')
+      .setMinValue(4)
+  )
+  .addUserOption((option) =>
+    option
+      .setName('captain1')
+      .setDescription('Optional first captain (must be in the same voice channel).')
+  )
+  .addUserOption((option) =>
+    option
+      .setName('captain2')
+      .setDescription('Optional second captain (must be in the same voice channel).')
+  );
 
 const teamDraftMockCommand = new SlashCommandBuilder()
   .setName('team-draft-mock')
@@ -61,17 +77,35 @@ const teamDraftMockCommand = new SlashCommandBuilder()
       .setDescription('Broadcast mock draft results to the channel (default true).')
   );
 
+const draftStatusCommand = new SlashCommandBuilder()
+  .setName('draft-status')
+  .setDescription('Show current draft/mock status for this server.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
+const draftCancelCommand = new SlashCommandBuilder()
+  .setName('draft-cancel')
+  .setDescription('Cancel the active draft in this server and clean temporary resources.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
+const draftCleanupCommand = new SlashCommandBuilder()
+  .setName('draft-cleanup')
+  .setDescription('Force cleanup of active draft/mock temporary channels and roles.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
     if (config.guildId) {
       const guild = await readyClient.guilds.fetch(config.guildId);
-      await guild.commands.set([teamDraftCommand, teamDraftMockCommand]);
+      await guild.commands.set([teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand]);
       console.log(`Registered /team-draft in guild ${guild.name} (${guild.id})`);
     } else {
-      await readyClient.application.commands.set([teamDraftCommand, teamDraftMockCommand]);
-      console.log('Registered /team-draft and /team-draft-mock globally.');
+      await readyClient.application.commands.set([teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand]);
+      console.log('Registered draft commands globally.');
     }
   } catch (error) {
     console.error('Failed to register slash commands:', error);
@@ -90,6 +124,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const spawnVoice = interaction.options.getBoolean('spawn_voice') ?? true;
       const broadcast = interaction.options.getBoolean('broadcast') ?? true;
       await draftManager.runMockDraft(interaction, players, config, spawnVoice, broadcast);
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'draft-status') {
+      await draftManager.getDraftStatus(interaction);
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'draft-cancel') {
+      await draftManager.cancelDraft(interaction);
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'draft-cleanup') {
+      await draftManager.cleanupDraft(interaction);
       return;
     }
 
