@@ -5,7 +5,8 @@ const {
   GatewayIntentBits,
   Partials,
   Events,
-  SlashCommandBuilder
+  SlashCommandBuilder,
+  InteractionContextType
 } = require('discord.js');
 const { DraftManager } = require('./draftManager');
 
@@ -34,11 +35,13 @@ const client = new Client({
 const teamDraftCommand = new SlashCommandBuilder()
   .setName('team-draft')
   .setDescription('Start a random-captain snake draft for everyone in your current voice channel.')
+  .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
 const teamDraftMockCommand = new SlashCommandBuilder()
   .setName('team-draft-mock')
   .setDescription('Run a mock draft with fake users so you can test solo.')
+  .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addIntegerOption((option) =>
     option
@@ -51,6 +54,11 @@ const teamDraftMockCommand = new SlashCommandBuilder()
     option
       .setName('spawn_voice')
       .setDescription('Also create a temporary private mock voice channel and move you there.')
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName('broadcast')
+      .setDescription('Broadcast mock draft results to the channel (default true).')
   );
 
 client.once(Events.ClientReady, async (readyClient) => {
@@ -80,7 +88,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isChatInputCommand() && interaction.commandName === 'team-draft-mock') {
       const players = interaction.options.getInteger('players', true);
       const spawnVoice = interaction.options.getBoolean('spawn_voice') ?? true;
-      await draftManager.runMockDraft(interaction, players, config, spawnVoice);
+      const broadcast = interaction.options.getBoolean('broadcast') ?? true;
+      await draftManager.runMockDraft(interaction, players, config, spawnVoice, broadcast);
       return;
     }
 

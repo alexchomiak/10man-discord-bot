@@ -164,7 +164,7 @@ class DraftManager {
     session.messageId = reply.id;
   }
 
-  async runMockDraft(interaction, requestedPlayers, config, spawnVoice) {
+  async runMockDraft(interaction, requestedPlayers, config, spawnVoice, broadcast) {
     const totalPlayers = Number.parseInt(requestedPlayers, 10);
     if (Number.isNaN(totalPlayers)) {
       await interaction.reply({ content: 'Mock player count must be a number.', ephemeral: true });
@@ -215,7 +215,7 @@ class DraftManager {
             { name: 'Draft Order', value: steps.join('\n'), inline: false }
           )
       ],
-      ephemeral: true
+      ephemeral: !broadcast
     });
 
     if (spawnVoice) {
@@ -227,7 +227,7 @@ class DraftManager {
     const guild = await this.resolveGuild(interaction);
     if (!guild) {
       await interaction.followUp({
-        content: 'Mock voice can only be created from a server command context.',
+        content: 'Mock voice can only be created from a server command context. Run `/team-draft-mock` in a server text channel and re-register commands if this still appears.',
         ephemeral: true
       }).catch(() => {});
       return;
