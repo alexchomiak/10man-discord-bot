@@ -89,6 +89,16 @@ docker run -d \
   cs2-team-draft-bot:latest
 ```
 
+## GitHub Action: Build + Push to Docker Hub
+
+A workflow is included at `.github/workflows/docker-publish.yml` and runs on pushes to `main`.
+
+Set these GitHub repo secrets:
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN` (Docker Hub access token)
+- `DOCKERHUB_IMAGE_NAME` (optional, e.g. `yourname/10man-discord-bot`; defaults to `DOCKERHUB_USERNAME/10man-discord-bot`)
+
 ### Suggested Unraid container settings
 
 - Repository: image you build/push
