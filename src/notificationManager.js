@@ -175,22 +175,22 @@ class NotificationManager {
       return 'No one has clicked Interested yet.';
     }
 
-    const names = await Promise.all(
+    const users = await Promise.all(
       [...this.state.interested].map(async (id) => {
         const cached = guild.members.cache.get(id);
         if (cached) {
-          return cached.displayName;
+          return { id, displayName: cached.displayName };
         }
         const fetched = await guild.members.fetch(id).catch(() => null);
-        return fetched?.displayName || id;
+        return { id, displayName: fetched?.displayName || id };
       })
     );
 
-    const lines = ['# | Interested Players'];
-    names.forEach((name, idx) => {
-      lines.push(`${String(idx + 1).padEnd(2, ' ')}| ${name}`);
+    const lines = [];
+    users.forEach((user, idx) => {
+      lines.push(`${idx + 1}. <@${user.id}> (${user.displayName})`);
     });
-    return `\`\`\`\n${lines.join('\n')}\n\`\`\``;
+    return lines.join('\n');
   }
 
   async buildEmbed(guild) {
