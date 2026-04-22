@@ -9,14 +9,14 @@ const {
 } = require('discord.js');
 
 const TEAM_NAMES = [
-  'Mirage Mid',
-  'Inferno Banana',
-  'Nuke Ramp',
-  'Ancient Temple',
-  'Vertigo A Site',
-  'Anubis Canal',
-  'Dust2 Catwalk',
-  'Train Yard'
+  'Mirage',
+  'Inferno',
+  'Nuke',
+  'Ancient',
+  'Vertigo',
+  'Anubis',
+  'Dust2',
+  'Train'
 ];
 
 function randomInt(max) {
@@ -401,9 +401,18 @@ class DraftManager {
     );
   }
 
-  buildTeamTable(session) {
-    const alpha = session.teamA.map((id) => `<@${id}>`);
-    const bravo = session.teamB.map((id) => `<@${id}>`);
+  async buildTeamTable(session, guild) {
+    const resolveName = async (id) => {
+      const cached = guild.members.cache.get(id);
+      if (cached) {
+        return cached.displayName;
+      }
+      const fetched = await guild.members.fetch(id).catch(() => null);
+      return fetched?.displayName || id;
+    };
+
+    const alpha = await Promise.all(session.teamA.map((id) => resolveName(id)));
+    const bravo = await Promise.all(session.teamB.map((id) => resolveName(id)));
     const rows = Math.max(alpha.length, bravo.length);
     const lines = ['# | Team Alpha               | Team Bravo'];
     for (let i = 0; i < rows; i += 1) {
@@ -434,6 +443,8 @@ class DraftManager {
       return;
     }
 
+    await interaction.deferUpdate();
+
     session.pool = session.pool.filter((id) => id !== pickedId);
 
     if (interaction.user.id === session.captains[0]) {
@@ -451,11 +462,19 @@ class DraftManager {
         : `🧩 <@${interaction.user.id}> drafted <@${pickedId}>. Draft picks complete.`
     });
 
+    if (session.messageId) {
+      const priorMessage = await interaction.channel.messages.fetch(session.messageId).catch(() => null);
+      if (priorMessage) {
+        await priorMessage.delete().catch(() => {});
+      }
+    }
+
     if (session.pickIndex < session.pickOrder.length) {
-      await interaction.update({
+      const newMessage = await interaction.channel.send({
         embeds: [this.buildDraftEmbed(session)],
         components: [this.buildPickMenu(session, interaction.guild)]
       });
+      session.messageId = newMessage.id;
       return;
     }
 
@@ -465,7 +484,7 @@ class DraftManager {
   async postReadyToStart(interaction, session) {
     session.status = 'ready';
     const channel = interaction.channel;
-    await interaction.update({ embeds: [this.buildDraftEmbed(session)], components: [] });
+    const teamTable = await this.buildTeamTable(session, interaction.guild);
     await channel.send({
       embeds: [
         new EmbedBuilder()
@@ -474,7 +493,7 @@ class DraftManager {
             'Teams are ready. Press **Start** to create temporary private voice channels and move players.',
             'Press **Cancel** to abort this draft.',
             '',
-            this.buildTeamTable(session)
+            teamTable
           ].join('\n'))
           .addFields(
             { name: 'Team Alpha', value: formatMentions(session.teamA), inline: true },
