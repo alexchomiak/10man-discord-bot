@@ -192,6 +192,7 @@ class DraftManager {
       guildId: guild.id,
       sourceVoiceId: sourceVoice.id,
       textChannelId: interaction.channelId,
+      readyMessageId: null,
       captains: [captainA, captainB],
       teamA: [captainA],
       teamB: [captainB],
@@ -212,7 +213,7 @@ class DraftManager {
     this.sessionsById.set(session.id, session);
 
     const reply = await interaction.reply({
-      embeds: [this.buildDraftEmbed(session)],
+      embeds: [this.buildDraftEmbed(session, guild)],
       components: [this.buildPickMenu(session, guild)],
       fetchReply: true
     });
@@ -348,7 +349,23 @@ class DraftManager {
     });
   }
 
-  buildDraftEmbed(session) {
+  buildLiveDraftTable(session, guild) {
+    const resolveName = (id) => guild.members.cache.get(id)?.displayName || id;
+    const alpha = session.teamA.map((id) => resolveName(id));
+    const bravo = session.teamB.map((id) => resolveName(id));
+    const rows = Math.max(alpha.length, bravo.length);
+    const lines = ['# | Team Alpha               | Team Bravo'];
+
+    for (let i = 0; i < rows; i += 1) {
+      const a = (alpha[i] || '').slice(0, 24).padEnd(24, ' ');
+      const b = (bravo[i] || '').slice(0, 24);
+      lines.push(`${String(i + 1).padEnd(2, ' ')}| ${a} | ${b}`);
+    }
+
+    return `\`\`\`\n${lines.join('\n')}\n\`\`\``;
+  }
+
+  buildDraftEmbed(session, guild) {
     const isComplete = session.pickIndex >= session.pickOrder.length;
     const currentCaptain = !isComplete ? session.pickOrder[session.pickIndex] : null;
     const title = isComplete ? 'Team Draft Complete' : 'Team Draft';
@@ -361,8 +378,7 @@ class DraftManager {
         currentCaptain ? `**Current pick:** <@${currentCaptain}>` : '**Current pick:** none'
       ].join('\n'))
       .addFields(
-        { name: 'Team Alpha', value: formatMentions(session.teamA), inline: true },
-        { name: 'Team Bravo', value: formatMentions(session.teamB), inline: true },
+        { name: 'Teams', value: this.buildLiveDraftTable(session, guild), inline: false },
         {
           name: 'Undrafted',
           value: session.pool.length > 0 ? formatMentions(session.pool) : 'No players left in the call.',
@@ -471,7 +487,7 @@ class DraftManager {
 
     if (session.pickIndex < session.pickOrder.length) {
       const newMessage = await interaction.channel.send({
-        embeds: [this.buildDraftEmbed(session)],
+        embeds: [this.buildDraftEmbed(session, interaction.guild)],
         components: [this.buildPickMenu(session, interaction.guild)]
       });
       session.messageId = newMessage.id;
@@ -485,7 +501,7 @@ class DraftManager {
     session.status = 'ready';
     const channel = interaction.channel;
     const teamTable = await this.buildTeamTable(session, interaction.guild);
-    await channel.send({
+    const readyMessage = await channel.send({
       embeds: [
         new EmbedBuilder()
           .setTitle('Draft Ready')
@@ -507,6 +523,7 @@ class DraftManager {
       ],
       components: [this.buildStartButtons(session.id)]
     });
+    session.readyMessageId = readyMessage.id;
   }
 
   async finalizeDraft(interaction, session, config) {
@@ -578,7 +595,7 @@ class DraftManager {
       })
     ]);
 
-    await interaction.update({ embeds: [this.buildDraftEmbed(session)], components: [] });
+    await interaction.update({ embeds: [this.buildDraftEmbed(session, guild)], components: [] });
 
     await channel.send({
       content: [
@@ -618,8 +635,9 @@ class DraftManager {
       return;
     }
 
+    await this.deleteDraftMessages(guild, session);
     await this.cleanupSession(guild, session);
-    await interaction.update({ content: 'Draft cancelled.', components: [], embeds: [] });
+    await interaction.reply({ content: 'Draft cancelled.', ephemeral: false });
   }
 
   async handleVoiceStateUpdate(oldState, newState) {
@@ -706,6 +724,23 @@ class DraftManager {
     this.mockVoiceByGuild.delete(guild.id);
   }
 
+  async deleteDraftMessages(guild, session) {
+    const channel = guild.channels.cache.get(session.textChannelId);
+    if (!channel || !('messages' in channel)) {
+      return;
+    }
+
+    for (const messageId of [session.messageId, session.readyMessageId]) {
+      if (!messageId) {
+        continue;
+      }
+      const message = await channel.messages.fetch(messageId).catch(() => null);
+      if (message) {
+        await message.delete().catch(() => {});
+      }
+    }
+  }
+
   async getDraftStatus(interaction) {
     const guild = await this.resolveGuild(interaction);
     if (!guild) {
@@ -749,6 +784,8 @@ class DraftManager {
       return;
     }
 
+    await this.deleteDraftMessages(guild, session);
+
     for (const channelId of [session.resources.channelAId, session.resources.channelBId]) {
       if (!channelId) {
         continue;
@@ -772,6 +809,7 @@ class DraftManager {
 
     const session = this.sessionsByGuild.get(guild.id);
     if (session) {
+      await this.deleteDraftMessages(guild, session);
       for (const channelId of [session.resources.channelAId, session.resources.channelBId]) {
         if (!channelId) {
           continue;
