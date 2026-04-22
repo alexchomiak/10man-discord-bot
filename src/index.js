@@ -9,6 +9,7 @@ const {
   InteractionContextType
 } = require('discord.js');
 const { DraftManager } = require('./draftManager');
+const { NotificationManager } = require('./notificationManager');
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -22,7 +23,11 @@ const config = {
     .filter(Boolean))],
   keepGlobalCommands: process.env.KEEP_GLOBAL_COMMANDS === 'true',
   minPlayers: Number.parseInt(process.env.MIN_PLAYERS || '4', 10),
-  teamCategoryId: process.env.TEAM_CATEGORY_ID || null
+  teamCategoryId: process.env.TEAM_CATEGORY_ID || null,
+  notificationChannelId: process.env.NOTIFICATION_CHANNEL_ID || null,
+  notificationRoleId: process.env.NOTIFICATION_ROLE_ID || null,
+  notificationTimeCst: process.env.NOTIFICATION_TIME_CST || '18:00',
+  sqlitePath: process.env.SQLITE_PATH || '/app/data/bot.db'
 };
 
 const draftManager = new DraftManager();
@@ -35,6 +40,7 @@ const client = new Client({
   ],
   partials: [Partials.GuildMember]
 });
+const notificationManager = new NotificationManager(client, config);
 
 const teamDraftCommand = new SlashCommandBuilder()
   .setName('team-draft')
@@ -124,6 +130,8 @@ client.once(Events.ClientReady, async (readyClient) => {
   } catch (error) {
     console.error('Failed to register slash commands:', error);
   }
+
+  await notificationManager.start();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -168,6 +176,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isButton() && interaction.customId.startsWith('draftabort:')) {
       await draftManager.handleAbortDraftButton(interaction);
+      return;
+    }
+
+    if (notificationManager.isEnabled() && interaction.isButton() && interaction.customId.startsWith('cs2_')) {
+      await notificationManager.handleButton(interaction);
     }
   } catch (error) {
     console.error('Interaction error:', error);

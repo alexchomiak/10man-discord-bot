@@ -21,6 +21,8 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
 - Draft completion requires pressing **Start** (green button) to create channels/move players, or **Cancel** (red button) to abort
 - Private temporary voice channels per team using temporary roles
 - Automatic cleanup when team channels empty
+- Optional daily CS2 notification message at configurable CST/CDT time (default 6:00 PM) with Interested / Not Interested / Subscribe / Unsubscribe buttons
+  - Clicking Interested also auto-adds the notification role if missing
 
 ## Requirements
 
@@ -42,6 +44,13 @@ Copy `.env.example` to `.env`:
 - `KEEP_GLOBAL_COMMANDS` (optional, default `false`; set `true` only if you intentionally want both global and guild commands)
 - `TEAM_CATEGORY_ID` (optional category ID for team channels)
 - `MIN_PLAYERS` (optional, default `4`)
+- `NOTIFICATION_CHANNEL_ID` (optional channel ID for daily queue notification message)
+- `NOTIFICATION_ROLE_ID` (optional role ID to mention and manage via subscribe buttons)
+- `NOTIFICATION_TIME_CST` (optional, default `18:00`; daily post time in America/Chicago timezone)
+- `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification-state SQLite database file)
+
+Notification scheduler is restart-safe: on startup, if today's daily message already exists, the bot reuses it and schedules the next run instead of reposting immediately.
+When the daily message rolls over, previous-day message metadata and interested rows are removed from SQLite (no unbounded growth).
 
 ## Invite the Bot User to Your Server
 
@@ -85,9 +94,12 @@ Run container:
 docker run -d \
   --name cs2-team-draft-bot \
   --restart unless-stopped \
+  -v /path/on/host/10man-bot-data:/app/data \
   --env-file /path/to/.env \
   cs2-team-draft-bot:latest
 ```
+
+SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PATH`).
 
 ## GitHub Action: Build + Push to Docker Hub
 
