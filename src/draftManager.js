@@ -153,7 +153,15 @@ class DraftManager {
 
     if (draftPlayerCount % 2 !== 0) {
       await interaction.reply({
-        content: `Need an even number of players in the draft pool. You currently selected ${draftPlayerCount}.`,
+        content: `Draft player count must be even. You selected ${draftPlayerCount}.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (draftPlayerCount < config.minPlayers) {
+      await interaction.reply({
+        content: `Need at least ${config.minPlayers} draftable players.`,
         ephemeral: true
       });
       return;

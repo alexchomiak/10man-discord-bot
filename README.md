@@ -10,6 +10,7 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
 - `/draft-status` to inspect active draft/mock resources
 - `/draft-cancel` to cancel active draft and cleanup resources
 - `/draft-cleanup` to force cleanup resources if something gets stuck
+- `/build-version` to show the running build commit hash/version
 - Both commands are server-only (not available in DMs)
 - `/team-draft` updates are broadcast in the channel message for everyone; mock defaults to broadcast too
 - Dynamic team size from current voice member count (must be even)
@@ -48,6 +49,7 @@ Copy `.env.example` to `.env`:
 - `NOTIFICATION_ROLE_ID` (optional role ID to mention and manage via subscribe buttons)
 - `NOTIFICATION_TIME_CST` (optional, default `18:00`; daily post time in America/Chicago timezone)
 - `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification-state SQLite database file)
+- `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)
 
 Notification scheduler is restart-safe: on startup, if today's daily message already exists, the bot reuses it and schedules the next run instead of reposting immediately.
 When the daily message rolls over, previous-day message metadata and interested rows are removed from SQLite (no unbounded growth).

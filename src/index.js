@@ -105,11 +105,17 @@ const draftCleanupCommand = new SlashCommandBuilder()
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
+const buildVersionCommand = new SlashCommandBuilder()
+  .setName('build-version')
+  .setDescription('Show the currently running build commit hash.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand];
+    const commands = [teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, buildVersionCommand];
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -161,6 +167,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'draft-cleanup') {
       await draftManager.cleanupDraft(interaction);
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'build-version') {
+      const version = process.env.BUILD_VERSION || 'dev';
+      await interaction.reply({ content: `Build version: \`${version}\``, ephemeral: true });
       return;
     }
 
