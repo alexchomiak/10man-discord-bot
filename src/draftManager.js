@@ -532,11 +532,17 @@ class DraftManager {
     const [nameA, nameB] = shuffle(TEAM_NAMES).slice(0, 2);
     const suffix = session.id.slice(-4);
 
-    const roleA = await guild.roles.create({ name: `draft-${suffix}-alpha`, mentionable: false, hoist: false });
-    const roleB = await guild.roles.create({ name: `draft-${suffix}-bravo`, mentionable: false, hoist: false });
+    let roleA = null;
+    let roleB = null;
+    let channelA = null;
+    let channelB = null;
 
-    session.resources.roleAId = roleA.id;
-    session.resources.roleBId = roleB.id;
+    try {
+      roleA = await guild.roles.create({ name: `draft-${suffix}-alpha`, mentionable: false, hoist: false });
+      roleB = await guild.roles.create({ name: `draft-${suffix}-bravo`, mentionable: false, hoist: false });
+
+      session.resources.roleAId = roleA.id;
+      session.resources.roleBId = roleB.id;
 
     const baseOverwrites = [
       {
@@ -554,57 +560,80 @@ class DraftManager {
       }
     ];
 
-    const channelA = await guild.channels.create({
-      name: `🔵 ${nameA}`,
-      type: ChannelType.GuildVoice,
-      parent: config.teamCategoryId || null,
-      permissionOverwrites: [
-        ...baseOverwrites,
-        { id: roleA.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] }
-      ]
-    });
+      channelA = await guild.channels.create({
+        name: `🔵 ${nameA}`,
+        type: ChannelType.GuildVoice,
+        parent: config.teamCategoryId || null,
+        permissionOverwrites: [
+          ...baseOverwrites,
+          { id: roleA.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] }
+        ]
+      });
 
-    const channelB = await guild.channels.create({
-      name: `🔴 ${nameB}`,
-      type: ChannelType.GuildVoice,
-      parent: config.teamCategoryId || null,
-      permissionOverwrites: [
-        ...baseOverwrites,
-        { id: roleB.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] }
-      ]
-    });
+      channelB = await guild.channels.create({
+        name: `🔴 ${nameB}`,
+        type: ChannelType.GuildVoice,
+        parent: config.teamCategoryId || null,
+        permissionOverwrites: [
+          ...baseOverwrites,
+          { id: roleB.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] }
+        ]
+      });
 
-    session.resources.channelAId = channelA.id;
-    session.resources.channelBId = channelB.id;
-    session.status = 'active';
+      session.resources.channelAId = channelA.id;
+      session.resources.channelBId = channelB.id;
 
-    await Promise.all([
-      ...session.teamA.map(async (userId) => {
-        const guildMember = await guild.members.fetch(userId);
-        await guildMember.roles.add(roleA);
-        if (guildMember.voice.channelId) {
-          await guildMember.voice.setChannel(channelA);
-        }
-      }),
-      ...session.teamB.map(async (userId) => {
-        const guildMember = await guild.members.fetch(userId);
-        await guildMember.roles.add(roleB);
-        if (guildMember.voice.channelId) {
-          await guildMember.voice.setChannel(channelB);
-        }
-      })
-    ]);
+      await Promise.all([
+        ...session.teamA.map(async (userId) => {
+          const guildMember = await guild.members.fetch(userId);
+          await guildMember.roles.add(roleA);
+          if (guildMember.voice.channelId) {
+            await guildMember.voice.setChannel(channelA);
+          }
+        }),
+        ...session.teamB.map(async (userId) => {
+          const guildMember = await guild.members.fetch(userId);
+          await guildMember.roles.add(roleB);
+          if (guildMember.voice.channelId) {
+            await guildMember.voice.setChannel(channelB);
+          }
+        })
+      ]);
+      session.status = 'active';
 
-    await interaction.update({ embeds: [this.buildDraftEmbed(session, guild)], components: [] });
+      await interaction.editReply({ embeds: [this.buildDraftEmbed(session, guild)], components: [] });
 
-    await channel.send({
-      content: [
-        '✅ Draft complete. Teams have been moved to private voice channels.',
-        `**Team Alpha (${nameA})**: ${formatMentions(session.teamA)}`,
-        `**Team Bravo (${nameB})**: ${formatMentions(session.teamB)}`,
-        'Channels and roles are temporary and will be deleted once everyone leaves.'
-      ].join('\n')
-    });
+      await channel.send({
+        content: [
+          '✅ Draft complete. Teams have been moved to private voice channels.',
+          `**Team Alpha (${nameA})**: ${formatMentions(session.teamA)}`,
+          `**Team Bravo (${nameB})**: ${formatMentions(session.teamB)}`,
+          'Channels and roles are temporary and will be deleted once everyone leaves.'
+        ].join('\n')
+      });
+    } catch (error) {
+      if (channelA) {
+        await channelA.delete('Draft start failed during setup').catch(() => {});
+      }
+      if (channelB) {
+        await channelB.delete('Draft start failed during setup').catch(() => {});
+      }
+      if (roleA) {
+        await roleA.delete('Draft start failed during setup').catch(() => {});
+      }
+      if (roleB) {
+        await roleB.delete('Draft start failed during setup').catch(() => {});
+      }
+
+      session.resources.roleAId = null;
+      session.resources.roleBId = null;
+      session.resources.channelAId = null;
+      session.resources.channelBId = null;
+      session.status = 'ready';
+
+      await interaction.editReply({ content: '❌ Failed to start draft resources. Please try Start again.', components: [] }).catch(() => {});
+      throw error;
+    }
   }
 
   async handleStartDraftButton(interaction, config) {
@@ -618,6 +647,9 @@ class DraftManager {
       await interaction.reply({ content: 'This draft is not ready to start.', ephemeral: true });
       return;
     }
+    session.status = 'starting';
+    await interaction.deferUpdate();
+    await interaction.channel.send({ content: '🚀 Starting team channels and moving players...' });
     await this.finalizeDraft(interaction, session, config);
   }
 
