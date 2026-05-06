@@ -675,7 +675,7 @@ class DraftManager {
       return;
     }
 
-    await this.deleteDraftMessages(guild, session);
+    await this.clearDraftMessageComponents(guild, session);
     await this.cleanupSession(guild, session);
     await interaction.reply({ content: 'Draft cancelled.', ephemeral: false });
   }
@@ -764,7 +764,7 @@ class DraftManager {
     this.mockVoiceByGuild.delete(guild.id);
   }
 
-  async deleteDraftMessages(guild, session) {
+  async clearDraftMessageComponents(guild, session) {
     const channel = guild.channels.cache.get(session.textChannelId);
     if (!channel || !('messages' in channel)) {
       return;
@@ -776,7 +776,7 @@ class DraftManager {
       }
       const message = await channel.messages.fetch(messageId).catch(() => null);
       if (message) {
-        await message.delete().catch(() => {});
+        await message.edit({ components: [] }).catch(() => {});
       }
     }
   }
@@ -824,7 +824,7 @@ class DraftManager {
       return;
     }
 
-    await this.deleteDraftMessages(guild, session);
+    await this.clearDraftMessageComponents(guild, session);
 
     for (const channelId of [session.resources.channelAId, session.resources.channelBId]) {
       if (!channelId) {
@@ -849,7 +849,7 @@ class DraftManager {
 
     const session = this.sessionsByGuild.get(guild.id);
     if (session) {
-      await this.deleteDraftMessages(guild, session);
+      await this.clearDraftMessageComponents(guild, session);
       for (const channelId of [session.resources.channelAId, session.resources.channelBId]) {
         if (!channelId) {
           continue;
@@ -873,6 +873,67 @@ class DraftManager {
     }
 
     await interaction.reply({ content: 'Forced cleanup completed for active draft resources.', ephemeral: true });
+  }
+
+  async returnToVoice(interaction) {
+    const guild = await this.resolveGuild(interaction);
+    if (!guild) {
+      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      return;
+    }
+
+    const session = this.sessionsByGuild.get(guild.id);
+    if (!session) {
+      await interaction.reply({ content: 'No active draft session found.', ephemeral: true });
+      return;
+    }
+
+    const sourceChannel = guild.channels.cache.get(session.sourceVoiceId)
+      || await guild.channels.fetch(session.sourceVoiceId).catch(() => null);
+    if (!sourceChannel || sourceChannel.type !== ChannelType.GuildVoice) {
+      await interaction.reply({
+        content: 'Original draft voice channel no longer exists, so players cannot be returned automatically.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    const memberIds = new Set([...session.teamA, ...session.teamB]);
+    for (const channelId of [session.resources.channelAId, session.resources.channelBId]) {
+      if (!channelId) {
+        continue;
+      }
+      const teamChannel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+      if (teamChannel && teamChannel.members) {
+        for (const [memberId] of teamChannel.members) {
+          memberIds.add(memberId);
+        }
+      }
+    }
+
+    await Promise.all(
+      [...memberIds].map(async (userId) => {
+        const member = await guild.members.fetch(userId).catch(() => null);
+        if (member && member.voice.channelId) {
+          await member.voice.setChannel(sourceChannel).catch(() => {});
+        }
+      })
+    );
+
+    await this.clearDraftMessageComponents(guild, session);
+
+    for (const channelId of [session.resources.channelAId, session.resources.channelBId]) {
+      if (!channelId) {
+        continue;
+      }
+      const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+      if (channel) {
+        await channel.delete('Returning players to source voice').catch(() => {});
+      }
+    }
+
+    await this.cleanupSession(guild, session);
+    await interaction.reply({ content: `Returned players to ${sourceChannel} and cleaned up draft resources.`, ephemeral: false });
   }
 }
 
