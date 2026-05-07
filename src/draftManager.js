@@ -45,6 +45,10 @@ function formatNames(names) {
   return names.join(', ');
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function createSnakeOrder(totalPicks, firstCaptainId, secondCaptainId) {
   if (totalPicks <= 0) {
     return [];
@@ -220,6 +224,7 @@ class DraftManager {
         channelAId: null,
         channelBId: null
       },
+      matchupNames: null,
       status: 'drafting'
     };
 
@@ -258,6 +263,15 @@ class DraftManager {
       return;
     }
 
+    const guild = await this.resolveGuild(interaction);
+    const member = guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
+    const voiceChannel = member?.voice?.channel;
+    if (this.audioManager && voiceChannel) {
+      this.audioManager.join(voiceChannel).catch((error) => {
+        console.error('Failed to join mock draft voice channel for audio:', error);
+      });
+    }
+
     const fakePlayers = Array.from({ length: totalPlayers }, (_, idx) => `Player${idx + 1}`);
     const shuffled = shuffle(fakePlayers);
     const [captainA, captainB, ...pool] = shuffled;
@@ -265,8 +279,29 @@ class DraftManager {
     const teamB = [captainB];
     const pickOrder = createSnakeOrder(pool.length, captainA, captainB);
     const steps = [];
+    const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
+
+    const reply = await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('Mock Draft Live Simulation (Solo Test)')
+          .setDescription([
+            `Simulating ${totalPlayers} fake players one pick at a time.`,
+            `Captains: **${captainA}** vs **${captainB}**`,
+            `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`
+          ].join('\n'))
+          .addFields(
+            { name: 'Team Alpha', value: formatNames(teamA), inline: true },
+            { name: 'Team Bravo', value: formatNames(teamB), inline: true },
+            { name: 'Draft Order', value: 'Draft starting...', inline: false }
+          )
+      ],
+      ...(broadcast ? {} : { flags: MessageFlags.Ephemeral }),
+      fetchReply: true
+    });
 
     for (const picker of pickOrder) {
+      await sleep(1_000);
       const pickIndex = randomInt(pool.length);
       const picked = pool.splice(pickIndex, 1)[0];
       if (picker === captainA) {
@@ -274,26 +309,46 @@ class DraftManager {
       } else {
         teamB.push(picked);
       }
+
+      const nextPicker = pickOrder[steps.length + 1];
       steps.push(`${picker} picked ${picked}`);
+      if (broadcast) {
+        await interaction.channel.send({
+          content: nextPicker
+            ? `🧪 ${picker} drafted ${picked}. Next pick: ${nextPicker}`
+            : `🧪 ${picker} drafted ${picked}. Mock draft picks complete.`
+        });
+      }
+      if (this.audioManager && guild) {
+        await this.audioManager.announcePick(guild, picker, picked, nextPicker).catch(() => false);
+      }
+
+      await reply.edit({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Mock Draft Live Simulation (Solo Test)')
+            .setDescription([
+              `Simulating ${totalPlayers} fake players one pick at a time.`,
+              `Captains: **${captainA}** vs **${captainB}**`,
+              `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`
+            ].join('\n'))
+            .addFields(
+              { name: `Team Alpha (${teamNameA})`, value: formatNames(teamA), inline: true },
+              { name: `Team Bravo (${teamNameB})`, value: formatNames(teamB), inline: true },
+              { name: 'Draft Order', value: steps.join('\n'), inline: false }
+            )
+        ]
+      }).catch(() => {});
     }
 
-    await interaction.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle('Mock Draft Preview (Solo Test)')
-          .setDescription([
-            `This is a text-only simulation with ${totalPlayers} fake players.`,
-            `Captains: **${captainA}** vs **${captainB}**`,
-            `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`
-          ].join('\n'))
-          .addFields(
-            { name: 'Team Alpha', value: formatNames(teamA), inline: true },
-            { name: 'Team Bravo', value: formatNames(teamB), inline: true },
-            { name: 'Draft Order', value: steps.join('\n'), inline: false }
-          )
-      ],
-      ...(broadcast ? {} : { flags: MessageFlags.Ephemeral })
-    });
+    if (this.audioManager && guild) {
+      this.audioManager.playFinalCountdown(guild.id);
+      await this.audioManager.speak(guild.id, `${teamNameA} will match up against ${teamNameB}. May the best team win.`).catch(() => false);
+    }
+
+    if (broadcast) {
+      await interaction.channel.send({ content: `🏁 Mock draft ready: **${teamNameA}** will match up against **${teamNameB}**. May the best team win.` });
+    }
 
     if (spawnVoice) {
       await this.spawnMockVoice(interaction, config);
@@ -523,6 +578,9 @@ class DraftManager {
       return;
     }
 
+    const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
+    session.matchupNames = { teamNameA, teamNameB };
+    await interaction.channel.send({ content: `🏁 **${teamNameA}** will match up against **${teamNameB}**. May the best team win.` });
     await this.postReadyToStart(interaction, session);
   }
 
@@ -553,12 +611,20 @@ class DraftManager {
       components: [this.buildStartButtons(session.id)]
     });
     session.readyMessageId = readyMessage.id;
+
+    if (this.audioManager && session.matchupNames) {
+      this.audioManager.playFinalCountdown(interaction.guild.id);
+      await this.audioManager.speak(interaction.guild.id, `${session.matchupNames.teamNameA} will match up against ${session.matchupNames.teamNameB}. May the best team win.`).catch(() => false);
+    }
   }
 
   async finalizeDraft(interaction, session, config) {
     const guild = interaction.guild;
     const channel = interaction.channel;
-    const [nameA, nameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
+    const [nameA, nameB] = session.matchupNames
+      ? [session.matchupNames.teamNameA, session.matchupNames.teamNameB]
+      : shuffle(getTeamNamePool(config)).slice(0, 2);
+    session.matchupNames = { teamNameA: nameA, teamNameB: nameB };
     const suffix = session.id.slice(-4);
 
     let roleA = null;
@@ -680,7 +746,15 @@ class DraftManager {
     session.status = 'starting';
     await interaction.deferUpdate();
     await interaction.channel.send({ content: '🚀 Starting team channels and moving players...' });
+    if (this.audioManager) {
+      await this.audioManager.playFight(interaction.guild.id).catch((error) => {
+        console.error('Failed to play fight start audio:', error);
+      });
+    }
     await this.finalizeDraft(interaction, session, config);
+    if (this.audioManager) {
+      setTimeout(() => this.audioManager.stop(interaction.guild.id), 3_000);
+    }
   }
 
   async handleAbortDraftButton(interaction) {

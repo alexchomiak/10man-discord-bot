@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const path = require('node:path');
 const http = require('node:http');
 const https = require('node:https');
 const { Readable } = require('node:stream');
@@ -130,6 +131,11 @@ class MixerStream extends Readable {
       this.musicQueue.push(chunk);
       this.trimMusicQueue();
     }
+  }
+
+  clearMusic() {
+    this.musicQueue = [];
+    this.musicBuffered = false;
   }
 
   addSpeech(buffer) {
@@ -407,30 +413,47 @@ class AudioManager {
     });
   }
 
-  startMusic(session) {
-    if (!this.hasMusicFile()) {
-      this.info('lobby music file missing; music disabled', { musicPath: this.musicPath });
-      return;
+  getAudioTrackPath(fileName) {
+    return path.join(path.dirname(this.musicPath), fileName);
+  }
+
+  stopMusic(session) {
+    if (session.musicProcess) {
+      session.musicProcess.kill('SIGKILL');
+      session.musicProcess = null;
+    }
+    session.mixer.clearMusic?.();
+  }
+
+  startMusic(session, trackPath = this.musicPath, options = {}) {
+    if (!fs.existsSync(trackPath)) {
+      this.info('music file missing; music disabled', { musicPath: trackPath });
+      return false;
     }
 
     if (!ffmpegPath) {
-      this.warn('ffmpeg binary missing; lobby music disabled', { musicPath: this.musicPath });
-      return;
+      this.warn('ffmpeg binary missing; music disabled', { musicPath: trackPath });
+      return false;
     }
 
+    if (options.replace) {
+      this.stopMusic(session);
+    }
+
+    const loopArgs = options.loop === false ? [] : ['-stream_loop', '-1'];
     const proc = spawn(ffmpegPath, [
       '-hide_banner',
       '-loglevel', 'error',
       '-re',
-      '-stream_loop', '-1',
-      '-i', this.musicPath,
+      ...loopArgs,
+      '-i', trackPath,
       '-f', 's16le',
       '-ar', '48000',
       '-ac', '2',
       'pipe:1'
     ]);
 
-    this.info('starting lobby music ffmpeg', { musicPath: this.musicPath, volume: this.lobbyMusicVolume });
+    this.info('starting music ffmpeg', { musicPath: trackPath, volume: this.lobbyMusicVolume, loop: options.loop !== false });
     proc.stdout.on('data', (chunk) => session.mixer.addMusic(chunk));
     proc.stderr.on('data', (chunk) => {
       this.warn('lobby music ffmpeg stderr', { message: chunk.toString().trim() });
@@ -448,6 +471,29 @@ class AudioManager {
       }
     });
     session.musicProcess = proc;
+    return true;
+  }
+
+  playTrack(guildId, fileName, options = {}) {
+    const session = this.sessions.get(guildId);
+    if (!session) {
+      this.warn('track playback requested without active voice session', { guildId, fileName });
+      return false;
+    }
+
+    return this.startMusic(session, this.getAudioTrackPath(fileName), { loop: options.loop ?? false, replace: options.replace ?? true });
+  }
+
+  async playFight(guildId) {
+    const played = this.playTrack(guildId, 'fight.mp3', { loop: false, replace: true });
+    if (!played) {
+      await this.speak(guildId, 'fight! fight! fight!');
+    }
+    return played;
+  }
+
+  playFinalCountdown(guildId) {
+    return this.playTrack(guildId, 'final_countdown.mp3', { loop: true, replace: true });
   }
 
   async speak(guildId, text) {

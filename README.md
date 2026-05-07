@@ -124,12 +124,12 @@ docker run -d \
 
 SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PATH`).
 
-Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music` and `/test-tts` do not require a native Windows ffmpeg/Opus setup on your host.
+Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. Put `final_countdown.mp3` and `fight.mp3` in the same directory as `lobby.mp3` to enable the post-draft and start-match music cues; all three tracks obey `LOBBY_MUSIC_VOLUME`. If `fight.mp3` is missing, the bot falls back to TTS saying `fight! fight! fight!`. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music` and `/test-tts` do not require a native Windows ffmpeg/Opus setup on your host.
 
 
 ## Audio smoothness tuning
 
-The bot mixes raw PCM audio before handing it to Discord voice. Lobby music defaults to 60% volume (`LOBBY_MUSIC_VOLUME=0.6`). For lobby music, it now throttles ffmpeg with `-re`, prebuffers decoded PCM before releasing music frames, respects stream backpressure, and caps the decoded music queue to avoid unbounded memory/GC spikes. If music still sputters, try increasing `AUDIO_BUFFER_MS` to `1000` or `1500`; this adds startup latency but gives the mixer more room to absorb host or event-loop jitter.
+The bot mixes raw PCM audio before handing it to Discord voice. Lobby, final-countdown, and fight music default to 60% volume (`LOBBY_MUSIC_VOLUME=0.6`). For lobby music, it now throttles ffmpeg with `-re`, prebuffers decoded PCM before releasing music frames, respects stream backpressure, and caps the decoded music queue to avoid unbounded memory/GC spikes. If music still sputters, try increasing `AUDIO_BUFFER_MS` to `1000` or `1500`; this adds startup latency but gives the mixer more room to absorb host or event-loop jitter.
 
 ## Google TTS voice/language options
 
