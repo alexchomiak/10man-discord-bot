@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const http = require('node:http');
 const https = require('node:https');
 const { Readable } = require('node:stream');
 const { spawn } = require('node:child_process');
@@ -18,6 +19,21 @@ const googleTTS = require('google-tts-api');
 
 const FRAME_BYTES = 3840; // 20ms of 48khz signed 16-bit stereo PCM.
 const DEFAULT_MUSIC_PATH = '/app/data/lobby.mp3';
+const TTS_REQUEST_TIMEOUT_MS = 10_000;
+const MAX_REDIRECTS = 5;
+
+class AudioManagerError extends Error {
+  constructor(message, options = {}) {
+    super(message);
+    this.name = 'AudioManagerError';
+    this.code = options.code || 'AUDIO_ERROR';
+    this.cause = options.cause;
+  }
+}
+
+function toAudioError(message, code, cause) {
+  return new AudioManagerError(message, { code, cause });
+}
 
 function readBytes(queue, size) {
   const output = Buffer.alloc(size);
@@ -64,14 +80,22 @@ class MixerStream extends Readable {
   _read() {}
 
   addMusic(chunk) {
-    this.musicQueue.push(chunk);
+    if (!this.destroyed) {
+      this.musicQueue.push(chunk);
+    }
   }
 
   addSpeech(buffer) {
-    this.speechQueue.push(buffer);
+    if (!this.destroyed && buffer.length > 0) {
+      this.speechQueue.push(buffer);
+    }
   }
 
   pushFrame() {
+    if (this.destroyed) {
+      return;
+    }
+
     const musicFrame = readBytes(this.musicQueue, FRAME_BYTES);
     const speechFrame = readBytes(this.speechQueue, FRAME_BYTES);
     this.push(mixPcm(musicFrame, speechFrame));
@@ -94,26 +118,37 @@ class AudioManager {
   }
 
   async join(channel) {
-    const existing = this.sessions.get(channel.guild.id);
+    const guildId = channel.guild.id;
+    const existing = this.sessions.get(guildId);
     if (existing) {
-      return existing;
+      if (existing.channelId !== channel.id) {
+        existing.connection.rejoin({ channelId: channel.id, selfDeaf: false });
+        existing.channelId = channel.id;
+      }
+
+      if (existing.connection.state.status === VoiceConnectionStatus.Ready) {
+        return existing;
+      }
+
+      try {
+        await entersState(existing.connection, VoiceConnectionStatus.Ready, 15_000);
+        return existing;
+      } catch (error) {
+        console.warn(`Discarding stale voice connection for guild ${guildId}:`, error);
+        this.stop(guildId);
+      }
     }
 
     const connection = joinVoiceChannel({
       channelId: channel.id,
-      guildId: channel.guild.id,
+      guildId,
       adapterCreator: channel.guild.voiceAdapterCreator,
       selfDeaf: false
     });
 
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-
     const mixer = new MixerStream();
     const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
     const resource = createAudioResource(mixer, { inputType: StreamType.Raw });
-    player.play(resource);
-    connection.subscribe(player);
-
     const session = {
       channelId: channel.id,
       connection,
@@ -122,9 +157,50 @@ class AudioManager {
       player
     };
 
-    this.sessions.set(channel.guild.id, session);
+    this.attachSessionHandlers(guildId, session);
+    this.sessions.set(guildId, session);
+
+    try {
+      player.play(resource);
+      connection.subscribe(player);
+      await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    } catch (error) {
+      this.stop(guildId);
+      throw toAudioError(
+        'I could not connect to your voice channel within 20 seconds. Check that I can View/Connect/Speak there, then try again.',
+        'VOICE_CONNECT_TIMEOUT',
+        error
+      );
+    }
+
     this.startMusic(session);
     return session;
+  }
+
+  attachSessionHandlers(guildId, session) {
+    session.connection.on('error', (error) => {
+      console.error(`Voice connection error in guild ${guildId}:`, error);
+    });
+
+    session.connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      try {
+        await Promise.race([
+          entersState(session.connection, VoiceConnectionStatus.Signalling, 5_000),
+          entersState(session.connection, VoiceConnectionStatus.Connecting, 5_000)
+        ]);
+      } catch (error) {
+        console.warn(`Voice connection disconnected in guild ${guildId}; cleaning up session.`, error);
+        this.stop(guildId);
+      }
+    });
+
+    session.player.on('error', (error) => {
+      console.error(`Audio player error in guild ${guildId}:`, error);
+    });
+
+    session.mixer.on('error', (error) => {
+      console.error(`Audio mixer error in guild ${guildId}:`, error);
+    });
   }
 
   startMusic(session) {
@@ -144,6 +220,15 @@ class AudioManager {
     ]);
 
     proc.stdout.on('data', (chunk) => session.mixer.addMusic(chunk));
+    proc.stderr.on('data', (chunk) => {
+      console.warn(`Lobby music ffmpeg warning: ${chunk.toString().trim()}`);
+    });
+    proc.on('error', (error) => {
+      console.error('Lobby music ffmpeg failed to start:', error);
+      if (session.musicProcess === proc) {
+        session.musicProcess = null;
+      }
+    });
     proc.on('close', () => {
       if (session.musicProcess === proc) {
         session.musicProcess = null;
@@ -158,9 +243,14 @@ class AudioManager {
       return false;
     }
 
-    const pcm = await this.createSpeechPcm(text);
-    session.mixer.addSpeech(pcm);
-    return true;
+    try {
+      const pcm = await this.createSpeechPcm(text);
+      session.mixer.addSpeech(pcm);
+      return true;
+    } catch (error) {
+      console.error(`TTS failed in guild ${guildId}:`, error);
+      return false;
+    }
   }
 
   async announcePick(guild, captainName, pickedName, nextCaptainName) {
@@ -177,19 +267,40 @@ class AudioManager {
     return this.decodeMp3ToPcm(mp3Buffer);
   }
 
-  fetchBuffer(url) {
+  fetchBuffer(url, redirectCount = 0) {
     return new Promise((resolve, reject) => {
-      https.get(url, (response) => {
+      const parsedUrl = new URL(url);
+      const client = parsedUrl.protocol === 'http:' ? http : https;
+      const request = client.get(parsedUrl, (response) => {
+        const redirectLocation = response.headers.location;
+        if ([301, 302, 303, 307, 308].includes(response.statusCode) && redirectLocation) {
+          response.resume();
+          if (redirectCount >= MAX_REDIRECTS) {
+            reject(toAudioError('TTS request had too many redirects.', 'TTS_REDIRECT_LIMIT'));
+            return;
+          }
+
+          const nextUrl = new URL(redirectLocation, parsedUrl).toString();
+          this.fetchBuffer(nextUrl, redirectCount + 1).then(resolve, reject);
+          return;
+        }
+
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new Error(`TTS request failed with status ${response.statusCode}`));
+          reject(toAudioError(`TTS request failed with status ${response.statusCode}.`, 'TTS_HTTP_ERROR'));
           response.resume();
           return;
         }
 
         const chunks = [];
         response.on('data', (chunk) => chunks.push(chunk));
+        response.on('error', (error) => reject(toAudioError('TTS response stream failed.', 'TTS_STREAM_ERROR', error)));
         response.on('end', () => resolve(Buffer.concat(chunks)));
-      }).on('error', reject);
+      });
+
+      request.setTimeout(TTS_REQUEST_TIMEOUT_MS, () => {
+        request.destroy(toAudioError('TTS request timed out.', 'TTS_TIMEOUT'));
+      });
+      request.on('error', (error) => reject(error));
     });
   }
 
@@ -211,15 +322,18 @@ class AudioManager {
       ]);
 
       const chunks = [];
+      const errors = [];
       proc.stdout.on('data', (chunk) => chunks.push(chunk));
-      proc.on('error', reject);
+      proc.stderr.on('data', (chunk) => errors.push(chunk.toString()));
+      proc.on('error', (error) => reject(toAudioError('ffmpeg failed to start for TTS.', 'TTS_FFMPEG_START_ERROR', error)));
       proc.on('close', (code) => {
         if (code === 0) {
           resolve(Buffer.concat(chunks));
         } else {
-          reject(new Error(`ffmpeg exited with code ${code}`));
+          reject(toAudioError(`ffmpeg exited with code ${code}: ${errors.join('').trim()}`, 'TTS_FFMPEG_EXIT'));
         }
       });
+      proc.stdin.on('error', (error) => reject(toAudioError('Failed to write TTS audio into ffmpeg.', 'TTS_FFMPEG_STDIN_ERROR', error)));
       proc.stdin.end(mp3Buffer);
     });
   }
@@ -237,7 +351,9 @@ class AudioManager {
     }
     session.player.stop(true);
     session.mixer.destroy();
-    session.connection.destroy();
+    if (session.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+      session.connection.destroy();
+    }
     this.sessions.delete(guildId);
   }
 
@@ -256,5 +372,6 @@ class AudioManager {
 }
 
 module.exports = {
-  AudioManager
+  AudioManager,
+  AudioManagerError
 };

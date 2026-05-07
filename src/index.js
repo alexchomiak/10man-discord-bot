@@ -6,7 +6,8 @@ const {
   Partials,
   Events,
   SlashCommandBuilder,
-  InteractionContextType
+  InteractionContextType,
+  MessageFlags
 } = require('discord.js');
 const { DraftManager } = require('./draftManager');
 const { NotificationManager } = require('./notificationManager');
@@ -36,6 +37,13 @@ const config = {
   lobbyMusicPath: process.env.LOBBY_MUSIC_PATH || '/app/data/lobby.mp3'
 };
 
+function audioFailureMessage(error) {
+  if (error?.name === 'AudioManagerError') {
+    return error.message;
+  }
+
+  return 'Voice audio failed. Check that I have permission to join and speak in that channel, then try again.';
+}
 
 function formatBuildDate(buildDate) {
   if (!buildDate) {
@@ -225,7 +233,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const buildDate = formatBuildDate(process.env.BUILD_DATE);
       await interaction.reply({
         content: [`Build Version: \`${version}\``, '', `Build was merged on ${buildDate}`].join('\n'),
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -234,12 +242,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       const voiceChannel = member.voice?.channel;
       if (!voiceChannel) {
-        await interaction.reply({ content: 'Join a voice channel first.', ephemeral: true });
+        await interaction.reply({ content: 'Join a voice channel first.', flags: MessageFlags.Ephemeral });
         return;
       }
 
-      await interaction.deferReply({ ephemeral: true });
-      await audioManager.join(voiceChannel);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        await audioManager.join(voiceChannel);
+      } catch (error) {
+        console.error('Failed to join voice for lobby music test:', error);
+        await interaction.editReply({ content: audioFailureMessage(error) });
+        return;
+      }
+
       await interaction.editReply({
         content: audioManager.hasMusicFile()
           ? 'Joined voice and started lobby music.'
@@ -252,15 +267,26 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       const voiceChannel = member.voice?.channel;
       if (!voiceChannel) {
-        await interaction.reply({ content: 'Join a voice channel first.', ephemeral: true });
+        await interaction.reply({ content: 'Join a voice channel first.', flags: MessageFlags.Ephemeral });
         return;
       }
 
-      await interaction.deferReply({ ephemeral: true });
-      await audioManager.join(voiceChannel);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        await audioManager.join(voiceChannel);
+      } catch (error) {
+        console.error('Failed to join voice for TTS test:', error);
+        await interaction.editReply({ content: audioFailureMessage(error) });
+        return;
+      }
+
       const message = interaction.options.getString('message', true);
-      await audioManager.speak(interaction.guildId, message);
-      await interaction.editReply({ content: 'Sent TTS test to voice.' });
+      const spoke = await audioManager.speak(interaction.guildId, message);
+      await interaction.editReply({
+        content: spoke
+          ? 'Sent TTS test to voice.'
+          : 'I joined voice, but TTS generation or playback failed. Check the bot logs for the detailed TTS error.'
+      });
       return;
     }
 
@@ -290,9 +316,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   } catch (error) {
     console.error('Interaction error:', error);
     if (interaction.deferred || interaction.replied) {
-      await interaction.followUp({ content: 'Something went wrong handling that interaction.', ephemeral: true }).catch(() => {});
+      await interaction.followUp({ content: 'Something went wrong handling that interaction.', flags: MessageFlags.Ephemeral }).catch(() => {});
     } else {
-      await interaction.reply({ content: 'Something went wrong handling that interaction.', ephemeral: true }).catch(() => {});
+      await interaction.reply({ content: 'Something went wrong handling that interaction.', flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   }
 });
