@@ -74,6 +74,7 @@ class DraftManager {
     this.sessionsByGuild = new Map();
     this.sessionsById = new Map();
     this.mockVoiceByGuild = new Map();
+    this.mockAudioSessionsById = new Map();
   }
 
   getSessionByGuild(guildId) {
@@ -346,8 +347,22 @@ class DraftManager {
       await this.audioManager.speak(guild.id, `${teamNameA} will match up against ${teamNameB}. May the best team win.`).catch(() => false);
     }
 
+    const mockSessionId = `${guild?.id || interaction.id}-mock-${Date.now()}`;
+    if (guild) {
+      this.mockAudioSessionsById.set(mockSessionId, { guildId: guild.id, status: 'ready' });
+    }
+
     if (broadcast) {
-      await interaction.channel.send({ content: `🏁 Mock draft ready: **${teamNameA}** will match up against **${teamNameB}**. May the best team win.` });
+      await interaction.channel.send({
+        content: `🏁 Mock draft ready: **${teamNameA}** will match up against **${teamNameB}**. May the best team win.`,
+        components: guild ? [this.buildMockStartButton(mockSessionId)] : []
+      });
+    } else if (guild) {
+      await interaction.followUp({
+        content: 'Mock draft audio is ready. Press **Start Mock Match** to play the fight cue and disconnect audio.',
+        components: [this.buildMockStartButton(mockSessionId)],
+        flags: MessageFlags.Ephemeral
+      }).catch(() => {});
     }
 
     if (spawnVoice) {
@@ -489,6 +504,15 @@ class DraftManager {
         .setCustomId(`draftabort:${sessionId}`)
         .setLabel('Cancel')
         .setStyle(ButtonStyle.Danger)
+    );
+  }
+
+  buildMockStartButton(sessionId) {
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`mockstart:${sessionId}`)
+        .setLabel('Start Mock Match')
+        .setStyle(ButtonStyle.Success)
     );
   }
 
@@ -730,6 +754,27 @@ class DraftManager {
       await interaction.editReply({ content: '❌ Failed to start draft resources. Please try Start again.', components: [] }).catch(() => {});
       throw error;
     }
+  }
+
+
+  async handleMockStartButton(interaction) {
+    const [, sessionId] = interaction.customId.split(':');
+    const session = this.mockAudioSessionsById.get(sessionId);
+    if (!session) {
+      await interaction.reply({ content: 'This mock audio session no longer exists.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    await interaction.deferUpdate();
+    await interaction.channel.send({ content: '🥊 Starting mock match audio...' }).catch(() => {});
+    if (this.audioManager) {
+      await this.audioManager.playFight(session.guildId).catch((error) => {
+        console.error('Failed to play mock fight start audio:', error);
+      });
+      setTimeout(() => this.audioManager.stop(session.guildId), 3_000);
+    }
+    this.mockAudioSessionsById.delete(sessionId);
+    await interaction.message.edit({ components: [] }).catch(() => {});
   }
 
   async handleStartDraftButton(interaction, config) {

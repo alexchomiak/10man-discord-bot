@@ -6,7 +6,7 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
 
 - `/team-draft` slash command
 - `/team-draft players:<optional even number> captain1:<@user> captain2:<@user>` to set total drafted players and/or manually pick captains (captains must be in same voice channel)
-- `/team-draft-mock players:<even number> [spawn_voice:true|false] [broadcast:true|false]` for solo testing with fake users
+- `/team-draft-mock players:<even number> [spawn_voice:true|false] [broadcast:true|false]` for solo testing with fake users; it simulates picks one by one, switches to `final_countdown.mp3`, and posts a **Start Mock Match** button that plays `fight.mp3`/TTS then disconnects audio
 - `/draft-status` to inspect active draft/mock resources
 - `/draft-cancel` to cancel active draft and cleanup resources
 - `/draft-cleanup` to force cleanup resources if something gets stuck

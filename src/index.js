@@ -367,6 +367,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+    if (interaction.isButton() && interaction.customId.startsWith('mockstart:')) {
+      await draftManager.handleMockStartButton(interaction);
+      return;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith('draftstart:')) {
       await draftManager.handleStartDraftButton(interaction, config);
       return;
