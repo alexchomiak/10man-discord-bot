@@ -68,6 +68,8 @@ Copy `.env.example` to `.env`:
 - `GOOGLE_TTS_LANG` (optional, default `en`; Google Translate TTS language/accent code such as `en`, `en-GB`, `en-AU`, `es`, `fr`, `de`, or `ja`)
 - `GOOGLE_TTS_SLOW` (optional, default `false`; set `true` for slower speech)
 - `GOOGLE_TTS_HOST` (optional, default `https://translate.google.com`; override for regional Translate hosts such as `https://translate.google.com.cn`)
+- `AUDIO_BUFFER_MS` (optional, default `500`; lobby-music PCM prebuffer to smooth jitter; increase to `1000` if music sputters)
+- `AUDIO_QUEUE_MAX_MS` (optional, default `5000`; max decoded lobby-music PCM queued in memory)
 
 Notification scheduler is restart-safe: on startup, if today's daily message already exists, the bot reuses it and schedules the next run instead of reposting immediately.
 When the daily message rolls over, previous-day message metadata and interested rows are removed from SQLite (no unbounded growth).
@@ -123,6 +125,10 @@ SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PA
 
 Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music` and `/test-tts` do not require a native Windows ffmpeg/Opus setup on your host.
 
+
+## Audio smoothness tuning
+
+The bot mixes raw PCM audio before handing it to Discord voice. For lobby music, it now throttles ffmpeg with `-re`, prebuffers decoded PCM before releasing music frames, respects stream backpressure, and caps the decoded music queue to avoid unbounded memory/GC spikes. If music still sputters, try increasing `AUDIO_BUFFER_MS` to `1000` or `1500`; this adds startup latency but gives the mixer more room to absorb host or event-loop jitter.
 
 ## Google TTS voice/language options
 

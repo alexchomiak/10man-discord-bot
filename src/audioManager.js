@@ -25,6 +25,8 @@ const DEFAULT_TTS_HOST = 'https://translate.google.com';
 const TTS_REQUEST_TIMEOUT_MS = 10_000;
 const VOICE_READY_WAIT_MS = 5_000;
 const MAX_REDIRECTS = 5;
+const DEFAULT_AUDIO_BUFFER_MS = 500;
+const DEFAULT_AUDIO_QUEUE_MAX_MS = 5_000;
 
 class AudioManagerError extends Error {
   constructor(message, options = {}) {
@@ -96,19 +98,26 @@ function mixPcm(musicFrame, speechFrame) {
 }
 
 class MixerStream extends Readable {
-  constructor() {
-    super();
+  constructor(options = {}) {
+    super({ highWaterMark: FRAME_BYTES * 50 });
     this.musicQueue = [];
     this.speechQueue = [];
     this.speechEnabled = false;
-    this.timer = setInterval(() => this.pushFrame(), 20);
+    this.musicPrebufferBytes = Math.max(FRAME_BYTES, Math.round((options.bufferMs || DEFAULT_AUDIO_BUFFER_MS) / 20) * FRAME_BYTES);
+    this.maxMusicBytes = Math.max(this.musicPrebufferBytes, Math.round((options.maxQueueMs || DEFAULT_AUDIO_QUEUE_MAX_MS) / 20) * FRAME_BYTES);
+    this.musicBuffered = false;
+    this.timer = null;
+    this.nextFrameAt = Date.now();
   }
 
-  _read() {}
+  _read() {
+    this.scheduleNextFrame(0);
+  }
 
   addMusic(chunk) {
     if (!this.destroyed) {
       this.musicQueue.push(chunk);
+      this.trimMusicQueue();
     }
   }
 
@@ -128,6 +137,8 @@ class MixerStream extends Readable {
     return {
       musicChunks: this.musicQueue.length,
       musicBytes,
+      musicBuffered: this.musicBuffered,
+      musicPrebufferMs: pcmDurationMs(this.musicPrebufferBytes),
       speechChunks: this.speechQueue.length,
       speechBytes,
       speechQueuedMs: pcmDurationMs(speechBytes),
@@ -135,18 +146,64 @@ class MixerStream extends Readable {
     };
   }
 
-  pushFrame() {
-    if (this.destroyed) {
+  scheduleNextFrame(delayMs = 20) {
+    if (this.destroyed || this.timer) {
       return;
     }
 
-    const musicFrame = readBytes(this.musicQueue, FRAME_BYTES);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      const shouldContinue = this.pushFrame();
+      if (shouldContinue) {
+        this.nextFrameAt += 20;
+        const nextDelay = Math.max(0, this.nextFrameAt - Date.now());
+        this.scheduleNextFrame(nextDelay);
+      }
+    }, delayMs);
+  }
+
+  trimMusicQueue() {
+    let musicBytes = this.musicQueue.reduce((total, chunk) => total + chunk.length, 0);
+    while (musicBytes > this.maxMusicBytes && this.musicQueue.length > 1) {
+      const dropped = this.musicQueue.shift();
+      musicBytes -= dropped.length;
+    }
+  }
+
+  readMusicFrame() {
+    const musicBytes = this.musicQueue.reduce((total, chunk) => total + chunk.length, 0);
+    if (!this.musicBuffered && musicBytes < this.musicPrebufferBytes) {
+      return Buffer.alloc(FRAME_BYTES);
+    }
+
+    this.musicBuffered = true;
+    if (musicBytes < FRAME_BYTES) {
+      this.musicBuffered = false;
+      return Buffer.alloc(FRAME_BYTES);
+    }
+
+    return readBytes(this.musicQueue, FRAME_BYTES);
+  }
+
+  pushFrame() {
+    if (this.destroyed) {
+      return false;
+    }
+
+    const musicFrame = this.readMusicFrame();
     const speechFrame = this.speechEnabled ? readBytes(this.speechQueue, FRAME_BYTES) : Buffer.alloc(FRAME_BYTES);
-    this.push(mixPcm(musicFrame, speechFrame));
+    const canContinue = this.push(mixPcm(musicFrame, speechFrame));
+    if (!canContinue) {
+      this.nextFrameAt = Date.now() + 20;
+    }
+    return canContinue;
   }
 
   destroy(error) {
-    clearInterval(this.timer);
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
     return super.destroy(error);
   }
 }
@@ -159,6 +216,8 @@ class AudioManager {
     this.ttsLang = config.ttsLang || process.env.GOOGLE_TTS_LANG || DEFAULT_TTS_LANG;
     this.ttsSlow = config.ttsSlow ?? process.env.GOOGLE_TTS_SLOW === 'true';
     this.ttsHost = config.ttsHost || process.env.GOOGLE_TTS_HOST || DEFAULT_TTS_HOST;
+    this.audioBufferMs = Number.parseInt(config.audioBufferMs || process.env.AUDIO_BUFFER_MS || DEFAULT_AUDIO_BUFFER_MS, 10);
+    this.audioQueueMaxMs = Number.parseInt(config.audioQueueMaxMs || process.env.AUDIO_QUEUE_MAX_MS || DEFAULT_AUDIO_QUEUE_MAX_MS, 10);
     this.sessions = new Map();
   }
 
@@ -223,7 +282,7 @@ class AudioManager {
       debug: this.debugEnabled
     });
 
-    const mixer = new MixerStream();
+    const mixer = new MixerStream({ bufferMs: this.audioBufferMs, maxQueueMs: this.audioQueueMaxMs });
     const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
     const session = {
       channelId: channel.id,
@@ -246,6 +305,8 @@ class AudioManager {
         guildId,
         channelId: channel.id,
         hasSubscription: Boolean(subscription),
+        bufferMs: this.audioBufferMs,
+        queueMaxMs: this.audioQueueMaxMs,
         playerStatus: player.state.status,
         connectionStatus: connection.state.status
       });
@@ -346,6 +407,7 @@ class AudioManager {
     const proc = spawn(ffmpegPath, [
       '-hide_banner',
       '-loglevel', 'error',
+      '-re',
       '-stream_loop', '-1',
       '-i', this.musicPath,
       '-f', 's16le',

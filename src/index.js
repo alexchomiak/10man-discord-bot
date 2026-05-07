@@ -39,7 +39,9 @@ const config = {
   voiceSelfDeaf: process.env.VOICE_SELF_DEAF === 'true',
   ttsLang: process.env.GOOGLE_TTS_LANG || 'en',
   ttsSlow: process.env.GOOGLE_TTS_SLOW === 'true',
-  ttsHost: process.env.GOOGLE_TTS_HOST || 'https://translate.google.com'
+  ttsHost: process.env.GOOGLE_TTS_HOST || 'https://translate.google.com',
+  audioBufferMs: process.env.AUDIO_BUFFER_MS || '500',
+  audioQueueMaxMs: process.env.AUDIO_QUEUE_MAX_MS || '5000'
 };
 
 
