@@ -114,13 +114,32 @@ Draft lobby music file location in container: `/app/data/lobby.mp3` (or your cus
 
 ## GitHub Action: Build + Push to Docker Hub
 
-A workflow is included at `.github/workflows/docker-publish.yml` and runs on pushes to `main`.
+A workflow is included at `.github/workflows/docker-publish.yml` and runs on pushes to `main`, pull requests targeting `main`, and manual `workflow_dispatch` runs.
 
 Set these GitHub repo secrets:
 
 - `DOCKERHUB_USERNAME`
 - `DOCKERHUB_TOKEN` (Docker Hub access token)
 - `DOCKERHUB_IMAGE_NAME` (optional, e.g. `yourname/10man-discord-bot`; defaults to `DOCKERHUB_USERNAME/10man-discord-bot`)
+
+Published tags:
+
+- Pushes to `main`: `latest` and `sha-<short-commit>`.
+- Pull requests: `pr-<number>` and `sha-<short-commit>`.
+- Manual runs: `sha-<short-commit>`.
+
+For PR testing, open the pull request and wait for the **Docker Publish** workflow to finish. The workflow writes the pushed image tags to the job summary and posts/updates a PR comment with the exact Docker image tags you can run on your server. Example:
+
+```bash
+docker pull yourname/10man-discord-bot:pr-123
+
+docker run -d \
+  --name cs2-team-draft-bot-pr-123 \
+  --restart unless-stopped \
+  -v /path/on/host/10man-bot-data:/app/data \
+  --env-file /path/to/.env \
+  yourname/10man-discord-bot:pr-123
+```
 
 ### Suggested Unraid container settings
 
