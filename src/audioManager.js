@@ -5,6 +5,7 @@ const { Readable } = require('node:stream');
 const { spawn } = require('node:child_process');
 const {
   AudioPlayerStatus,
+  generateDependencyReport,
   NoSubscriberBehavior,
   StreamType,
   createAudioPlayer,
@@ -212,7 +213,8 @@ class AudioManager {
       channelId: channel.id,
       guildId,
       adapterCreator: channel.guild.voiceAdapterCreator,
-      selfDeaf: false
+      selfDeaf: true,
+      debug: this.debugEnabled
     });
 
     const mixer = new MixerStream();
@@ -279,6 +281,10 @@ class AudioManager {
   }
 
   attachSessionHandlers(guildId, session) {
+    session.connection.on('debug', (message) => {
+      this.debug('voice connection debug', { guildId, message });
+    });
+
     session.connection.on('stateChange', (oldState, newState) => {
       const speechEnabled = newState.status === VoiceConnectionStatus.Ready;
       session.mixer.setSpeechEnabled(speechEnabled);
@@ -530,6 +536,10 @@ class AudioManager {
       session.connection.destroy();
     }
     this.sessions.delete(guildId);
+  }
+
+  dependencyReport() {
+    return generateDependencyReport();
   }
 
   status(guildId) {

@@ -170,11 +170,17 @@ const testTtsCommand = new SlashCommandBuilder()
       .setMaxLength(200)
   );
 
+const audioStatusCommand = new SlashCommandBuilder()
+  .setName('audio-status')
+  .setDescription('Show Discord voice/TTS diagnostics for this server.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand];
+    const commands = [teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -294,6 +300,25 @@ client.on(Events.InteractionCreate, async (interaction) => {
               audioStatus?.queue?.speechQueuedMs ? `Speech queued: ~${audioStatus.queue.speechQueuedMs}ms.` : null
             ].filter(Boolean).join('\n')
           : 'I joined voice, but TTS generation or playback failed. Check the bot logs for the detailed TTS error.'
+      });
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'audio-status') {
+      const status = audioManager.status(interaction.guildId);
+      const dependencyReport = audioManager.dependencyReport();
+      await interaction.reply({
+        content: [
+          status
+            ? `Connection: \`${status.connectionStatus}\` | Player: \`${status.playerStatus}\` | Speech enabled: \`${status.queue.speechEnabled}\` | Speech queued: \`${status.queue.speechQueuedMs}ms\``
+            : 'No active audio session in this server.',
+          '',
+          'Dependency report:',
+          '```',
+          dependencyReport.slice(0, 1_700),
+          '```'
+        ].join('\n'),
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
