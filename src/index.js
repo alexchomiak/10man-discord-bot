@@ -24,11 +24,33 @@ const config = {
   keepGlobalCommands: process.env.KEEP_GLOBAL_COMMANDS === 'true',
   minPlayers: Number.parseInt(process.env.MIN_PLAYERS || '4', 10),
   teamCategoryId: process.env.TEAM_CATEGORY_ID || null,
+  teamNames: (process.env.TEAM_NAMES || '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean),
   notificationChannelId: process.env.NOTIFICATION_CHANNEL_ID || null,
   notificationRoleId: process.env.NOTIFICATION_ROLE_ID || null,
   notificationTimeCst: process.env.NOTIFICATION_TIME_CST || '18:00',
   sqlitePath: process.env.SQLITE_PATH || '/app/data/bot.db'
 };
+
+
+function formatBuildDate(buildDate) {
+  if (!buildDate) {
+    return 'unknown';
+  }
+
+  const parsed = new Date(buildDate);
+  if (Number.isNaN(parsed.getTime())) {
+    return buildDate;
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric'
+  }).format(parsed);
+}
 
 const draftManager = new DraftManager();
 
@@ -178,7 +200,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'build-version') {
       const version = process.env.BUILD_VERSION || 'dev';
-      await interaction.reply({ content: `Build version: \`${version}\``, ephemeral: true });
+      const buildDate = formatBuildDate(process.env.BUILD_DATE);
+      await interaction.reply({
+        content: [`Build Version: \`${version}\``, '', `Build was merged on ${buildDate}`].join('\n'),
+        ephemeral: true
+      });
       return;
     }
 

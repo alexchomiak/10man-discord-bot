@@ -45,12 +45,14 @@ Copy `.env.example` to `.env`:
 - `DISCORD_GUILD_ID` (optional, recommended for fast slash command registration; supports comma-separated guild IDs)
 - `KEEP_GLOBAL_COMMANDS` (optional, default `false`; set `true` only if you intentionally want both global and guild commands)
 - `TEAM_CATEGORY_ID` (optional category ID for team channels)
+- `TEAM_NAMES` (optional comma-separated random team voice names, e.g. `Musty Mango,Dusty Devils,Blueball Warriors`)
 - `MIN_PLAYERS` (optional, default `4`)
 - `NOTIFICATION_CHANNEL_ID` (optional channel ID for daily queue notification message)
 - `NOTIFICATION_ROLE_ID` (optional role ID to mention and manage via subscribe buttons)
 - `NOTIFICATION_TIME_CST` (optional, default `18:00`; daily post time in America/Chicago timezone)
 - `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification-state SQLite database file)
 - `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)
+- `BUILD_DATE` (optional, default `unknown`; set automatically in Docker CI to commit date)
 
 Notification scheduler is restart-safe: on startup, if today's daily message already exists, the bot reuses it and schedules the next run instead of reposting immediately.
 When the daily message rolls over, previous-day message metadata and interested rows are removed from SQLite (no unbounded growth).
@@ -123,6 +125,7 @@ Set these GitHub repo secrets:
   - `DISCORD_TOKEN`
   - `DISCORD_GUILD_ID` (optional)
   - `TEAM_CATEGORY_ID` (optional)
+  - `TEAM_NAMES` (optional)
   - `MIN_PLAYERS` (optional)
 
 ## Notes

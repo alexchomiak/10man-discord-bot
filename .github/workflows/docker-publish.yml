@@ -34,6 +34,9 @@ jobs:
             echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/10man-discord-bot" >> "$GITHUB_ENV"
           fi
 
+      - name: Prepare build metadata
+        run: echo "BUILD_DATE=$(git show -s --format=%cI HEAD)" >> "$GITHUB_ENV"
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -50,5 +53,6 @@ jobs:
           push: true
           build-args: |
             BUILD_VERSION=${{ github.sha }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

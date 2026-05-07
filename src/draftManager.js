@@ -8,7 +8,7 @@ const {
   ButtonStyle
 } = require('discord.js');
 
-const TEAM_NAMES = [
+const DEFAULT_TEAM_NAMES = [
   'Mirage',
   'Inferno',
   'Nuke',
@@ -18,6 +18,10 @@ const TEAM_NAMES = [
   'Dust2',
   'Train'
 ];
+
+function getTeamNamePool(config) {
+  return config.teamNames?.length >= 2 ? config.teamNames : DEFAULT_TEAM_NAMES;
+}
 
 function randomInt(max) {
   return Math.floor(Math.random() * max);
@@ -537,7 +541,7 @@ class DraftManager {
   async finalizeDraft(interaction, session, config) {
     const guild = interaction.guild;
     const channel = interaction.channel;
-    const [nameA, nameB] = shuffle(TEAM_NAMES).slice(0, 2);
+    const [nameA, nameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
     const suffix = session.id.slice(-4);
 
     let roleA = null;
