@@ -153,6 +153,7 @@ class AudioManager {
   constructor(config = {}) {
     this.musicPath = config.lobbyMusicPath || DEFAULT_MUSIC_PATH;
     this.debugEnabled = config.audioDebug || process.env.AUDIO_DEBUG === 'true';
+    this.voiceSelfDeaf = config.voiceSelfDeaf || process.env.VOICE_SELF_DEAF === 'true';
     this.sessions = new Map();
   }
 
@@ -213,7 +214,7 @@ class AudioManager {
       channelId: channel.id,
       guildId,
       adapterCreator: channel.guild.voiceAdapterCreator,
-      selfDeaf: true,
+      selfDeaf: this.voiceSelfDeaf,
       debug: this.debugEnabled
     });
 
@@ -230,7 +231,7 @@ class AudioManager {
 
     this.attachSessionHandlers(guildId, session);
     this.sessions.set(guildId, session);
-    this.info('created voice session', { guildId, channelId: channel.id, connectionStatus: connection.state.status });
+    this.info('created voice session', { guildId, channelId: channel.id, connectionStatus: connection.state.status, selfDeaf: this.voiceSelfDeaf });
 
     try {
       const resource = createAudioResource(mixer, { inputType: StreamType.Raw });
