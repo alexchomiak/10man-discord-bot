@@ -5,7 +5,8 @@ const {
   StringSelectMenuBuilder,
   EmbedBuilder,
   ButtonBuilder,
-  ButtonStyle
+  ButtonStyle,
+  MessageFlags
 } = require('discord.js');
 
 const DEFAULT_TEAM_NAMES = [
@@ -44,6 +45,27 @@ function formatNames(names) {
   return names.join(', ');
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForNarrationThenPause(audioManager, guild, captainName, pickedName, nextCaptainName, pauseMs = 3_000) {
+  if (audioManager && guild) {
+    await audioManager.announcePick(guild, captainName, pickedName, nextCaptainName).catch(() => false);
+  }
+  await sleep(pauseMs);
+}
+
+async function playCountdownThenAnnounceMatchup(audioManager, guildId, teamNameA, teamNameB) {
+  if (!audioManager || !guildId) {
+    return;
+  }
+
+  audioManager.playFinalCountdown(guildId);
+  await sleep(5_000);
+  await audioManager.speak(guildId, `${teamNameA} will match up against ${teamNameB}. May the best team win.`).catch(() => false);
+}
+
 function createSnakeOrder(totalPicks, firstCaptainId, secondCaptainId) {
   if (totalPicks <= 0) {
     return [];
@@ -64,10 +86,12 @@ function createSnakeOrder(totalPicks, firstCaptainId, secondCaptainId) {
 }
 
 class DraftManager {
-  constructor() {
+  constructor(audioManager = null) {
+    this.audioManager = audioManager;
     this.sessionsByGuild = new Map();
     this.sessionsById = new Map();
     this.mockVoiceByGuild = new Map();
+    this.mockAudioSessionsById = new Map();
   }
 
   getSessionByGuild(guildId) {
@@ -93,14 +117,14 @@ class DraftManager {
   async startDraft(interaction, config) {
     const guild = await this.resolveGuild(interaction);
     if (!guild) {
-      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (this.sessionsByGuild.has(guild.id)) {
       await interaction.reply({
         content: 'A draft is already active in this server. Finish or cancel it before starting another.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -110,7 +134,7 @@ class DraftManager {
     if (!sourceVoice || sourceVoice.type !== ChannelType.GuildVoice) {
       await interaction.reply({
         content: 'Join a voice channel first, then run `/team-draft`.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -119,7 +143,7 @@ class DraftManager {
     if (players.size < config.minPlayers) {
       await interaction.reply({
         content: `Need at least ${config.minPlayers} non-bot players in your voice channel.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -132,7 +156,7 @@ class DraftManager {
     if ((requestedCaptain1 && !requestedCaptain2) || (!requestedCaptain1 && requestedCaptain2)) {
       await interaction.reply({
         content: 'If you set a captain manually, you must provide both `captain1` and `captain2`.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -141,14 +165,14 @@ class DraftManager {
       if (requestedPlayers < config.minPlayers) {
         await interaction.reply({
           content: `\`players\` must be at least ${config.minPlayers}.`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
       if (requestedPlayers > players.size) {
         await interaction.reply({
           content: `\`players\` cannot exceed players currently in voice (${players.size}).`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -158,7 +182,7 @@ class DraftManager {
     if (draftPlayerCount % 2 !== 0) {
       await interaction.reply({
         content: `Draft player count must be even. You selected ${draftPlayerCount}.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -166,7 +190,7 @@ class DraftManager {
     if (draftPlayerCount < config.minPlayers) {
       await interaction.reply({
         content: `Need at least ${config.minPlayers} draftable players.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -177,14 +201,14 @@ class DraftManager {
 
     if (requestedCaptain1 && requestedCaptain2) {
       if (requestedCaptain1.id === requestedCaptain2.id) {
-        await interaction.reply({ content: 'Captain 1 and Captain 2 must be different users.', ephemeral: true });
+        await interaction.reply({ content: 'Captain 1 and Captain 2 must be different users.', flags: MessageFlags.Ephemeral });
         return;
       }
 
       if (!players.has(requestedCaptain1.id) || !players.has(requestedCaptain2.id)) {
         await interaction.reply({
           content: 'Both captains must be in the same voice channel as the command invoker.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -218,6 +242,7 @@ class DraftManager {
         channelAId: null,
         channelBId: null
       },
+      matchupNames: null,
       status: 'drafting'
     };
 
@@ -231,23 +256,38 @@ class DraftManager {
     });
 
     session.messageId = reply.id;
+
+    if (this.audioManager) {
+      this.audioManager.join(sourceVoice).catch((error) => {
+        console.error('Failed to join draft voice channel for audio:', error);
+      });
+    }
   }
 
   async runMockDraft(interaction, requestedPlayers, config, spawnVoice, broadcast) {
     const totalPlayers = Number.parseInt(requestedPlayers, 10);
     if (Number.isNaN(totalPlayers)) {
-      await interaction.reply({ content: 'Mock player count must be a number.', ephemeral: true });
+      await interaction.reply({ content: 'Mock player count must be a number.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (totalPlayers < 4) {
-      await interaction.reply({ content: 'Mock draft requires at least 4 players.', ephemeral: true });
+      await interaction.reply({ content: 'Mock draft requires at least 4 players.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (totalPlayers % 2 !== 0) {
-      await interaction.reply({ content: 'Mock draft requires an even player count.', ephemeral: true });
+      await interaction.reply({ content: 'Mock draft requires an even player count.', flags: MessageFlags.Ephemeral });
       return;
+    }
+
+    const guild = await this.resolveGuild(interaction);
+    const member = guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
+    const voiceChannel = member?.voice?.channel;
+    if (this.audioManager && voiceChannel) {
+      this.audioManager.join(voiceChannel).catch((error) => {
+        console.error('Failed to join mock draft voice channel for audio:', error);
+      });
     }
 
     const fakePlayers = Array.from({ length: totalPlayers }, (_, idx) => `Player${idx + 1}`);
@@ -257,6 +297,26 @@ class DraftManager {
     const teamB = [captainB];
     const pickOrder = createSnakeOrder(pool.length, captainA, captainB);
     const steps = [];
+    const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
+
+    const reply = await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('Mock Draft Live Simulation (Solo Test)')
+          .setDescription([
+            `Simulating ${totalPlayers} fake players one pick at a time.`,
+            `Captains: **${captainA}** vs **${captainB}**`,
+            `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`
+          ].join('\n'))
+          .addFields(
+            { name: 'Team Alpha', value: formatNames(teamA), inline: true },
+            { name: 'Team Bravo', value: formatNames(teamB), inline: true },
+            { name: 'Draft Order', value: 'Draft starting...', inline: false }
+          )
+      ],
+      ...(broadcast ? {} : { flags: MessageFlags.Ephemeral }),
+      fetchReply: true
+    });
 
     for (const picker of pickOrder) {
       const pickIndex = randomInt(pool.length);
@@ -266,30 +326,56 @@ class DraftManager {
       } else {
         teamB.push(picked);
       }
+
+      const nextPicker = pickOrder[steps.length + 1];
       steps.push(`${picker} picked ${picked}`);
+      if (broadcast) {
+        await interaction.channel.send({
+          content: nextPicker
+            ? `🧪 ${picker} drafted ${picked}. Next pick: ${nextPicker}`
+            : `🧪 ${picker} drafted ${picked}. Mock draft picks complete.`
+        });
+      }
+      await reply.edit({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Mock Draft Live Simulation (Solo Test)')
+            .setDescription([
+              `Simulating ${totalPlayers} fake players one pick at a time.`,
+              `Captains: **${captainA}** vs **${captainB}**`,
+              `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`
+            ].join('\n'))
+            .addFields(
+              { name: `Team Alpha (${teamNameA})`, value: formatNames(teamA), inline: true },
+              { name: `Team Bravo (${teamNameB})`, value: formatNames(teamB), inline: true },
+              { name: 'Draft Order', value: steps.join('\n'), inline: false }
+            )
+        ]
+      }).catch(() => {});
+
+      await waitForNarrationThenPause(this.audioManager, guild, picker, picked, nextPicker);
     }
 
-    await interaction.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle('Mock Draft Preview (Solo Test)')
-          .setDescription([
-            `This is a text-only simulation with ${totalPlayers} fake players.`,
-            `Captains: **${captainA}** vs **${captainB}**`,
-            `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`
-          ].join('\n'))
-          .addFields(
-            { name: 'Team Alpha', value: formatNames(teamA), inline: true },
-            { name: 'Team Bravo', value: formatNames(teamB), inline: true },
-            { name: 'Draft Order', value: steps.join('\n'), inline: false }
-          )
-      ],
-      ephemeral: !broadcast
-    });
+    await playCountdownThenAnnounceMatchup(this.audioManager, guild?.id, teamNameA, teamNameB);
 
-    if (spawnVoice) {
-      await this.spawnMockVoice(interaction, config);
+    const mockSessionId = `${guild?.id || interaction.id}-mock-${Date.now()}`;
+    if (guild) {
+      this.mockAudioSessionsById.set(mockSessionId, { guildId: guild.id, status: 'ready', spawnVoice, config });
     }
+
+    if (broadcast) {
+      await interaction.channel.send({
+        content: `🏁 Mock draft ready: **${teamNameA}** will match up against **${teamNameB}**. May the best team win.`,
+        components: guild ? [this.buildMockStartButton(mockSessionId)] : []
+      });
+    } else if (guild) {
+      await interaction.followUp({
+        content: 'Mock draft audio is ready. Press **Start Mock Match** to play the fight cue and disconnect audio.',
+        components: [this.buildMockStartButton(mockSessionId)],
+        flags: MessageFlags.Ephemeral
+      }).catch(() => {});
+    }
+
   }
 
   async spawnMockVoice(interaction, config) {
@@ -297,7 +383,7 @@ class DraftManager {
     if (!guild) {
       await interaction.followUp({
         content: 'Mock voice can only be created from a server command context. Run `/team-draft-mock` in a server text channel and re-register commands if this still appears.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       }).catch(() => {});
       return;
     }
@@ -305,7 +391,7 @@ class DraftManager {
     if (this.mockVoiceByGuild.has(guild.id)) {
       await interaction.followUp({
         content: 'A mock voice room already exists in this server. Leave it to trigger cleanup first.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -345,13 +431,13 @@ class DraftManager {
       await member.voice.setChannel(voiceChannel);
       await interaction.followUp({
         content: `Created ${voiceChannel} and moved you there for testing. It will auto-delete when empty.`,
-        ephemeral: true
-      });
+        flags: MessageFlags.Ephemeral
+      }).catch(() => {});
     } else {
       await interaction.followUp({
         content: `Created ${voiceChannel}. Join it to test voice permissions. It will auto-delete when empty.`,
-        ephemeral: true
-      });
+        flags: MessageFlags.Ephemeral
+      }).catch(() => {});
     }
 
     this.mockVoiceByGuild.set(guild.id, {
@@ -377,14 +463,16 @@ class DraftManager {
     return `\`\`\`\n${lines.join('\n')}\n\`\`\``;
   }
 
-  buildDraftEmbed(session, guild) {
+  buildDraftEmbed(session, guild, options = {}) {
     const isComplete = session.pickIndex >= session.pickOrder.length;
     const currentCaptain = !isComplete ? session.pickOrder[session.pickIndex] : null;
     const title = isComplete ? 'Team Draft Complete' : 'Team Draft';
+    const status = options.status || (isComplete ? 'Complete' : 'Waiting for pick');
 
     return new EmbedBuilder()
       .setTitle(title)
       .setDescription([
+        `**Status:** ${status}`,
         `**Captains:** <@${session.captains[0]}> vs <@${session.captains[1]}>`,
         `**Team size:** ${session.teamSize}v${session.teamSize}`,
         currentCaptain ? `**Current pick:** <@${currentCaptain}>` : '**Current pick:** none'
@@ -429,6 +517,15 @@ class DraftManager {
     );
   }
 
+  buildMockStartButton(sessionId) {
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`mockstart:${sessionId}`)
+        .setLabel('Start Mock Match')
+        .setStyle(ButtonStyle.Success)
+    );
+  }
+
   async buildTeamTable(session, guild) {
     const resolveName = async (id) => {
       const cached = guild.members.cache.get(id);
@@ -456,18 +553,18 @@ class DraftManager {
     const session = this.getSessionById(sessionId);
 
     if (!session) {
-      await interaction.reply({ content: 'This draft session no longer exists.', ephemeral: true });
+      await interaction.reply({ content: 'This draft session no longer exists.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (interaction.user.id !== session.pickOrder[session.pickIndex]) {
-      await interaction.reply({ content: 'It is not your turn to pick.', ephemeral: true });
+      await interaction.reply({ content: 'It is not your turn to pick.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     const pickedId = interaction.values[0];
     if (!session.pool.includes(pickedId)) {
-      await interaction.reply({ content: 'That player is no longer available.', ephemeral: true });
+      await interaction.reply({ content: 'That player is no longer available.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -490,22 +587,54 @@ class DraftManager {
         : `🧩 <@${interaction.user.id}> drafted <@${pickedId}>. Draft picks complete.`
     });
 
-    if (session.messageId) {
-      const priorMessage = await interaction.channel.messages.fetch(session.messageId).catch(() => null);
-      if (priorMessage) {
-        await priorMessage.delete().catch(() => {});
-      }
+    const pickerName = interaction.member?.displayName || interaction.user.displayName || interaction.user.username;
+    const pickedName = interaction.guild.members.cache.get(pickedId)?.displayName || 'the pick';
+    const nextCaptainName = nextCaptain ? interaction.guild.members.cache.get(nextCaptain)?.displayName : null;
+    const draftMessage = interaction.message || (session.messageId
+      ? await interaction.channel.messages.fetch(session.messageId).catch(() => null)
+      : null);
+
+    if (draftMessage) {
+      await draftMessage.edit({
+        embeds: [this.buildDraftEmbed(session, interaction.guild, { status: 'Drafting' })],
+        components: []
+      }).catch(() => {});
+      session.messageId = draftMessage.id;
+    }
+
+    if (this.audioManager) {
+      await this.audioManager.announcePick(interaction.guild, pickerName, pickedName, nextCaptainName).catch((error) => {
+        console.error('Failed to announce draft pick in voice:', error);
+        return false;
+      });
     }
 
     if (session.pickIndex < session.pickOrder.length) {
-      const newMessage = await interaction.channel.send({
-        embeds: [this.buildDraftEmbed(session, interaction.guild)],
-        components: [this.buildPickMenu(session, interaction.guild)]
-      });
-      session.messageId = newMessage.id;
+      if (draftMessage) {
+        await draftMessage.edit({
+          embeds: [this.buildDraftEmbed(session, interaction.guild)],
+          components: [this.buildPickMenu(session, interaction.guild)]
+        }).catch(() => {});
+      } else {
+        const newMessage = await interaction.channel.send({
+          embeds: [this.buildDraftEmbed(session, interaction.guild)],
+          components: [this.buildPickMenu(session, interaction.guild)]
+        });
+        session.messageId = newMessage.id;
+      }
       return;
     }
 
+    if (draftMessage) {
+      await draftMessage.edit({
+        embeds: [this.buildDraftEmbed(session, interaction.guild)],
+        components: []
+      }).catch(() => {});
+    }
+
+    const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
+    session.matchupNames = { teamNameA, teamNameB };
+    await interaction.channel.send({ content: `🏁 **${teamNameA}** will match up against **${teamNameB}**. May the best team win.` });
     await this.postReadyToStart(interaction, session);
   }
 
@@ -536,12 +665,24 @@ class DraftManager {
       components: [this.buildStartButtons(session.id)]
     });
     session.readyMessageId = readyMessage.id;
+
+    if (session.matchupNames) {
+      await playCountdownThenAnnounceMatchup(
+        this.audioManager,
+        interaction.guild.id,
+        session.matchupNames.teamNameA,
+        session.matchupNames.teamNameB
+      );
+    }
   }
 
   async finalizeDraft(interaction, session, config) {
     const guild = interaction.guild;
     const channel = interaction.channel;
-    const [nameA, nameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
+    const [nameA, nameB] = session.matchupNames
+      ? [session.matchupNames.teamNameA, session.matchupNames.teamNameB]
+      : shuffle(getTeamNamePool(config)).slice(0, 2);
+    session.matchupNames = { teamNameA: nameA, teamNameB: nameB };
     const suffix = session.id.slice(-4);
 
     let roleA = null;
@@ -623,6 +764,7 @@ class DraftManager {
           'Channels and roles are temporary and will be deleted once everyone leaves.'
         ].join('\n')
       });
+      this.audioManager?.stop(guild.id);
     } catch (error) {
       if (channelA) {
         await channelA.delete('Draft start failed during setup').catch(() => {});
@@ -648,40 +790,72 @@ class DraftManager {
     }
   }
 
+
+  async handleMockStartButton(interaction) {
+    const [, sessionId] = interaction.customId.split(':');
+    const session = this.mockAudioSessionsById.get(sessionId);
+    if (!session) {
+      await interaction.reply({ content: 'This mock audio session no longer exists.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    await interaction.deferUpdate();
+    await interaction.channel.send({ content: '🥊 Starting mock match audio...' }).catch(() => {});
+    if (this.audioManager) {
+      await this.audioManager.playFight(session.guildId).catch((error) => {
+        console.error('Failed to play mock fight start audio:', error);
+      });
+      setTimeout(() => this.audioManager.stop(session.guildId), 3_000);
+    }
+    if (session.spawnVoice) {
+      await this.spawnMockVoice(interaction, session.config);
+    }
+    this.mockAudioSessionsById.delete(sessionId);
+    await interaction.message.edit({ components: [] }).catch(() => {});
+  }
+
   async handleStartDraftButton(interaction, config) {
     const [, sessionId] = interaction.customId.split(':');
     const session = this.getSessionById(sessionId);
     if (!session) {
-      await interaction.reply({ content: 'This draft session no longer exists.', ephemeral: true });
+      await interaction.reply({ content: 'This draft session no longer exists.', flags: MessageFlags.Ephemeral });
       return;
     }
     if (session.status !== 'ready') {
-      await interaction.reply({ content: 'This draft is not ready to start.', ephemeral: true });
+      await interaction.reply({ content: 'This draft is not ready to start.', flags: MessageFlags.Ephemeral });
       return;
     }
     session.status = 'starting';
     await interaction.deferUpdate();
     await interaction.channel.send({ content: '🚀 Starting team channels and moving players...' });
+    if (this.audioManager) {
+      await this.audioManager.playFight(interaction.guild.id).catch((error) => {
+        console.error('Failed to play fight start audio:', error);
+      });
+    }
     await this.finalizeDraft(interaction, session, config);
+    if (this.audioManager) {
+      setTimeout(() => this.audioManager.stop(interaction.guild.id), 3_000);
+    }
   }
 
   async handleAbortDraftButton(interaction) {
     const [, sessionId] = interaction.customId.split(':');
     const session = this.getSessionById(sessionId);
     if (!session) {
-      await interaction.reply({ content: 'This draft session no longer exists.', ephemeral: true });
+      await interaction.reply({ content: 'This draft session no longer exists.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     const guild = interaction.guild;
     if (!guild) {
-      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     await this.clearDraftMessageComponents(guild, session);
     await this.cleanupSession(guild, session);
-    await interaction.reply({ content: 'Draft cancelled.', ephemeral: false });
+    await interaction.reply({ content: 'Draft cancelled.' });
   }
 
   async handleVoiceStateUpdate(oldState, newState) {
@@ -746,6 +920,7 @@ class DraftManager {
       await roleB.delete('Draft finished').catch(() => {});
     }
 
+    this.audioManager?.stop(guild.id);
     this.sessionsByGuild.delete(session.guildId);
     this.sessionsById.delete(session.id);
   }
@@ -788,7 +963,7 @@ class DraftManager {
   async getDraftStatus(interaction) {
     const guild = await this.resolveGuild(interaction);
     if (!guild) {
-      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -796,7 +971,7 @@ class DraftManager {
     const mockSession = this.mockVoiceByGuild.get(guild.id);
 
     if (!session && !mockSession) {
-      await interaction.reply({ content: 'No active draft or mock voice resources in this server.', ephemeral: true });
+      await interaction.reply({ content: 'No active draft or mock voice resources in this server.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -812,19 +987,19 @@ class DraftManager {
       lines.push(`Mock voice channel active: <#${mockSession.channelId}>`);
     }
 
-    await interaction.reply({ content: lines.join('\n'), ephemeral: true });
+    await interaction.reply({ content: lines.join('\n'), flags: MessageFlags.Ephemeral });
   }
 
   async cancelDraft(interaction) {
     const guild = await this.resolveGuild(interaction);
     if (!guild) {
-      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     const session = this.sessionsByGuild.get(guild.id);
     if (!session) {
-      await interaction.reply({ content: 'No active draft session to cancel.', ephemeral: true });
+      await interaction.reply({ content: 'No active draft session to cancel.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -841,13 +1016,13 @@ class DraftManager {
     }
 
     await this.cleanupSession(guild, session);
-    await interaction.reply({ content: 'Draft cancelled and temporary resources cleaned up.', ephemeral: false });
+    await interaction.reply({ content: 'Draft cancelled and temporary resources cleaned up.' });
   }
 
   async cleanupDraft(interaction) {
     const guild = await this.resolveGuild(interaction);
     if (!guild) {
-      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -872,23 +1047,23 @@ class DraftManager {
     }
 
     if (!session && !mockSession) {
-      await interaction.reply({ content: 'No active draft resources found to clean up.', ephemeral: true });
+      await interaction.reply({ content: 'No active draft resources found to clean up.', flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.reply({ content: 'Forced cleanup completed for active draft resources.', ephemeral: true });
+    await interaction.reply({ content: 'Forced cleanup completed for active draft resources.', flags: MessageFlags.Ephemeral });
   }
 
   async returnToVoice(interaction) {
     const guild = await this.resolveGuild(interaction);
     if (!guild) {
-      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     const session = this.sessionsByGuild.get(guild.id);
     if (!session) {
-      await interaction.reply({ content: 'No active draft session found.', ephemeral: true });
+      await interaction.reply({ content: 'No active draft session found.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -897,7 +1072,7 @@ class DraftManager {
     if (!sourceChannel || sourceChannel.type !== ChannelType.GuildVoice) {
       await interaction.reply({
         content: 'Original draft voice channel no longer exists, so players cannot be returned automatically.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -937,7 +1112,7 @@ class DraftManager {
     }
 
     await this.cleanupSession(guild, session);
-    await interaction.reply({ content: `Returned players to ${sourceChannel} and cleaned up draft resources.`, ephemeral: false });
+    await interaction.reply({ content: `Returned players to ${sourceChannel} and cleaned up draft resources.` });
   }
 }
 

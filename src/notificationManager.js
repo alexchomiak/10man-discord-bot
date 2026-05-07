@@ -1,4 +1,4 @@
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, MessageFlags } = require('discord.js');
 const fs = require('node:fs');
 const path = require('node:path');
 const Database = require('better-sqlite3');
@@ -232,13 +232,13 @@ class NotificationManager {
     }
 
     if (interaction.message.id !== this.state.messageId) {
-      await interaction.reply({ content: 'This notification is no longer active.', ephemeral: true });
+      await interaction.reply({ content: 'This notification is no longer active.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     const guild = interaction.guild;
     if (!guild) {
-      await interaction.reply({ content: 'This action must be used in a server.', ephemeral: true });
+      await interaction.reply({ content: 'This action must be used in a server.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -269,19 +269,19 @@ class NotificationManager {
       || await guild.roles.fetch(this.config.notificationRoleId).catch(() => null);
 
     if (!role) {
-      await interaction.reply({ content: 'Notification role is missing.', ephemeral: true });
+      await interaction.reply({ content: 'Notification role is missing.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (interaction.customId === 'cs2_subscribe') {
       await member.roles.add(role);
-      await interaction.reply({ content: `Subscribed you to ${role.name}.`, ephemeral: true });
+      await interaction.reply({ content: `Subscribed you to ${role.name}.`, flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (interaction.customId === 'cs2_unsubscribe') {
       await member.roles.remove(role);
-      await interaction.reply({ content: `Unsubscribed you from ${role.name}.`, ephemeral: true });
+      await interaction.reply({ content: `Unsubscribed you from ${role.name}.`, flags: MessageFlags.Ephemeral });
     }
   }
 

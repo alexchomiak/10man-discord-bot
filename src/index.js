@@ -6,10 +6,12 @@ const {
   Partials,
   Events,
   SlashCommandBuilder,
-  InteractionContextType
+  InteractionContextType,
+  MessageFlags
 } = require('discord.js');
 const { DraftManager } = require('./draftManager');
 const { NotificationManager } = require('./notificationManager');
+const { AudioManager } = require('./audioManager');
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -31,9 +33,53 @@ const config = {
   notificationChannelId: process.env.NOTIFICATION_CHANNEL_ID || null,
   notificationRoleId: process.env.NOTIFICATION_ROLE_ID || null,
   notificationTimeCst: process.env.NOTIFICATION_TIME_CST || '18:00',
-  sqlitePath: process.env.SQLITE_PATH || '/app/data/bot.db'
+  sqlitePath: process.env.SQLITE_PATH || '/app/data/bot.db',
+  lobbyMusicPath: process.env.LOBBY_MUSIC_PATH || '/app/data/lobby.mp3',
+  audioDebug: process.env.AUDIO_DEBUG === 'true',
+  voiceSelfDeaf: process.env.VOICE_SELF_DEAF === 'true',
+  ttsLang: process.env.GOOGLE_TTS_LANG || 'en',
+  ttsSlow: process.env.GOOGLE_TTS_SLOW === 'true',
+  ttsHost: process.env.GOOGLE_TTS_HOST || 'https://translate.google.com',
+  audioBufferMs: process.env.AUDIO_BUFFER_MS || '500',
+  audioQueueMaxMs: process.env.AUDIO_QUEUE_MAX_MS || '5000',
+  lobbyMusicVolume: process.env.LOBBY_MUSIC_VOLUME || '0.35',
+  ttsMusicDuckVolume: process.env.TTS_MUSIC_DUCK_VOLUME || '0.12'
 };
 
+
+function logVoiceGatewayPacket(packet, botUserId) {
+  if (!config.audioDebug) {
+    return;
+  }
+
+  if (packet.t === 'VOICE_STATE_UPDATE' && packet.d?.user_id === botUserId) {
+    console.debug('[audio] raw VOICE_STATE_UPDATE for bot', JSON.stringify({
+      guildId: packet.d.guild_id,
+      channelId: packet.d.channel_id,
+      sessionIdPresent: Boolean(packet.d.session_id),
+      selfDeaf: packet.d.self_deaf,
+      selfMute: packet.d.self_mute,
+      deaf: packet.d.deaf,
+      mute: packet.d.mute
+    }));
+  }
+
+  if (packet.t === 'VOICE_SERVER_UPDATE') {
+    console.debug('[audio] raw VOICE_SERVER_UPDATE', JSON.stringify({
+      guildId: packet.d?.guild_id,
+      endpoint: packet.d?.endpoint || null,
+      tokenPresent: Boolean(packet.d?.token)
+    }));
+  }
+}
+
+function audioFailureMessage(error) {
+  if (error?.name === 'AudioManagerError') {
+    return error.message;
+  }
+
+  return 'Voice audio failed. Check that I have permission to join and speak in that channel, then try again.';
+}
 
 function formatBuildDate(buildDate) {
   if (!buildDate) {
@@ -52,7 +98,8 @@ function formatBuildDate(buildDate) {
   }).format(parsed);
 }
 
-const draftManager = new DraftManager();
+const audioManager = new AudioManager(config);
+const draftManager = new DraftManager(audioManager);
 
 const client = new Client({
   intents: [
@@ -101,7 +148,7 @@ const teamDraftMockCommand = new SlashCommandBuilder()
   .addBooleanOption((option) =>
     option
       .setName('spawn_voice')
-      .setDescription('Also create a temporary private mock voice channel and move you there.')
+      .setDescription('After Start Mock Match, create a temporary private mock voice channel and move you there.')
   )
   .addBooleanOption((option) =>
     option
@@ -139,11 +186,36 @@ const buildVersionCommand = new SlashCommandBuilder()
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
+const testLobbyMusicCommand = new SlashCommandBuilder()
+  .setName('test-lobby-music')
+  .setDescription('Join your voice channel and play lobby music if /app/data/lobby.mp3 exists.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
+const testTtsCommand = new SlashCommandBuilder()
+  .setName('test-tts')
+  .setDescription('Make the bot say a test message in voice.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false)
+  .addStringOption((option) =>
+    option
+      .setName('message')
+      .setDescription('Message for the bot to say in voice.')
+      .setRequired(true)
+      .setMaxLength(200)
+  );
+
+const audioStatusCommand = new SlashCommandBuilder()
+  .setName('audio-status')
+  .setDescription('Show Discord voice/TTS diagnostics for this server.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand];
+    const commands = [teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -203,7 +275,85 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const buildDate = formatBuildDate(process.env.BUILD_DATE);
       await interaction.reply({
         content: [`Build Version: \`${version}\``, '', `Build was merged on ${buildDate}`].join('\n'),
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'test-lobby-music') {
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      const voiceChannel = member.voice?.channel;
+      if (!voiceChannel) {
+        await interaction.reply({ content: 'Join a voice channel first.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        await audioManager.join(voiceChannel);
+      } catch (error) {
+        console.error('Failed to join voice for lobby music test:', error);
+        await interaction.editReply({ content: audioFailureMessage(error) });
+        return;
+      }
+
+      await interaction.editReply({
+        content: audioManager.hasMusicFile()
+          ? 'Joined voice and started/queued lobby music.'
+          : `Joined voice, but no lobby music file exists at \`${config.lobbyMusicPath}\`.`
+      });
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'test-tts') {
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      const voiceChannel = member.voice?.channel;
+      if (!voiceChannel) {
+        await interaction.reply({ content: 'Join a voice channel first.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        await audioManager.join(voiceChannel);
+      } catch (error) {
+        console.error('Failed to join voice for TTS test:', error);
+        await interaction.editReply({ content: audioFailureMessage(error) });
+        return;
+      }
+
+      const message = interaction.options.getString('message', true);
+      const spoke = await audioManager.speak(interaction.guildId, message);
+      const audioStatus = audioManager.status(interaction.guildId);
+      const voiceReady = audioStatus?.connectionStatus === 'ready';
+      await interaction.editReply({
+        content: spoke
+          ? [
+              voiceReady
+                ? 'Queued TTS test to voice.'
+                : `Queued TTS, but Discord voice is still ${audioStatus?.connectionStatus || 'not ready'} so speech is being held until the connection becomes ready.`,
+              audioStatus?.queue?.speechQueuedMs ? `Speech queued: ~${audioStatus.queue.speechQueuedMs}ms.` : null
+            ].filter(Boolean).join('\n')
+          : 'I joined voice, but TTS generation or playback failed. Check the bot logs for the detailed TTS error.'
+      });
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'audio-status') {
+      const status = audioManager.status(interaction.guildId);
+      const dependencyReport = audioManager.dependencyReport();
+      await interaction.reply({
+        content: [
+          status
+            ? `Connection: \`${status.connectionStatus}\` | Player: \`${status.playerStatus}\` | Speech enabled: \`${status.queue.speechEnabled}\` | Speech queued: \`${status.queue.speechQueuedMs}ms\``
+            : 'No active audio session in this server.',
+          '',
+          'Dependency report:',
+          '```',
+          dependencyReport.slice(0, 1_700),
+          '```'
+        ].join('\n'),
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -215,6 +365,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('draftpick:')) {
       await draftManager.handlePick(interaction, config);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('mockstart:')) {
+      await draftManager.handleMockStartButton(interaction);
       return;
     }
 
@@ -234,11 +389,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
   } catch (error) {
     console.error('Interaction error:', error);
     if (interaction.deferred || interaction.replied) {
-      await interaction.followUp({ content: 'Something went wrong handling that interaction.', ephemeral: true }).catch(() => {});
+      await interaction.followUp({ content: 'Something went wrong handling that interaction.', flags: MessageFlags.Ephemeral }).catch(() => {});
     } else {
-      await interaction.reply({ content: 'Something went wrong handling that interaction.', ephemeral: true }).catch(() => {});
+      await interaction.reply({ content: 'Something went wrong handling that interaction.', flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   }
+});
+
+
+client.on(Events.Raw, (packet) => {
+  logVoiceGatewayPacket(packet, client.user?.id);
 });
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
