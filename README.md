@@ -114,7 +114,7 @@ Draft lobby music file location in container: `/app/data/lobby.mp3` (or your cus
 
 ## GitHub Action: Build + Push to Docker Hub
 
-A workflow is included at `.github/workflows/docker-publish.yml` and runs on pushes to `main`, pull requests targeting `main`, and manual `workflow_dispatch` runs.
+A workflow is included at `.github/workflows/docker-publish.yml` and runs on every branch push, every pull request update, and manual `workflow_dispatch` runs. Running on branch pushes is intentional: newly added workflows may not appear for an already-open PR until another push happens or until the workflow exists on the base branch, so the branch-push trigger still publishes an image you can test immediately.
 
 Set these GitHub repo secrets:
 
@@ -125,13 +125,16 @@ Set these GitHub repo secrets:
 Published tags:
 
 - Pushes to `main`: `latest` and `sha-<short-commit>`.
+- Pushes to other branches: `branch-<branch-name>` and `sha-<short-commit>`.
 - Pull requests: `pr-<number>` and `sha-<short-commit>`.
 - Manual runs: `sha-<short-commit>`.
 
-For PR testing, open the pull request and wait for the **Docker Publish** workflow to finish. The workflow writes the pushed image tags to the job summary and posts/updates a PR comment with the exact Docker image tags you can run on your server. Example:
+For PR testing, push your branch and wait for the **Docker Publish** workflow to finish. If the `pull_request` event runs, the workflow writes the pushed image tags to the job summary and posts/updates a PR comment with the exact Docker image tags you can run on your server. If GitHub does not show a PR run yet, use the branch image tag from the branch-push run instead (for example, `branch-work`). Example:
 
 ```bash
 docker pull yourname/10man-discord-bot:pr-123
+# Or, if only the branch-push run appears:
+# docker pull yourname/10man-discord-bot:branch-work
 
 docker run -d \
   --name cs2-team-draft-bot-pr-123 \
@@ -139,6 +142,7 @@ docker run -d \
   -v /path/on/host/10man-bot-data:/app/data \
   --env-file /path/to/.env \
   yourname/10man-discord-bot:pr-123
+# Or use your branch tag, e.g. yourname/10man-discord-bot:branch-work
 ```
 
 ### Suggested Unraid container settings
