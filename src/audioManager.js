@@ -139,9 +139,13 @@ class MixerStream extends Readable {
   }
 
   addSpeech(buffer) {
-    if (!this.destroyed && buffer.length > 0) {
-      this.speechQueue.push(buffer);
+    if (this.destroyed || buffer.length === 0) {
+      return Promise.resolve(false);
     }
+
+    return new Promise((resolve) => {
+      this.speechQueue.push({ buffer, offset: 0, resolve });
+    });
   }
 
   setSpeechEnabled(enabled) {
@@ -150,7 +154,7 @@ class MixerStream extends Readable {
 
   queueStats() {
     const musicBytes = this.musicQueue.reduce((total, chunk) => total + chunk.length, 0);
-    const speechBytes = this.speechQueue.reduce((total, chunk) => total + chunk.length, 0);
+    const speechBytes = this.speechQueue.reduce((total, chunk) => total + chunk.buffer.length - chunk.offset, 0);
     return {
       musicChunks: this.musicQueue.length,
       musicBytes,
@@ -203,13 +207,46 @@ class MixerStream extends Readable {
     return readBytes(this.musicQueue, FRAME_BYTES);
   }
 
+  readSpeechFrame() {
+    if (!this.speechEnabled) {
+      return Buffer.alloc(FRAME_BYTES);
+    }
+
+    const output = Buffer.alloc(FRAME_BYTES);
+    let outputOffset = 0;
+
+    while (outputOffset < FRAME_BYTES && this.speechQueue.length > 0) {
+      const current = this.speechQueue[0];
+      const needed = FRAME_BYTES - outputOffset;
+      const available = current.buffer.length - current.offset;
+      const take = Math.min(needed, available);
+      current.buffer.copy(output, outputOffset, current.offset, current.offset + take);
+      outputOffset += take;
+      current.offset += take;
+
+      if (current.offset >= current.buffer.length) {
+        this.speechQueue.shift();
+        current.resolve(true);
+      }
+    }
+
+    return output;
+  }
+
+  drainSpeechQueue(result = false) {
+    while (this.speechQueue.length > 0) {
+      const current = this.speechQueue.shift();
+      current.resolve(result);
+    }
+  }
+
   pushFrame() {
     if (this.destroyed) {
       return false;
     }
 
     const musicFrame = this.readMusicFrame();
-    const speechFrame = this.speechEnabled ? readBytes(this.speechQueue, FRAME_BYTES) : Buffer.alloc(FRAME_BYTES);
+    const speechFrame = this.readSpeechFrame();
     const canContinue = this.push(mixPcm(musicFrame, speechFrame, this.musicVolume));
     if (!canContinue) {
       this.nextFrameAt = Date.now() + 20;
@@ -218,6 +255,7 @@ class MixerStream extends Readable {
   }
 
   destroy(error) {
+    this.drainSpeechQueue(false);
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -516,7 +554,7 @@ class AudioManager {
 
     try {
       const pcm = await this.createSpeechPcm(text, requestId);
-      session.mixer.addSpeech(pcm);
+      const speechDone = session.mixer.addSpeech(pcm);
       const connectionReady = session.connection.state.status === VoiceConnectionStatus.Ready;
       const queueAfter = session.mixer.queueStats();
       this.info('TTS PCM queued', {
@@ -538,7 +576,17 @@ class AudioManager {
           queue: queueAfter
         });
       }
-      return true;
+
+      const played = await speechDone;
+      this.info('TTS playback completed', {
+        guildId,
+        requestId,
+        played,
+        connectionStatus: session.connection.state.status,
+        playerStatus: session.player.state.status,
+        queueAfterPlayback: session.mixer.queueStats()
+      });
+      return played;
     } catch (error) {
       this.error('TTS failed', { guildId, requestId, error: summarizeError(error) });
       return false;

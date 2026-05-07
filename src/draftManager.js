@@ -49,6 +49,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForNarrationThenPause(audioManager, guild, captainName, pickedName, nextCaptainName, pauseMs = 3_000) {
+  if (audioManager && guild) {
+    await audioManager.announcePick(guild, captainName, pickedName, nextCaptainName).catch(() => false);
+  }
+  await sleep(pauseMs);
+}
+
 function createSnakeOrder(totalPicks, firstCaptainId, secondCaptainId) {
   if (totalPicks <= 0) {
     return [];
@@ -302,7 +309,6 @@ class DraftManager {
     });
 
     for (const picker of pickOrder) {
-      await sleep(15_000);
       const pickIndex = randomInt(pool.length);
       const picked = pool.splice(pickIndex, 1)[0];
       if (picker === captainA) {
@@ -320,10 +326,6 @@ class DraftManager {
             : `🧪 ${picker} drafted ${picked}. Mock draft picks complete.`
         });
       }
-      if (this.audioManager && guild) {
-        await this.audioManager.announcePick(guild, picker, picked, nextPicker).catch(() => false);
-      }
-
       await reply.edit({
         embeds: [
           new EmbedBuilder()
@@ -340,11 +342,13 @@ class DraftManager {
             )
         ]
       }).catch(() => {});
+
+      await waitForNarrationThenPause(this.audioManager, guild, picker, picked, nextPicker);
     }
 
     if (this.audioManager && guild) {
-      this.audioManager.playFinalCountdown(guild.id);
       await this.audioManager.speak(guild.id, `${teamNameA} will match up against ${teamNameB}. May the best team win.`).catch(() => false);
+      this.audioManager.playFinalCountdown(guild.id);
     }
 
     const mockSessionId = `${guild?.id || interaction.id}-mock-${Date.now()}`;
@@ -577,17 +581,18 @@ class DraftManager {
     const pickerName = interaction.member?.displayName || interaction.user.displayName || interaction.user.username;
     const pickedName = interaction.guild.members.cache.get(pickedId)?.displayName || 'the pick';
     const nextCaptainName = nextCaptain ? interaction.guild.members.cache.get(nextCaptain)?.displayName : null;
-    if (this.audioManager) {
-      this.audioManager.announcePick(interaction.guild, pickerName, pickedName, nextCaptainName).catch((error) => {
-        console.error('Failed to announce draft pick in voice:', error);
-      });
-    }
-
     if (session.messageId) {
       const priorMessage = await interaction.channel.messages.fetch(session.messageId).catch(() => null);
       if (priorMessage) {
         await priorMessage.delete().catch(() => {});
       }
+    }
+
+    if (this.audioManager) {
+      await this.audioManager.announcePick(interaction.guild, pickerName, pickedName, nextCaptainName).catch((error) => {
+        console.error('Failed to announce draft pick in voice:', error);
+        return false;
+      });
     }
 
     if (session.pickIndex < session.pickOrder.length) {
@@ -634,8 +639,8 @@ class DraftManager {
     session.readyMessageId = readyMessage.id;
 
     if (this.audioManager && session.matchupNames) {
-      this.audioManager.playFinalCountdown(interaction.guild.id);
       await this.audioManager.speak(interaction.guild.id, `${session.matchupNames.teamNameA} will match up against ${session.matchupNames.teamNameB}. May the best team win.`).catch(() => false);
+      this.audioManager.playFinalCountdown(interaction.guild.id);
     }
   }
 
