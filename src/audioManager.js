@@ -27,6 +27,7 @@ const VOICE_READY_WAIT_MS = 5_000;
 const MAX_REDIRECTS = 5;
 const DEFAULT_AUDIO_BUFFER_MS = 500;
 const DEFAULT_AUDIO_QUEUE_MAX_MS = 5_000;
+const DEFAULT_LOBBY_MUSIC_VOLUME = 0.6;
 
 class AudioManagerError extends Error {
   constructor(message, options = {}) {
@@ -84,11 +85,20 @@ function readBytes(queue, size) {
   return output;
 }
 
-function mixPcm(musicFrame, speechFrame) {
+function clampVolume(volume, defaultVolume = DEFAULT_LOBBY_MUSIC_VOLUME) {
+  const parsed = Number.parseFloat(volume);
+  if (!Number.isFinite(parsed)) {
+    return defaultVolume;
+  }
+
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function mixPcm(musicFrame, speechFrame, musicVolume = DEFAULT_LOBBY_MUSIC_VOLUME) {
   const mixed = Buffer.alloc(FRAME_BYTES);
 
   for (let i = 0; i < FRAME_BYTES; i += 2) {
-    const musicSample = musicFrame.readInt16LE(i) * 0.35;
+    const musicSample = musicFrame.readInt16LE(i) * musicVolume;
     const speechSample = speechFrame.readInt16LE(i) * 1.2;
     const value = Math.max(-32768, Math.min(32767, Math.round(musicSample + speechSample)));
     mixed.writeInt16LE(value, i);
@@ -103,6 +113,7 @@ class MixerStream extends Readable {
     this.musicQueue = [];
     this.speechQueue = [];
     this.speechEnabled = false;
+    this.musicVolume = clampVolume(options.musicVolume);
     this.musicPrebufferBytes = Math.max(FRAME_BYTES, Math.round((options.bufferMs || DEFAULT_AUDIO_BUFFER_MS) / 20) * FRAME_BYTES);
     this.maxMusicBytes = Math.max(this.musicPrebufferBytes, Math.round((options.maxQueueMs || DEFAULT_AUDIO_QUEUE_MAX_MS) / 20) * FRAME_BYTES);
     this.musicBuffered = false;
@@ -138,6 +149,7 @@ class MixerStream extends Readable {
       musicChunks: this.musicQueue.length,
       musicBytes,
       musicBuffered: this.musicBuffered,
+      musicVolume: this.musicVolume,
       musicPrebufferMs: pcmDurationMs(this.musicPrebufferBytes),
       speechChunks: this.speechQueue.length,
       speechBytes,
@@ -192,7 +204,7 @@ class MixerStream extends Readable {
 
     const musicFrame = this.readMusicFrame();
     const speechFrame = this.speechEnabled ? readBytes(this.speechQueue, FRAME_BYTES) : Buffer.alloc(FRAME_BYTES);
-    const canContinue = this.push(mixPcm(musicFrame, speechFrame));
+    const canContinue = this.push(mixPcm(musicFrame, speechFrame, this.musicVolume));
     if (!canContinue) {
       this.nextFrameAt = Date.now() + 20;
     }
@@ -218,6 +230,7 @@ class AudioManager {
     this.ttsHost = config.ttsHost || process.env.GOOGLE_TTS_HOST || DEFAULT_TTS_HOST;
     this.audioBufferMs = Number.parseInt(config.audioBufferMs || process.env.AUDIO_BUFFER_MS || DEFAULT_AUDIO_BUFFER_MS, 10);
     this.audioQueueMaxMs = Number.parseInt(config.audioQueueMaxMs || process.env.AUDIO_QUEUE_MAX_MS || DEFAULT_AUDIO_QUEUE_MAX_MS, 10);
+    this.lobbyMusicVolume = clampVolume(config.lobbyMusicVolume ?? process.env.LOBBY_MUSIC_VOLUME);
     this.sessions = new Map();
   }
 
@@ -282,7 +295,7 @@ class AudioManager {
       debug: this.debugEnabled
     });
 
-    const mixer = new MixerStream({ bufferMs: this.audioBufferMs, maxQueueMs: this.audioQueueMaxMs });
+    const mixer = new MixerStream({ bufferMs: this.audioBufferMs, maxQueueMs: this.audioQueueMaxMs, musicVolume: this.lobbyMusicVolume });
     const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
     const session = {
       channelId: channel.id,
@@ -307,6 +320,7 @@ class AudioManager {
         hasSubscription: Boolean(subscription),
         bufferMs: this.audioBufferMs,
         queueMaxMs: this.audioQueueMaxMs,
+        lobbyMusicVolume: this.lobbyMusicVolume,
         playerStatus: player.state.status,
         connectionStatus: connection.state.status
       });
@@ -416,7 +430,7 @@ class AudioManager {
       'pipe:1'
     ]);
 
-    this.info('starting lobby music ffmpeg', { musicPath: this.musicPath });
+    this.info('starting lobby music ffmpeg', { musicPath: this.musicPath, volume: this.lobbyMusicVolume });
     proc.stdout.on('data', (chunk) => session.mixer.addMusic(chunk));
     proc.stderr.on('data', (chunk) => {
       this.warn('lobby music ffmpeg stderr', { message: chunk.toString().trim() });
