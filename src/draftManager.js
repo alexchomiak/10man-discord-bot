@@ -302,7 +302,7 @@ class DraftManager {
     });
 
     for (const picker of pickOrder) {
-      await sleep(1_000);
+      await sleep(15_000);
       const pickIndex = randomInt(pool.length);
       const picked = pool.splice(pickIndex, 1)[0];
       if (picker === captainA) {
@@ -349,7 +349,7 @@ class DraftManager {
 
     const mockSessionId = `${guild?.id || interaction.id}-mock-${Date.now()}`;
     if (guild) {
-      this.mockAudioSessionsById.set(mockSessionId, { guildId: guild.id, status: 'ready' });
+      this.mockAudioSessionsById.set(mockSessionId, { guildId: guild.id, status: 'ready', spawnVoice, config });
     }
 
     if (broadcast) {
@@ -365,9 +365,6 @@ class DraftManager {
       }).catch(() => {});
     }
 
-    if (spawnVoice) {
-      await this.spawnMockVoice(interaction, config);
-    }
   }
 
   async spawnMockVoice(interaction, config) {
@@ -424,12 +421,12 @@ class DraftManager {
       await interaction.followUp({
         content: `Created ${voiceChannel} and moved you there for testing. It will auto-delete when empty.`,
         flags: MessageFlags.Ephemeral
-      });
+      }).catch(() => {});
     } else {
       await interaction.followUp({
         content: `Created ${voiceChannel}. Join it to test voice permissions. It will auto-delete when empty.`,
         flags: MessageFlags.Ephemeral
-      });
+      }).catch(() => {});
     }
 
     this.mockVoiceByGuild.set(guild.id, {
@@ -772,6 +769,9 @@ class DraftManager {
         console.error('Failed to play mock fight start audio:', error);
       });
       setTimeout(() => this.audioManager.stop(session.guildId), 3_000);
+    }
+    if (session.spawnVoice) {
+      await this.spawnMockVoice(interaction, session.config);
     }
     this.mockAudioSessionsById.delete(sessionId);
     await interaction.message.edit({ components: [] }).catch(() => {});

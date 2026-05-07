@@ -147,7 +147,7 @@ const teamDraftMockCommand = new SlashCommandBuilder()
   .addBooleanOption((option) =>
     option
       .setName('spawn_voice')
-      .setDescription('Also create a temporary private mock voice channel and move you there.')
+      .setDescription('After Start Mock Match, create a temporary private mock voice channel and move you there.')
   )
   .addBooleanOption((option) =>
     option
