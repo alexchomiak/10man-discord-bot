@@ -56,14 +56,33 @@ async function waitForNarrationThenPause(audioManager, guild, captainName, picke
   await sleep(pauseMs);
 }
 
-async function playCountdownThenAnnounceMatchup(audioManager, guildId, teamNameA, teamNameB) {
+function draftChatName(channel) {
+  return channel?.name || 'the draft chat';
+}
+
+async function playDraftIntro(audioManager, guildId, captainAName, teamNameA, captainBName, teamNameB, channel) {
+  if (!audioManager || !guildId) {
+    return;
+  }
+
+  await sleep(2_000);
+  await audioManager.speak(
+    guildId,
+    `Welcome to the Player Draft. ${captainAName} will lead the team ${teamNameA} against ${captainBName} and the ${teamNameB}. Captains, interact with the Discord message in ${draftChatName(channel)} to make your picks!`
+  ).catch(() => false);
+}
+
+async function playCountdownThenAnnounceMatchup(audioManager, guildId, teamNameA, teamNameB, channel) {
   if (!audioManager || !guildId) {
     return;
   }
 
   audioManager.playFinalCountdown(guildId);
   await sleep(5_000);
-  await audioManager.speak(guildId, `${teamNameA} will match up against ${teamNameB}. May the best team win.`).catch(() => false);
+  await audioManager.speak(
+    guildId,
+    `${teamNameA} will match up against ${teamNameB}. May the best team win. To Start the match, click the Start button on the message in ${draftChatName(channel)}.`
+  ).catch(() => false);
 }
 
 async function playFightThenPause(audioManager, guildId, pauseMs = 1_000) {
@@ -228,6 +247,7 @@ class DraftManager {
     }
 
     const pool = playerIds.filter((id) => id !== captainA && id !== captainB);
+    const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
     const teamSize = draftPlayerCount / 2;
     const picksNeeded = draftPlayerCount - 2;
     const pickOrder = createSnakeOrder(picksNeeded, captainA, captainB);
@@ -252,7 +272,7 @@ class DraftManager {
         channelAId: null,
         channelBId: null
       },
-      matchupNames: null,
+      matchupNames: { teamNameA, teamNameB },
       status: 'drafting'
     };
 
@@ -268,9 +288,19 @@ class DraftManager {
     session.messageId = reply.id;
 
     if (this.audioManager) {
-      this.audioManager.join(sourceVoice).catch((error) => {
-        console.error('Failed to join draft voice channel for audio:', error);
-      });
+      this.audioManager.join(sourceVoice)
+        .then(() => playDraftIntro(
+          this.audioManager,
+          guild.id,
+          sourceVoice.members.get(captainA)?.displayName || 'Captain 1',
+          teamNameA,
+          sourceVoice.members.get(captainB)?.displayName || 'Captain 2',
+          teamNameB,
+          interaction.channel
+        ))
+        .catch((error) => {
+          console.error('Failed to join draft voice channel for audio:', error);
+        });
     }
   }
 
@@ -294,11 +324,6 @@ class DraftManager {
     const guild = await this.resolveGuild(interaction);
     const member = guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
     const voiceChannel = member?.voice?.channel;
-    if (this.audioManager && voiceChannel) {
-      this.audioManager.join(voiceChannel).catch((error) => {
-        console.error('Failed to join mock draft voice channel for audio:', error);
-      });
-    }
 
     const fakePlayers = Array.from({ length: totalPlayers }, (_, idx) => `Player${idx + 1}`);
     const shuffled = shuffle(fakePlayers);
@@ -327,6 +352,14 @@ class DraftManager {
       ...(broadcast ? {} : { flags: MessageFlags.Ephemeral }),
       fetchReply: true
     });
+
+    if (this.audioManager && voiceChannel) {
+      await this.audioManager.join(voiceChannel)
+        .then(() => playDraftIntro(this.audioManager, guild.id, captainA, teamNameA, captainB, teamNameB, interaction.channel))
+        .catch((error) => {
+          console.error('Failed to join mock draft voice channel for audio:', error);
+        });
+    }
 
     for (const picker of pickOrder) {
       const pickIndex = randomInt(pool.length);
@@ -366,7 +399,7 @@ class DraftManager {
       await waitForNarrationThenPause(this.audioManager, guild, picker, picked, nextPicker);
     }
 
-    await playCountdownThenAnnounceMatchup(this.audioManager, guild?.id, teamNameA, teamNameB);
+    await playCountdownThenAnnounceMatchup(this.audioManager, guild?.id, teamNameA, teamNameB, interaction.channel);
 
     const mockSessionId = `${guild?.id || interaction.id}-mock-${Date.now()}`;
     if (guild) {
@@ -375,7 +408,7 @@ class DraftManager {
 
     if (broadcast) {
       await interaction.channel.send({
-        content: `🏁 Mock draft ready: **${teamNameA}** will match up against **${teamNameB}**. May the best team win.`,
+        content: `🏁 Mock draft ready: **${teamNameA}** will match up against **${teamNameB}**. May the best team win. To Start the match, click the Start button on the message in ${draftChatName(interaction.channel)}.`,
         components: guild ? [this.buildMockStartButton(mockSessionId)] : []
       });
     } else if (guild) {
@@ -642,9 +675,12 @@ class DraftManager {
       }).catch(() => {});
     }
 
-    const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
+    const { teamNameA, teamNameB } = session.matchupNames || (() => {
+      const [fallbackTeamNameA, fallbackTeamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
+      return { teamNameA: fallbackTeamNameA, teamNameB: fallbackTeamNameB };
+    })();
     session.matchupNames = { teamNameA, teamNameB };
-    await interaction.channel.send({ content: `🏁 **${teamNameA}** will match up against **${teamNameB}**. May the best team win.` });
+    await interaction.channel.send({ content: `🏁 **${teamNameA}** will match up against **${teamNameB}**. May the best team win. To Start the match, click the Start button on the message in ${draftChatName(interaction.channel)}.` });
     await this.postReadyToStart(interaction, session);
   }
 
@@ -681,7 +717,8 @@ class DraftManager {
         this.audioManager,
         interaction.guild.id,
         session.matchupNames.teamNameA,
-        session.matchupNames.teamNameB
+        session.matchupNames.teamNameB,
+        interaction.channel
       );
     }
   }
