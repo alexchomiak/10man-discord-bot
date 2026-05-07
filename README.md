@@ -65,6 +65,9 @@ Copy `.env.example` to `.env`:
 - `LOBBY_MUSIC_PATH` (optional, default `/app/data/lobby.mp3`; MP3 file for draft lobby music)
 - `AUDIO_DEBUG` (optional, default `false`; set `true` for extra verbose voice/TTS diagnostics including HTTP and ffmpeg byte counts)
 - `VOICE_SELF_DEAF` (optional, default `false`; set `true` if you want the bot to join self-deafened like many music bots)
+- `GOOGLE_TTS_LANG` (optional, default `en`; Google Translate TTS language/accent code such as `en`, `en-GB`, `en-AU`, `es`, `fr`, `de`, or `ja`)
+- `GOOGLE_TTS_SLOW` (optional, default `false`; set `true` for slower speech)
+- `GOOGLE_TTS_HOST` (optional, default `https://translate.google.com`; override for regional Translate hosts such as `https://translate.google.com.cn`)
 
 Notification scheduler is restart-safe: on startup, if today's daily message already exists, the bot reuses it and schedules the next run instead of reposting immediately.
 When the daily message rolls over, previous-day message metadata and interested rows are removed from SQLite (no unbounded growth).
@@ -119,6 +122,21 @@ docker run -d \
 SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PATH`).
 
 Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music` and `/test-tts` do not require a native Windows ffmpeg/Opus setup on your host.
+
+
+## Google TTS voice/language options
+
+This bot currently uses the unofficial `google-tts-api` package, which wraps Google Translate TTS. That package does **not** expose named voices like `en-US-Wavenet-D`; it only supports language/accent selection through `lang`, a `slow` speed toggle, and a Translate `host` override. Use `GOOGLE_TTS_LANG` to change the voice/accent. Common examples:
+
+- English/default: `GOOGLE_TTS_LANG=en`
+- British English: `GOOGLE_TTS_LANG=en-GB`
+- Australian English: `GOOGLE_TTS_LANG=en-AU`
+- Spanish: `GOOGLE_TTS_LANG=es`
+- French: `GOOGLE_TTS_LANG=fr`
+- German: `GOOGLE_TTS_LANG=de`
+- Japanese: `GOOGLE_TTS_LANG=ja`
+
+For a larger list, use Google Cloud's language-code docs as a reference for BCP-47 language tags. Not every Cloud TTS named voice is available through Google Translate TTS; if you want named Google voices (Standard/WaveNet/Neural2/Studio), this bot would need to switch from `google-tts-api` to the paid Google Cloud Text-to-Speech API.
 
 ## GitHub Action: Build + Push to Docker Hub
 

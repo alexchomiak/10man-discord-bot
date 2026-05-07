@@ -20,6 +20,8 @@ const googleTTS = require('google-tts-api');
 
 const FRAME_BYTES = 3840; // 20ms of 48khz signed 16-bit stereo PCM.
 const DEFAULT_MUSIC_PATH = '/app/data/lobby.mp3';
+const DEFAULT_TTS_LANG = 'en';
+const DEFAULT_TTS_HOST = 'https://translate.google.com';
 const TTS_REQUEST_TIMEOUT_MS = 10_000;
 const VOICE_READY_WAIT_MS = 5_000;
 const MAX_REDIRECTS = 5;
@@ -154,6 +156,9 @@ class AudioManager {
     this.musicPath = config.lobbyMusicPath || DEFAULT_MUSIC_PATH;
     this.debugEnabled = config.audioDebug || process.env.AUDIO_DEBUG === 'true';
     this.voiceSelfDeaf = config.voiceSelfDeaf || process.env.VOICE_SELF_DEAF === 'true';
+    this.ttsLang = config.ttsLang || process.env.GOOGLE_TTS_LANG || DEFAULT_TTS_LANG;
+    this.ttsSlow = config.ttsSlow ?? process.env.GOOGLE_TTS_SLOW === 'true';
+    this.ttsHost = config.ttsHost || process.env.GOOGLE_TTS_HOST || DEFAULT_TTS_HOST;
     this.sessions = new Map();
   }
 
@@ -427,8 +432,15 @@ class AudioManager {
 
   async createSpeechPcm(text, requestId = 'manual') {
     const safeText = text.slice(0, 200);
-    this.info('TTS generating Google audio URL', { requestId, safeTextLength: safeText.length, truncated: text.length > safeText.length });
-    const url = googleTTS.getAudioUrl(safeText, { lang: 'en', slow: false, host: 'https://translate.google.com' });
+    this.info('TTS generating Google audio URL', {
+      requestId,
+      safeTextLength: safeText.length,
+      truncated: text.length > safeText.length,
+      lang: this.ttsLang,
+      slow: this.ttsSlow,
+      host: this.ttsHost
+    });
+    const url = googleTTS.getAudioUrl(safeText, { lang: this.ttsLang, slow: this.ttsSlow, host: this.ttsHost });
     const mp3Start = Date.now();
     const mp3Buffer = await this.fetchBuffer(url, 0, requestId);
     this.info('TTS MP3 downloaded', { requestId, mp3Bytes: mp3Buffer.length, elapsedMs: Date.now() - mp3Start });

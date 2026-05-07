@@ -36,7 +36,10 @@ const config = {
   sqlitePath: process.env.SQLITE_PATH || '/app/data/bot.db',
   lobbyMusicPath: process.env.LOBBY_MUSIC_PATH || '/app/data/lobby.mp3',
   audioDebug: process.env.AUDIO_DEBUG === 'true',
-  voiceSelfDeaf: process.env.VOICE_SELF_DEAF === 'true'
+  voiceSelfDeaf: process.env.VOICE_SELF_DEAF === 'true',
+  ttsLang: process.env.GOOGLE_TTS_LANG || 'en',
+  ttsSlow: process.env.GOOGLE_TTS_SLOW === 'true',
+  ttsHost: process.env.GOOGLE_TTS_HOST || 'https://translate.google.com'
 };
 
 
