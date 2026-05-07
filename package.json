@@ -1,0 +1,24 @@
+{
+  "name": "cs2-10man-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot for dynamic CS2 team drafts with temporary private team voice channels.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/draftManager.js && node --check src/notificationManager.js && node --check src/audioManager.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.18.0",
+    "better-sqlite3": "^12.4.1",
+    "discord.js": "^14.21.0",
+    "dotenv": "^16.6.1",
+    "ffmpeg-static": "^5.2.0",
+    "google-tts-api": "^2.0.2",
+    "libsodium-wrappers": "^0.7.15",
+    "opusscript": "^0.1.1"
+  }
+}
