@@ -56,6 +56,16 @@ async function waitForNarrationThenPause(audioManager, guild, captainName, picke
   await sleep(pauseMs);
 }
 
+async function playCountdownThenAnnounceMatchup(audioManager, guildId, teamNameA, teamNameB) {
+  if (!audioManager || !guildId) {
+    return;
+  }
+
+  audioManager.playFinalCountdown(guildId);
+  await sleep(5_000);
+  await audioManager.speak(guildId, `${teamNameA} will match up against ${teamNameB}. May the best team win.`).catch(() => false);
+}
+
 function createSnakeOrder(totalPicks, firstCaptainId, secondCaptainId) {
   if (totalPicks <= 0) {
     return [];
@@ -346,10 +356,7 @@ class DraftManager {
       await waitForNarrationThenPause(this.audioManager, guild, picker, picked, nextPicker);
     }
 
-    if (this.audioManager && guild) {
-      await this.audioManager.speak(guild.id, `${teamNameA} will match up against ${teamNameB}. May the best team win.`).catch(() => false);
-      this.audioManager.playFinalCountdown(guild.id);
-    }
+    await playCountdownThenAnnounceMatchup(this.audioManager, guild?.id, teamNameA, teamNameB);
 
     const mockSessionId = `${guild?.id || interaction.id}-mock-${Date.now()}`;
     if (guild) {
@@ -659,9 +666,13 @@ class DraftManager {
     });
     session.readyMessageId = readyMessage.id;
 
-    if (this.audioManager && session.matchupNames) {
-      await this.audioManager.speak(interaction.guild.id, `${session.matchupNames.teamNameA} will match up against ${session.matchupNames.teamNameB}. May the best team win.`).catch(() => false);
-      this.audioManager.playFinalCountdown(interaction.guild.id);
+    if (session.matchupNames) {
+      await playCountdownThenAnnounceMatchup(
+        this.audioManager,
+        interaction.guild.id,
+        session.matchupNames.teamNameA,
+        session.matchupNames.teamNameB
+      );
     }
   }
 
