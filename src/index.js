@@ -34,7 +34,8 @@ const config = {
   notificationRoleId: process.env.NOTIFICATION_ROLE_ID || null,
   notificationTimeCst: process.env.NOTIFICATION_TIME_CST || '18:00',
   sqlitePath: process.env.SQLITE_PATH || '/app/data/bot.db',
-  lobbyMusicPath: process.env.LOBBY_MUSIC_PATH || '/app/data/lobby.mp3'
+  lobbyMusicPath: process.env.LOBBY_MUSIC_PATH || '/app/data/lobby.mp3',
+  audioDebug: process.env.AUDIO_DEBUG === 'true'
 };
 
 function audioFailureMessage(error) {

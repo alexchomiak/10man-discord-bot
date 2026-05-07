@@ -43,6 +43,21 @@ function isMissingOpusEncoderError(error) {
     && details.includes("Cannot find module 'opusscript'");
 }
 
+function summarizeError(error) {
+  return {
+    name: error?.name,
+    code: error?.code,
+    message: error?.message,
+    causeName: error?.cause?.name,
+    causeCode: error?.cause?.code,
+    causeMessage: error?.cause?.message
+  };
+}
+
+function pcmDurationMs(byteLength) {
+  return Math.round(byteLength / FRAME_BYTES * 20);
+}
+
 function readBytes(queue, size) {
   const output = Buffer.alloc(size);
   let offset = 0;
@@ -99,6 +114,18 @@ class MixerStream extends Readable {
     }
   }
 
+  queueStats() {
+    const musicBytes = this.musicQueue.reduce((total, chunk) => total + chunk.length, 0);
+    const speechBytes = this.speechQueue.reduce((total, chunk) => total + chunk.length, 0);
+    return {
+      musicChunks: this.musicQueue.length,
+      musicBytes,
+      speechChunks: this.speechQueue.length,
+      speechBytes,
+      speechQueuedMs: pcmDurationMs(speechBytes)
+    };
+  }
+
   pushFrame() {
     if (this.destroyed) {
       return;
@@ -118,7 +145,31 @@ class MixerStream extends Readable {
 class AudioManager {
   constructor(config = {}) {
     this.musicPath = config.lobbyMusicPath || DEFAULT_MUSIC_PATH;
+    this.debugEnabled = config.audioDebug || process.env.AUDIO_DEBUG === 'true';
     this.sessions = new Map();
+  }
+
+  log(level, message, details = null) {
+    const suffix = details ? ` ${JSON.stringify(details)}` : '';
+    console[level](`[audio] ${message}${suffix}`);
+  }
+
+  debug(message, details = null) {
+    if (this.debugEnabled) {
+      this.log('debug', message, details);
+    }
+  }
+
+  info(message, details = null) {
+    this.log('info', message, details);
+  }
+
+  warn(message, details = null) {
+    this.log('warn', message, details);
+  }
+
+  error(message, details = null) {
+    this.log('error', message, details);
   }
 
   hasMusicFile() {
@@ -127,9 +178,11 @@ class AudioManager {
 
   async join(channel) {
     const guildId = channel.guild.id;
+    this.info('join requested', { guildId, channelId: channel.id, channelName: channel.name });
     const existing = this.sessions.get(guildId);
     if (existing) {
       if (existing.connection.state.status === VoiceConnectionStatus.Destroyed) {
+        this.warn('existing voice session was destroyed; creating a new one', { guildId, channelId: existing.channelId });
         this.stop(guildId);
       } else {
         if (existing.channelId !== channel.id) {
@@ -137,6 +190,13 @@ class AudioManager {
           existing.channelId = channel.id;
         }
 
+        this.info('reusing existing voice session', {
+          guildId,
+          channelId: existing.channelId,
+          connectionStatus: existing.connection.state.status,
+          playerStatus: existing.player.state.status,
+          queue: existing.mixer.queueStats()
+        });
         this.waitForReadyOrContinue(guildId, existing).catch(() => false);
         return existing;
       }
@@ -161,13 +221,22 @@ class AudioManager {
 
     this.attachSessionHandlers(guildId, session);
     this.sessions.set(guildId, session);
+    this.info('created voice session', { guildId, channelId: channel.id, connectionStatus: connection.state.status });
 
     try {
       const resource = createAudioResource(mixer, { inputType: StreamType.Raw });
       player.play(resource);
-      connection.subscribe(player);
+      const subscription = connection.subscribe(player);
+      this.info('audio resource subscribed', {
+        guildId,
+        channelId: channel.id,
+        hasSubscription: Boolean(subscription),
+        playerStatus: player.state.status,
+        connectionStatus: connection.state.status
+      });
     } catch (error) {
       this.stop(guildId);
+      this.error('voice audio setup failed', { guildId, channelId: channel.id, error: summarizeError(error) });
       if (isMissingOpusEncoderError(error)) {
         throw toAudioError(
           'Discord voice needs an Opus encoder. Rebuild/redeploy the Docker image so the opusscript dependency is installed, then try again.',
@@ -194,16 +263,21 @@ class AudioManager {
       return true;
     } catch (error) {
       const reason = error?.code || error?.name || 'unknown';
-      console.warn(
-        `Voice connection for guild ${guildId} did not report Ready within ${VOICE_READY_WAIT_MS}ms (${reason}); keeping the session alive because Discord may still show the bot in-channel.`
+      this.warn(
+        `voice connection did not report Ready within ${VOICE_READY_WAIT_MS}ms; keeping session alive`,
+        { guildId, reason, connectionStatus: session.connection.state.status, playerStatus: session.player.state.status, queue: session.mixer.queueStats() }
       );
       return false;
     }
   }
 
   attachSessionHandlers(guildId, session) {
+    session.connection.on('stateChange', (oldState, newState) => {
+      this.info('voice connection state changed', { guildId, from: oldState.status, to: newState.status });
+    });
+
     session.connection.on('error', (error) => {
-      console.error(`Voice connection error in guild ${guildId}:`, error);
+      this.error('voice connection error', { guildId, error: summarizeError(error) });
     });
 
     session.connection.on(VoiceConnectionStatus.Disconnected, async () => {
@@ -213,22 +287,32 @@ class AudioManager {
           entersState(session.connection, VoiceConnectionStatus.Connecting, 5_000)
         ]);
       } catch (error) {
-        console.warn(`Voice connection disconnected in guild ${guildId}; cleaning up session.`, error);
+        this.warn('voice connection disconnected and did not reconnect; cleaning up session', { guildId, error: summarizeError(error) });
         this.stop(guildId);
       }
     });
 
+    session.player.on('stateChange', (oldState, newState) => {
+      this.info('audio player state changed', { guildId, from: oldState.status, to: newState.status });
+    });
+
     session.player.on('error', (error) => {
-      console.error(`Audio player error in guild ${guildId}:`, error);
+      this.error('audio player error', { guildId, error: summarizeError(error) });
     });
 
     session.mixer.on('error', (error) => {
-      console.error(`Audio mixer error in guild ${guildId}:`, error);
+      this.error('audio mixer error', { guildId, error: summarizeError(error) });
     });
   }
 
   startMusic(session) {
-    if (!this.hasMusicFile() || !ffmpegPath) {
+    if (!this.hasMusicFile()) {
+      this.info('lobby music file missing; music disabled', { musicPath: this.musicPath });
+      return;
+    }
+
+    if (!ffmpegPath) {
+      this.warn('ffmpeg binary missing; lobby music disabled', { musicPath: this.musicPath });
       return;
     }
 
@@ -243,17 +327,19 @@ class AudioManager {
       'pipe:1'
     ]);
 
+    this.info('starting lobby music ffmpeg', { musicPath: this.musicPath });
     proc.stdout.on('data', (chunk) => session.mixer.addMusic(chunk));
     proc.stderr.on('data', (chunk) => {
-      console.warn(`Lobby music ffmpeg warning: ${chunk.toString().trim()}`);
+      this.warn('lobby music ffmpeg stderr', { message: chunk.toString().trim() });
     });
     proc.on('error', (error) => {
-      console.error('Lobby music ffmpeg failed to start:', error);
+      this.error('lobby music ffmpeg failed to start', { error: summarizeError(error) });
       if (session.musicProcess === proc) {
         session.musicProcess = null;
       }
     });
-    proc.on('close', () => {
+    proc.on('close', (code, signal) => {
+      this.info('lobby music ffmpeg closed', { code, signal });
       if (session.musicProcess === proc) {
         session.musicProcess = null;
       }
@@ -264,15 +350,36 @@ class AudioManager {
   async speak(guildId, text) {
     const session = this.sessions.get(guildId);
     if (!session) {
+      this.warn('TTS requested without an active voice session', { guildId, textLength: text.length });
       return false;
     }
 
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    this.info('TTS request received', {
+      guildId,
+      requestId,
+      textLength: text.length,
+      textPreview: text.slice(0, 60),
+      connectionStatus: session.connection.state.status,
+      playerStatus: session.player.state.status,
+      queueBefore: session.mixer.queueStats()
+    });
+
     try {
-      const pcm = await this.createSpeechPcm(text);
+      const pcm = await this.createSpeechPcm(text, requestId);
       session.mixer.addSpeech(pcm);
+      this.info('TTS PCM queued', {
+        guildId,
+        requestId,
+        pcmBytes: pcm.length,
+        pcmDurationMs: pcmDurationMs(pcm.length),
+        queueAfter: session.mixer.queueStats(),
+        connectionStatus: session.connection.state.status,
+        playerStatus: session.player.state.status
+      });
       return true;
     } catch (error) {
-      console.error(`TTS failed in guild ${guildId}:`, error);
+      this.error('TTS failed', { guildId, requestId, error: summarizeError(error) });
       return false;
     }
   }
@@ -284,18 +391,26 @@ class AudioManager {
     await this.speak(guild.id, message).catch(() => false);
   }
 
-  async createSpeechPcm(text) {
+  async createSpeechPcm(text, requestId = 'manual') {
     const safeText = text.slice(0, 200);
+    this.info('TTS generating Google audio URL', { requestId, safeTextLength: safeText.length, truncated: text.length > safeText.length });
     const url = googleTTS.getAudioUrl(safeText, { lang: 'en', slow: false, host: 'https://translate.google.com' });
-    const mp3Buffer = await this.fetchBuffer(url);
-    return this.decodeMp3ToPcm(mp3Buffer);
+    const mp3Start = Date.now();
+    const mp3Buffer = await this.fetchBuffer(url, 0, requestId);
+    this.info('TTS MP3 downloaded', { requestId, mp3Bytes: mp3Buffer.length, elapsedMs: Date.now() - mp3Start });
+    const decodeStart = Date.now();
+    const pcmBuffer = await this.decodeMp3ToPcm(mp3Buffer, requestId);
+    this.info('TTS MP3 decoded to PCM', { requestId, pcmBytes: pcmBuffer.length, pcmDurationMs: pcmDurationMs(pcmBuffer.length), elapsedMs: Date.now() - decodeStart });
+    return pcmBuffer;
   }
 
-  fetchBuffer(url, redirectCount = 0) {
+  fetchBuffer(url, redirectCount = 0, requestId = 'manual') {
     return new Promise((resolve, reject) => {
       const parsedUrl = new URL(url);
       const client = parsedUrl.protocol === 'http:' ? http : https;
+      this.debug('TTS HTTP request starting', { requestId, host: parsedUrl.host, path: parsedUrl.pathname, redirectCount });
       const request = client.get(parsedUrl, (response) => {
+        this.info('TTS HTTP response', { requestId, statusCode: response.statusCode, contentType: response.headers['content-type'], contentLength: response.headers['content-length'] || null, redirectCount });
         const redirectLocation = response.headers.location;
         if ([301, 302, 303, 307, 308].includes(response.statusCode) && redirectLocation) {
           response.resume();
@@ -305,7 +420,8 @@ class AudioManager {
           }
 
           const nextUrl = new URL(redirectLocation, parsedUrl).toString();
-          this.fetchBuffer(nextUrl, redirectCount + 1).then(resolve, reject);
+          this.info('TTS HTTP redirect', { requestId, fromHost: parsedUrl.host, toHost: new URL(nextUrl).host, redirectCount: redirectCount + 1 });
+          this.fetchBuffer(nextUrl, redirectCount + 1, requestId).then(resolve, reject);
           return;
         }
 
@@ -318,7 +434,11 @@ class AudioManager {
         const chunks = [];
         response.on('data', (chunk) => chunks.push(chunk));
         response.on('error', (error) => reject(toAudioError('TTS response stream failed.', 'TTS_STREAM_ERROR', error)));
-        response.on('end', () => resolve(Buffer.concat(chunks)));
+        response.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          this.debug('TTS HTTP response complete', { requestId, bytes: buffer.length, chunks: chunks.length });
+          resolve(buffer);
+        });
       });
 
       request.setTimeout(TTS_REQUEST_TIMEOUT_MS, () => {
@@ -328,13 +448,14 @@ class AudioManager {
     });
   }
 
-  decodeMp3ToPcm(mp3Buffer) {
+  decodeMp3ToPcm(mp3Buffer, requestId = 'manual') {
     return new Promise((resolve, reject) => {
       if (!ffmpegPath) {
         reject(new Error('ffmpeg-static did not provide an ffmpeg binary'));
         return;
       }
 
+      this.info('TTS ffmpeg decode starting', { requestId, mp3Bytes: mp3Buffer.length, ffmpegPath });
       const proc = spawn(ffmpegPath, [
         '-hide_banner',
         '-loglevel', 'error',
@@ -352,7 +473,9 @@ class AudioManager {
       proc.on('error', (error) => reject(toAudioError('ffmpeg failed to start for TTS.', 'TTS_FFMPEG_START_ERROR', error)));
       proc.on('close', (code) => {
         if (code === 0) {
-          resolve(Buffer.concat(chunks));
+          const buffer = Buffer.concat(chunks);
+          this.debug('TTS ffmpeg decode complete', { requestId, pcmBytes: buffer.length, chunks: chunks.length });
+          resolve(buffer);
         } else {
           reject(toAudioError(`ffmpeg exited with code ${code}: ${errors.join('').trim()}`, 'TTS_FFMPEG_EXIT'));
         }
@@ -363,6 +486,7 @@ class AudioManager {
   }
 
   stop(guildId) {
+    this.info('stopping voice session', { guildId });
     const session = this.sessions.get(guildId);
     if (!session) {
       const existing = getVoiceConnection(guildId);

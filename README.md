@@ -58,6 +58,7 @@ Copy `.env.example` to `.env`:
 - `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)
 - `BUILD_DATE` (optional, default `unknown`; set automatically in Docker CI to commit date)
 - `LOBBY_MUSIC_PATH` (optional, default `/app/data/lobby.mp3`; MP3 file for draft lobby music)
+- `AUDIO_DEBUG` (optional, default `false`; set `true` for extra verbose voice/TTS diagnostics including HTTP and ffmpeg byte counts)
 
 Notification scheduler is restart-safe: on startup, if today's daily message already exists, the bot reuses it and schedules the next run instead of reposting immediately.
 When the daily message rolls over, previous-day message metadata and interested rows are removed from SQLite (no unbounded growth).
@@ -173,4 +174,4 @@ docker run -d \
 - If mock voice says it is not in server context, the command is being executed outside a guild context (or stale command registration). Re-register commands and run from a server text channel.
 - If new/updated commands do not appear, set `DISCORD_GUILD_ID` and restart bot; global command updates can take up to ~1 hour to propagate.
 - If commands appear twice, you likely have both global and guild registrations. Keep `DISCORD_GUILD_ID` set and leave `KEEP_GLOBAL_COMMANDS` unset/`false` so startup clears globals.
-- If voice tests join the channel but logs say the connection did not report `Ready`, the bot now keeps the voice session alive and queues audio instead of disconnecting. If audio still never plays, verify the host/container can make outbound UDP connections to Discord voice servers and that the bot has **Speak** permission in the voice channel.
+- If voice tests join the channel but logs say the connection did not report `Ready`, the bot now keeps the voice session alive and queues audio instead of disconnecting. If audio still never plays, verify the host/container can make outbound UDP connections to Discord voice servers and that the bot has **Speak** permission in the voice channel. Set `AUDIO_DEBUG=true` to log each TTS step (request received, Google TTS HTTP response, MP3 byte count, ffmpeg decode byte count, PCM queue length, voice connection status, and audio player status).
