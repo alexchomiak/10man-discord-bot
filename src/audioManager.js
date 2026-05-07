@@ -20,6 +20,7 @@ const googleTTS = require('google-tts-api');
 const FRAME_BYTES = 3840; // 20ms of 48khz signed 16-bit stereo PCM.
 const DEFAULT_MUSIC_PATH = '/app/data/lobby.mp3';
 const TTS_REQUEST_TIMEOUT_MS = 10_000;
+const VOICE_READY_WAIT_MS = 5_000;
 const MAX_REDIRECTS = 5;
 
 class AudioManagerError extends Error {
@@ -128,21 +129,16 @@ class AudioManager {
     const guildId = channel.guild.id;
     const existing = this.sessions.get(guildId);
     if (existing) {
-      if (existing.channelId !== channel.id) {
-        existing.connection.rejoin({ channelId: channel.id, selfDeaf: false });
-        existing.channelId = channel.id;
-      }
-
-      if (existing.connection.state.status === VoiceConnectionStatus.Ready) {
-        return existing;
-      }
-
-      try {
-        await entersState(existing.connection, VoiceConnectionStatus.Ready, 15_000);
-        return existing;
-      } catch (error) {
-        console.warn(`Discarding stale voice connection for guild ${guildId}:`, error);
+      if (existing.connection.state.status === VoiceConnectionStatus.Destroyed) {
         this.stop(guildId);
+      } else {
+        if (existing.channelId !== channel.id) {
+          existing.connection.rejoin({ channelId: channel.id, selfDeaf: false });
+          existing.channelId = channel.id;
+        }
+
+        this.waitForReadyOrContinue(guildId, existing).catch(() => false);
+        return existing;
       }
     }
 
@@ -170,7 +166,6 @@ class AudioManager {
       const resource = createAudioResource(mixer, { inputType: StreamType.Raw });
       player.play(resource);
       connection.subscribe(player);
-      await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
     } catch (error) {
       this.stop(guildId);
       if (isMissingOpusEncoderError(error)) {
@@ -181,15 +176,29 @@ class AudioManager {
         );
       }
 
-      throw toAudioError(
-        'I could not connect to your voice channel within 20 seconds. Check that I can View/Connect/Speak there, then try again.',
-        'VOICE_CONNECT_TIMEOUT',
-        error
-      );
+      throw toAudioError('Discord voice audio setup failed before playback could start.', 'VOICE_AUDIO_SETUP_FAILED', error);
     }
 
     this.startMusic(session);
+    await this.waitForReadyOrContinue(guildId, session);
     return session;
+  }
+
+  async waitForReadyOrContinue(guildId, session) {
+    if (session.connection.state.status === VoiceConnectionStatus.Ready) {
+      return true;
+    }
+
+    try {
+      await entersState(session.connection, VoiceConnectionStatus.Ready, VOICE_READY_WAIT_MS);
+      return true;
+    } catch (error) {
+      const reason = error?.code || error?.name || 'unknown';
+      console.warn(
+        `Voice connection for guild ${guildId} did not report Ready within ${VOICE_READY_WAIT_MS}ms (${reason}); keeping the session alive because Discord may still show the bot in-channel.`
+      );
+      return false;
+    }
   }
 
   attachSessionHandlers(guildId, session) {

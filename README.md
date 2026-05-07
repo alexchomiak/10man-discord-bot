@@ -173,3 +173,4 @@ docker run -d \
 - If mock voice says it is not in server context, the command is being executed outside a guild context (or stale command registration). Re-register commands and run from a server text channel.
 - If new/updated commands do not appear, set `DISCORD_GUILD_ID` and restart bot; global command updates can take up to ~1 hour to propagate.
 - If commands appear twice, you likely have both global and guild registrations. Keep `DISCORD_GUILD_ID` set and leave `KEEP_GLOBAL_COMMANDS` unset/`false` so startup clears globals.
+- If voice tests join the channel but logs say the connection did not report `Ready`, the bot now keeps the voice session alive and queues audio instead of disconnecting. If audio still never plays, verify the host/container can make outbound UDP connections to Discord voice servers and that the bot has **Speak** permission in the voice channel.

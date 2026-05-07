@@ -257,7 +257,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.editReply({
         content: audioManager.hasMusicFile()
-          ? 'Joined voice and started lobby music.'
+          ? 'Joined voice and started/queued lobby music.'
           : `Joined voice, but no lobby music file exists at \`${config.lobbyMusicPath}\`.`
       });
       return;
@@ -284,7 +284,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const spoke = await audioManager.speak(interaction.guildId, message);
       await interaction.editReply({
         content: spoke
-          ? 'Sent TTS test to voice.'
+          ? 'Queued TTS test to voice.'
           : 'I joined voice, but TTS generation or playback failed. Check the bot logs for the detailed TTS error.'
       });
       return;
