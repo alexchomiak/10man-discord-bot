@@ -18,6 +18,7 @@
     "dotenv": "^16.6.1",
     "ffmpeg-static": "^5.2.0",
     "google-tts-api": "^2.0.2",
-    "libsodium-wrappers": "^0.7.15"
+    "libsodium-wrappers": "^0.7.15",
+    "opusscript": "^0.1.1"
   }
 }

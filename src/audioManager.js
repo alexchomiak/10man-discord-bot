@@ -35,6 +35,13 @@ function toAudioError(message, code, cause) {
   return new AudioManagerError(message, { code, cause });
 }
 
+function isMissingOpusEncoderError(error) {
+  const details = [error?.message, error?.stack, error?.cause?.message, error?.cause?.stack].filter(Boolean).join('\n');
+  return details.includes("Cannot find module '@discordjs/opus'")
+    && details.includes("Cannot find module 'node-opus'")
+    && details.includes("Cannot find module 'opusscript'");
+}
+
 function readBytes(queue, size) {
   const output = Buffer.alloc(size);
   let offset = 0;
@@ -148,7 +155,6 @@ class AudioManager {
 
     const mixer = new MixerStream();
     const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
-    const resource = createAudioResource(mixer, { inputType: StreamType.Raw });
     const session = {
       channelId: channel.id,
       connection,
@@ -161,11 +167,20 @@ class AudioManager {
     this.sessions.set(guildId, session);
 
     try {
+      const resource = createAudioResource(mixer, { inputType: StreamType.Raw });
       player.play(resource);
       connection.subscribe(player);
       await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
     } catch (error) {
       this.stop(guildId);
+      if (isMissingOpusEncoderError(error)) {
+        throw toAudioError(
+          'Discord voice needs an Opus encoder. Rebuild/redeploy the Docker image so the opusscript dependency is installed, then try again.',
+          'MISSING_OPUS_ENCODER',
+          error
+        );
+      }
+
       throw toAudioError(
         'I could not connect to your voice channel within 20 seconds. Check that I can View/Connect/Speak there, then try again.',
         'VOICE_CONNECT_TIMEOUT',

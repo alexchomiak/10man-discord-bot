@@ -32,6 +32,7 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
 ## Requirements
 
 - Node.js 20+
+- The bundled Docker image installs `opusscript`, a JavaScript Opus encoder required by `@discordjs/voice` for voice playback/TTS.
 - Discord bot with these permissions:
   - Manage Roles
   - Manage Channels
@@ -110,7 +111,7 @@ docker run -d \
 
 SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PATH`).
 
-Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music.
+Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music` and `/test-tts` do not require a native Windows ffmpeg/Opus setup on your host.
 
 ## GitHub Action: Build + Push to Docker Hub
 
