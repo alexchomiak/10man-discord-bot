@@ -39,6 +39,33 @@ const config = {
   voiceSelfDeaf: process.env.VOICE_SELF_DEAF === 'true'
 };
 
+
+function logVoiceGatewayPacket(packet, botUserId) {
+  if (!config.audioDebug) {
+    return;
+  }
+
+  if (packet.t === 'VOICE_STATE_UPDATE' && packet.d?.user_id === botUserId) {
+    console.debug('[audio] raw VOICE_STATE_UPDATE for bot', JSON.stringify({
+      guildId: packet.d.guild_id,
+      channelId: packet.d.channel_id,
+      sessionIdPresent: Boolean(packet.d.session_id),
+      selfDeaf: packet.d.self_deaf,
+      selfMute: packet.d.self_mute,
+      deaf: packet.d.deaf,
+      mute: packet.d.mute
+    }));
+  }
+
+  if (packet.t === 'VOICE_SERVER_UPDATE') {
+    console.debug('[audio] raw VOICE_SERVER_UPDATE', JSON.stringify({
+      guildId: packet.d?.guild_id,
+      endpoint: packet.d?.endpoint || null,
+      tokenPresent: Boolean(packet.d?.token)
+    }));
+  }
+}
+
 function audioFailureMessage(error) {
   if (error?.name === 'AudioManagerError') {
     return error.message;
@@ -355,6 +382,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ content: 'Something went wrong handling that interaction.', flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   }
+});
+
+
+client.on(Events.Raw, (packet) => {
+  logVoiceGatewayPacket(packet, client.user?.id);
 });
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {

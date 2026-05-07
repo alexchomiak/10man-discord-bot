@@ -39,8 +39,12 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
   - Manage Channels
   - Move Members
   - Connect / View Channels
-- Discord intent requirement:
-  - Enable **Server Members Intent** in Discord Developer Portal for this bot
+- Discord install scopes/permissions:
+  - Guild Install should include `bot` and `applications.commands`.
+  - Administrator is sufficient for channel permissions, but you can also explicitly grant Manage Roles, Manage Channels, Move Members, Connect, View Channels, and Speak.
+- Discord intent requirements:
+  - The code requests `GuildVoiceStates`; this is required for Discord voice connections and is not replaced by Administrator permissions.
+  - Enable **Server Members Intent** in Discord Developer Portal for draft player/member lookup.
 
 ## Environment Variables
 
@@ -176,4 +180,4 @@ docker run -d \
 - If mock voice says it is not in server context, the command is being executed outside a guild context (or stale command registration). Re-register commands and run from a server text channel.
 - If new/updated commands do not appear, set `DISCORD_GUILD_ID` and restart bot; global command updates can take up to ~1 hour to propagate.
 - If commands appear twice, you likely have both global and guild registrations. Keep `DISCORD_GUILD_ID` set and leave `KEEP_GLOBAL_COMMANDS` unset/`false` so startup clears globals.
-- If voice tests join the channel but logs say the connection did not report `Ready`, the bot now keeps the voice session alive and queues audio instead of disconnecting. If audio still never plays, run `/audio-status`; if the connection is not `ready`, verify the bot has the **GuildVoiceStates** gateway intent in code, **Speak** permission in the channel, and that the host/container can make outbound UDP connections to Discord voice servers. Admin permissions do not replace required gateway events or network connectivity. The bot no longer joins self-deafened by default; set `VOICE_SELF_DEAF=true` only if you want that music-bot behavior. Set `AUDIO_DEBUG=true` to log each TTS step (request received, Google TTS HTTP response, MP3 byte count, ffmpeg decode byte count, PCM queue length, voice connection status, and audio player status). TTS speech is now held in the queue until Discord voice reaches `Ready`; if it stays `signalling`/`connecting`, the queue will remain non-zero and the issue is the voice transport rather than Google TTS or ffmpeg.
+- If voice tests join the channel but logs say the connection did not report `Ready`, the bot now keeps the voice session alive and queues audio instead of disconnecting. If audio still never plays, run `/audio-status`; if the connection is not `ready`, verify the bot has the **GuildVoiceStates** gateway intent in code, **Speak** permission in the channel, and that the host/container can make outbound UDP connections to Discord voice servers. Admin permissions do not replace required gateway events or network connectivity. The bot no longer joins self-deafened by default; set `VOICE_SELF_DEAF=true` only if you want that music-bot behavior. With `AUDIO_DEBUG=true`, the bot also logs raw `VOICE_STATE_UPDATE` for itself and `VOICE_SERVER_UPDATE`; both are required before `@discordjs/voice` can leave `signalling`. Set `AUDIO_DEBUG=true` to log each TTS step (request received, Google TTS HTTP response, MP3 byte count, ffmpeg decode byte count, PCM queue length, voice connection status, and audio player status). TTS speech is now held in the queue until Discord voice reaches `Ready`; if it stays `signalling`/`connecting`, the queue will remain non-zero and the issue is the voice transport rather than Google TTS or ffmpeg.
