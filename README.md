@@ -63,7 +63,8 @@ Copy `.env.example` to `.env`:
 - `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)
 - `BUILD_DATE` (optional, default `unknown`; set automatically in Docker CI to commit date)
 - `LOBBY_MUSIC_PATH` (optional, default `/app/data/lobby.mp3`; MP3 file for draft lobby music)
-- `LOBBY_MUSIC_VOLUME` (optional, default `0.6`; lobby music volume from `0.0` to `1.0`)
+- `LOBBY_MUSIC_VOLUME` (optional, default `0.35`; normal music volume. Accepts ratios like `0.25`, percentages like `25%`, or whole-number percentages like `25`.)
+- `TTS_MUSIC_DUCK_VOLUME` (optional, default `0.12`; temporary music volume while TTS is speaking. Accepts the same formats as `LOBBY_MUSIC_VOLUME`.)
 - `AUDIO_DEBUG` (optional, default `false`; set `true` for extra verbose voice/TTS diagnostics including HTTP and ffmpeg byte counts)
 - `VOICE_SELF_DEAF` (optional, default `false`; set `true` if you want the bot to join self-deafened like many music bots)
 - `GOOGLE_TTS_LANG` (optional, default `en`; Google Translate TTS language/accent code such as `en`, `en-GB`, `en-AU`, `es`, `fr`, `de`, or `ja`)
@@ -124,12 +125,12 @@ docker run -d \
 
 SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PATH`).
 
-Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. Put `final_countdown.mp3` and `fight.mp3` in the same directory as `lobby.mp3` to enable the post-draft and start-match music cues; all three tracks obey `LOBBY_MUSIC_VOLUME`. If `fight.mp3` is missing, the bot falls back to TTS saying `fight! fight! fight!`. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music` and `/test-tts` do not require a native Windows ffmpeg/Opus setup on your host.
+Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. Put `final_countdown.mp3` and `fight.mp3` in the same directory as `lobby.mp3` to enable the post-draft and start-match music cues; all three tracks obey `LOBBY_MUSIC_VOLUME`, and automatically duck to `TTS_MUSIC_DUCK_VOLUME` while TTS is speaking. If `fight.mp3` is missing, the bot falls back to TTS saying `fight! fight! fight!`. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music` and `/test-tts` do not require a native Windows ffmpeg/Opus setup on your host.
 
 
 ## Audio smoothness tuning
 
-The bot mixes raw PCM audio before handing it to Discord voice. Lobby, final-countdown, and fight music default to 60% volume (`LOBBY_MUSIC_VOLUME=0.6`). For lobby music, it now throttles ffmpeg with `-re`, prebuffers decoded PCM before releasing music frames, respects stream backpressure, and caps the decoded music queue to avoid unbounded memory/GC spikes. If music still sputters, try increasing `AUDIO_BUFFER_MS` to `1000` or `1500`; this adds startup latency but gives the mixer more room to absorb host or event-loop jitter.
+The bot mixes raw PCM audio before handing it to Discord voice. Lobby, final-countdown, and fight music default to 35% volume (`LOBBY_MUSIC_VOLUME=0.35`) and duck to 12% volume (`TTS_MUSIC_DUCK_VOLUME=0.12`) while TTS is speaking. For lobby music, it now throttles ffmpeg with `-re`, prebuffers decoded PCM before releasing music frames, respects stream backpressure, and caps the decoded music queue to avoid unbounded memory/GC spikes. If music still sputters, try increasing `AUDIO_BUFFER_MS` to `1000` or `1500`; this adds startup latency but gives the mixer more room to absorb host or event-loop jitter.
 
 ## Google TTS voice/language options
 

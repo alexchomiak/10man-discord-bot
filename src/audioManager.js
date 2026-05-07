@@ -28,7 +28,8 @@ const VOICE_READY_WAIT_MS = 5_000;
 const MAX_REDIRECTS = 5;
 const DEFAULT_AUDIO_BUFFER_MS = 500;
 const DEFAULT_AUDIO_QUEUE_MAX_MS = 5_000;
-const DEFAULT_LOBBY_MUSIC_VOLUME = 0.6;
+const DEFAULT_LOBBY_MUSIC_VOLUME = 0.35;
+const DEFAULT_TTS_MUSIC_DUCK_VOLUME = 0.12;
 
 class AudioManagerError extends Error {
   constructor(message, options = {}) {
@@ -87,12 +88,18 @@ function readBytes(queue, size) {
 }
 
 function clampVolume(volume, defaultVolume = DEFAULT_LOBBY_MUSIC_VOLUME) {
-  const parsed = Number.parseFloat(volume);
+  if (volume === null || volume === undefined || volume === '') {
+    return defaultVolume;
+  }
+
+  const normalized = String(volume).trim();
+  const parsed = Number.parseFloat(normalized);
   if (!Number.isFinite(parsed)) {
     return defaultVolume;
   }
 
-  return Math.max(0, Math.min(1, parsed));
+  const ratio = normalized.endsWith('%') || parsed > 1 ? parsed / 100 : parsed;
+  return Math.max(0, Math.min(1, ratio));
 }
 
 function mixPcm(musicFrame, speechFrame, musicVolume = DEFAULT_LOBBY_MUSIC_VOLUME) {
@@ -115,6 +122,7 @@ class MixerStream extends Readable {
     this.speechQueue = [];
     this.speechEnabled = false;
     this.musicVolume = clampVolume(options.musicVolume);
+    this.duckedMusicVolume = clampVolume(options.duckedMusicVolume, DEFAULT_TTS_MUSIC_DUCK_VOLUME);
     this.musicPrebufferBytes = Math.max(FRAME_BYTES, Math.round((options.bufferMs || DEFAULT_AUDIO_BUFFER_MS) / 20) * FRAME_BYTES);
     this.maxMusicBytes = Math.max(this.musicPrebufferBytes, Math.round((options.maxQueueMs || DEFAULT_AUDIO_QUEUE_MAX_MS) / 20) * FRAME_BYTES);
     this.musicBuffered = false;
@@ -160,6 +168,7 @@ class MixerStream extends Readable {
       musicBytes,
       musicBuffered: this.musicBuffered,
       musicVolume: this.musicVolume,
+      duckedMusicVolume: this.duckedMusicVolume,
       musicPrebufferMs: pcmDurationMs(this.musicPrebufferBytes),
       speechChunks: this.speechQueue.length,
       speechBytes,
@@ -209,7 +218,7 @@ class MixerStream extends Readable {
 
   readSpeechFrame() {
     if (!this.speechEnabled) {
-      return Buffer.alloc(FRAME_BYTES);
+      return { frame: Buffer.alloc(FRAME_BYTES), active: false };
     }
 
     const output = Buffer.alloc(FRAME_BYTES);
@@ -230,7 +239,7 @@ class MixerStream extends Readable {
       }
     }
 
-    return output;
+    return { frame: output, active: outputOffset > 0 };
   }
 
   drainSpeechQueue(result = false) {
@@ -246,8 +255,9 @@ class MixerStream extends Readable {
     }
 
     const musicFrame = this.readMusicFrame();
-    const speechFrame = this.readSpeechFrame();
-    const canContinue = this.push(mixPcm(musicFrame, speechFrame, this.musicVolume));
+    const speech = this.readSpeechFrame();
+    const musicVolume = speech.active ? Math.min(this.musicVolume, this.duckedMusicVolume) : this.musicVolume;
+    const canContinue = this.push(mixPcm(musicFrame, speech.frame, musicVolume));
     if (!canContinue) {
       this.nextFrameAt = Date.now() + 20;
     }
@@ -275,6 +285,7 @@ class AudioManager {
     this.audioBufferMs = Number.parseInt(config.audioBufferMs || process.env.AUDIO_BUFFER_MS || DEFAULT_AUDIO_BUFFER_MS, 10);
     this.audioQueueMaxMs = Number.parseInt(config.audioQueueMaxMs || process.env.AUDIO_QUEUE_MAX_MS || DEFAULT_AUDIO_QUEUE_MAX_MS, 10);
     this.lobbyMusicVolume = clampVolume(config.lobbyMusicVolume ?? process.env.LOBBY_MUSIC_VOLUME);
+    this.ttsMusicDuckVolume = clampVolume(config.ttsMusicDuckVolume ?? process.env.TTS_MUSIC_DUCK_VOLUME, DEFAULT_TTS_MUSIC_DUCK_VOLUME);
     this.sessions = new Map();
   }
 
@@ -339,7 +350,12 @@ class AudioManager {
       debug: this.debugEnabled
     });
 
-    const mixer = new MixerStream({ bufferMs: this.audioBufferMs, maxQueueMs: this.audioQueueMaxMs, musicVolume: this.lobbyMusicVolume });
+    const mixer = new MixerStream({
+      bufferMs: this.audioBufferMs,
+      maxQueueMs: this.audioQueueMaxMs,
+      musicVolume: this.lobbyMusicVolume,
+      duckedMusicVolume: this.ttsMusicDuckVolume
+    });
     const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
     const session = {
       channelId: channel.id,
@@ -365,6 +381,7 @@ class AudioManager {
         bufferMs: this.audioBufferMs,
         queueMaxMs: this.audioQueueMaxMs,
         lobbyMusicVolume: this.lobbyMusicVolume,
+        ttsMusicDuckVolume: this.ttsMusicDuckVolume,
         playerStatus: player.state.status,
         connectionStatus: connection.state.status
       });
@@ -491,7 +508,12 @@ class AudioManager {
       'pipe:1'
     ]);
 
-    this.info('starting music ffmpeg', { musicPath: trackPath, volume: this.lobbyMusicVolume, loop: options.loop !== false });
+    this.info('starting music ffmpeg', {
+      musicPath: trackPath,
+      volume: this.lobbyMusicVolume,
+      duckedVolumeDuringTts: this.ttsMusicDuckVolume,
+      loop: options.loop !== false
+    });
     proc.stdout.on('data', (chunk) => session.mixer.addMusic(chunk));
     proc.stderr.on('data', (chunk) => {
       this.warn('lobby music ffmpeg stderr', { message: chunk.toString().trim() });

@@ -42,7 +42,8 @@ const config = {
   ttsHost: process.env.GOOGLE_TTS_HOST || 'https://translate.google.com',
   audioBufferMs: process.env.AUDIO_BUFFER_MS || '500',
   audioQueueMaxMs: process.env.AUDIO_QUEUE_MAX_MS || '5000',
-  lobbyMusicVolume: process.env.LOBBY_MUSIC_VOLUME || '0.6'
+  lobbyMusicVolume: process.env.LOBBY_MUSIC_VOLUME || '0.35',
+  ttsMusicDuckVolume: process.env.TTS_MUSIC_DUCK_VOLUME || '0.12'
 };
 
 
