@@ -66,6 +66,10 @@ function pcmDurationMs(byteLength) {
   return Math.round(byteLength / FRAME_BYTES * 20);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function readBytes(queue, size) {
   const output = Buffer.alloc(size);
   let offset = 0;
@@ -477,6 +481,7 @@ class AudioManager {
       session.musicProcess.kill('SIGKILL');
       session.musicProcess = null;
     }
+    session.musicDonePromise = null;
     session.mixer.clearMusic?.();
   }
 
@@ -518,17 +523,23 @@ class AudioManager {
     proc.stderr.on('data', (chunk) => {
       this.warn('lobby music ffmpeg stderr', { message: chunk.toString().trim() });
     });
-    proc.on('error', (error) => {
-      this.error('lobby music ffmpeg failed to start', { error: summarizeError(error) });
-      if (session.musicProcess === proc) {
-        session.musicProcess = null;
-      }
-    });
-    proc.on('close', (code, signal) => {
-      this.info('lobby music ffmpeg closed', { code, signal });
-      if (session.musicProcess === proc) {
-        session.musicProcess = null;
-      }
+    session.musicDonePromise = new Promise((resolve) => {
+      proc.on('error', (error) => {
+        this.error('lobby music ffmpeg failed to start', { error: summarizeError(error) });
+        if (session.musicProcess === proc) {
+          session.musicProcess = null;
+          session.musicDonePromise = null;
+        }
+        resolve(false);
+      });
+      proc.on('close', (code, signal) => {
+        this.info('lobby music ffmpeg closed', { code, signal });
+        if (session.musicProcess === proc) {
+          session.musicProcess = null;
+          session.musicDonePromise = null;
+        }
+        resolve(code === 0);
+      });
     });
     session.musicProcess = proc;
     return true;
@@ -545,11 +556,16 @@ class AudioManager {
   }
 
   async playFight(guildId) {
+    const session = this.sessions.get(guildId);
     const played = this.playTrack(guildId, 'fight.mp3', { loop: false, replace: true });
     if (!played) {
       await this.speak(guildId, 'fight! fight! fight!');
+      return false;
     }
-    return played;
+
+    await session?.musicDonePromise?.catch(() => false);
+    await sleep(this.audioBufferMs);
+    return true;
   }
 
   playFinalCountdown(guildId) {

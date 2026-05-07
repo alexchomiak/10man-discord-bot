@@ -66,6 +66,16 @@ async function playCountdownThenAnnounceMatchup(audioManager, guildId, teamNameA
   await audioManager.speak(guildId, `${teamNameA} will match up against ${teamNameB}. May the best team win.`).catch(() => false);
 }
 
+async function playFightThenPause(audioManager, guildId, pauseMs = 1_000) {
+  if (audioManager && guildId) {
+    await audioManager.playFight(guildId).catch((error) => {
+      console.error('Failed to play fight start audio:', error);
+      return false;
+    });
+  }
+  await sleep(pauseMs);
+}
+
 function createSnakeOrder(totalPicks, firstCaptainId, secondCaptainId) {
   if (totalPicks <= 0) {
     return [];
@@ -800,11 +810,9 @@ class DraftManager {
     }
 
     await interaction.deferUpdate();
-    await interaction.channel.send({ content: '🥊 Starting mock match audio...' }).catch(() => {});
+    await interaction.channel.send({ content: '🥊 Playing fight cue before starting mock match...' }).catch(() => {});
+    await playFightThenPause(this.audioManager, session.guildId);
     if (this.audioManager) {
-      await this.audioManager.playFight(session.guildId).catch((error) => {
-        console.error('Failed to play mock fight start audio:', error);
-      });
       setTimeout(() => this.audioManager.stop(session.guildId), 3_000);
     }
     if (session.spawnVoice) {
@@ -827,12 +835,9 @@ class DraftManager {
     }
     session.status = 'starting';
     await interaction.deferUpdate();
+    await interaction.channel.send({ content: '🥊 Playing fight cue before starting team channels...' });
+    await playFightThenPause(this.audioManager, interaction.guild.id);
     await interaction.channel.send({ content: '🚀 Starting team channels and moving players...' });
-    if (this.audioManager) {
-      await this.audioManager.playFight(interaction.guild.id).catch((error) => {
-        console.error('Failed to play fight start audio:', error);
-      });
-    }
     await this.finalizeDraft(interaction, session, config);
     if (this.audioManager) {
       setTimeout(() => this.audioManager.stop(interaction.guild.id), 3_000);
