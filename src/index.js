@@ -113,7 +113,7 @@ const notificationManager = new NotificationManager(client, config);
 
 const teamDraftCommand = new SlashCommandBuilder()
   .setName('team-draft')
-  .setDescription('Start a random-captain snake draft for everyone in your current voice channel.')
+  .setDescription('Start a random-captain team draft for everyone in your current voice channel.')
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addIntegerOption((option) =>
@@ -131,6 +131,15 @@ const teamDraftCommand = new SlashCommandBuilder()
     option
       .setName('captain2')
       .setDescription('Optional second captain (must be in the same voice channel).')
+  )
+  .addStringOption((option) =>
+    option
+      .setName('draft_type')
+      .setDescription('Draft order type (default: snake).')
+      .addChoices(
+        { name: 'Snake', value: 'snake' },
+        { name: 'Regular alternating', value: 'regular' }
+      )
   );
 
 const teamDraftMockCommand = new SlashCommandBuilder()
@@ -154,6 +163,15 @@ const teamDraftMockCommand = new SlashCommandBuilder()
     option
       .setName('broadcast')
       .setDescription('Broadcast mock draft results to the channel (default true).')
+  )
+  .addStringOption((option) =>
+    option
+      .setName('draft_type')
+      .setDescription('Draft order type (default: snake).')
+      .addChoices(
+        { name: 'Snake', value: 'snake' },
+        { name: 'Regular alternating', value: 'regular' }
+      )
   );
 
 const draftStatusCommand = new SlashCommandBuilder()
@@ -251,7 +269,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const players = interaction.options.getInteger('players', true);
       const spawnVoice = interaction.options.getBoolean('spawn_voice') ?? true;
       const broadcast = interaction.options.getBoolean('broadcast') ?? true;
-      await draftManager.runMockDraft(interaction, players, config, spawnVoice, broadcast);
+      const draftType = interaction.options.getString('draft_type') ?? 'snake';
+      await draftManager.runMockDraft(interaction, players, config, spawnVoice, broadcast, draftType);
       return;
     }
 

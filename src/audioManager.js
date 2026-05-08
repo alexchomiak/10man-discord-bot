@@ -106,14 +106,19 @@ function clampVolume(volume, defaultVolume = DEFAULT_LOBBY_MUSIC_VOLUME) {
   return Math.max(0, Math.min(1, ratio));
 }
 
+function centeredStereoSample(frame, offset) {
+  return (frame.readInt16LE(offset) + frame.readInt16LE(offset + 2)) / 2;
+}
+
 function mixPcm(musicFrame, speechFrame, musicVolume = DEFAULT_LOBBY_MUSIC_VOLUME) {
   const mixed = Buffer.alloc(FRAME_BYTES);
 
-  for (let i = 0; i < FRAME_BYTES; i += 2) {
-    const musicSample = musicFrame.readInt16LE(i) * musicVolume;
-    const speechSample = speechFrame.readInt16LE(i) * 1.2;
+  for (let i = 0; i < FRAME_BYTES; i += 4) {
+    const musicSample = centeredStereoSample(musicFrame, i) * musicVolume;
+    const speechSample = centeredStereoSample(speechFrame, i) * 1.2;
     const value = Math.max(-32768, Math.min(32767, Math.round(musicSample + speechSample)));
     mixed.writeInt16LE(value, i);
+    mixed.writeInt16LE(value, i + 2);
   }
 
   return mixed;
@@ -632,9 +637,17 @@ class AudioManager {
   }
 
   async announcePick(guild, captainName, pickedName, nextCaptainName) {
+    await this.announcePicks(guild, captainName, [pickedName], nextCaptainName);
+  }
+
+  async announcePicks(guild, captainName, pickedNames, nextCaptainName) {
+    const picks = pickedNames.filter(Boolean);
+    const pickedText = picks.length > 1
+      ? `${picks.slice(0, -1).join(', ')} and ${picks.at(-1)}`
+      : picks[0] || 'the pick';
     const message = nextCaptainName
-      ? `${captainName} drafted ${pickedName}. Next pick, ${nextCaptainName}.`
-      : `${captainName} drafted ${pickedName}. Draft picks complete.`;
+      ? `${captainName} drafted ${pickedText}. Next pick, ${nextCaptainName}.`
+      : `${captainName} drafted ${pickedText}. Draft picks complete.`;
     await this.speak(guild.id, message).catch(() => false);
   }
 
