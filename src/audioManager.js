@@ -637,9 +637,17 @@ class AudioManager {
   }
 
   async announcePick(guild, captainName, pickedName, nextCaptainName) {
+    await this.announcePicks(guild, captainName, [pickedName], nextCaptainName);
+  }
+
+  async announcePicks(guild, captainName, pickedNames, nextCaptainName) {
+    const picks = pickedNames.filter(Boolean);
+    const pickedText = picks.length > 1
+      ? `${picks.slice(0, -1).join(', ')} and ${picks.at(-1)}`
+      : picks[0] || 'the pick';
     const message = nextCaptainName
-      ? `${captainName} drafted ${pickedName}. Next pick, ${nextCaptainName}.`
-      : `${captainName} drafted ${pickedName}. Draft picks complete.`;
+      ? `${captainName} drafted ${pickedText}. Next pick, ${nextCaptainName}.`
+      : `${captainName} drafted ${pickedText}. Draft picks complete.`;
     await this.speak(guild.id, message).catch(() => false);
   }
 

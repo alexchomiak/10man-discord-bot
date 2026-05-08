@@ -1,12 +1,12 @@
 # CS2 Team Draft Discord Bot
 
-A Discord bot that runs a random-captain snake draft from a voice channel, creates private temporary team voice channels, moves players automatically, and cleans up channels/roles when everyone leaves.
+A Discord bot that runs a random-captain team draft from a voice channel, creates private temporary team voice channels, moves players automatically, and cleans up channels/roles when everyone leaves.
 
 ## Features
 
 - `/team-draft` slash command
-- `/team-draft players:<optional even number> captain1:<@user> captain2:<@user>` to set total drafted players and/or manually pick captains (captains must be in same voice channel)
-- `/team-draft-mock players:<even number> [spawn_voice:true|false] [broadcast:true|false]` for solo testing with fake users; it simulates picks one by one with 15 seconds between picks, switches to `final_countdown.mp3`, and posts a **Start Mock Match** button that plays `fight.mp3`/TTS, optionally creates/moves you to mock voice, then disconnects audio
+- `/team-draft players:<optional even number> captain1:<@user> captain2:<@user> draft_type:<snake|regular>` to set total drafted players, manually pick captains, and choose draft order (default `snake`; captains must be in same voice channel)
+- `/team-draft-mock players:<even number> [spawn_voice:true|false] [broadcast:true|false] [draft_type:snake|regular]` for solo testing with fake users; it simulates picks with voice narration timing, switches to `final_countdown.mp3`, and posts a **Start Mock Match** button that plays `fight.mp3`/TTS, optionally creates/moves you to mock voice, then disconnects audio
 - `/draft-status` to inspect active draft/mock resources
 - `/draft-cancel` to cancel active draft and cleanup resources
 - `/draft-cleanup` to force cleanup resources if something gets stuck
@@ -21,8 +21,8 @@ A Discord bot that runs a random-captain snake draft from a voice channel, creat
   - 8 players => 4v4
   - 10 players => 5v5
 - Random captain assignment
-- Snake draft pick flow via select menu
-- Draft pick updates are announced in chat after each selection
+- Snake draft pick flow by default, with an optional regular alternating draft order
+- Draft pick updates are announced in chat after each selection; back-to-back snake picks by the same captain are combined into one voice announcement
 - Draft completion requires pressing **Start** (green button) to create channels/move players, or **Cancel** (red button) to abort
 - Private temporary voice channels per team using temporary roles
 - Automatic cleanup when team channels empty

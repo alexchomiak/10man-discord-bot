@@ -45,13 +45,21 @@ function formatNames(names) {
   return names.join(', ');
 }
 
+function normalizeDraftMode(mode) {
+  return mode === 'regular' ? 'regular' : 'snake';
+}
+
+function formatDraftMode(mode) {
+  return normalizeDraftMode(mode) === 'regular' ? 'Regular' : 'Snake';
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForNarrationThenPause(audioManager, guild, captainName, pickedName, nextCaptainName, pauseMs = 3_000) {
+async function waitForNarrationThenPause(audioManager, guild, captainName, pickedNames, nextCaptainName, pauseMs = 3_000) {
   if (audioManager && guild) {
-    await audioManager.announcePick(guild, captainName, pickedName, nextCaptainName).catch(() => false);
+    await audioManager.announcePicks(guild, captainName, Array.isArray(pickedNames) ? pickedNames : [pickedNames], nextCaptainName).catch(() => false);
   }
   await sleep(pauseMs);
 }
@@ -112,6 +120,16 @@ function createSnakeOrder(totalPicks, firstCaptainId, secondCaptainId) {
   }
 
   return order;
+}
+
+function createRegularOrder(totalPicks, firstCaptainId, secondCaptainId) {
+  return Array.from({ length: totalPicks }, (_, index) => (index % 2 === 0 ? firstCaptainId : secondCaptainId));
+}
+
+function createDraftOrder(totalPicks, firstCaptainId, secondCaptainId, draftMode = 'snake') {
+  return normalizeDraftMode(draftMode) === 'regular'
+    ? createRegularOrder(totalPicks, firstCaptainId, secondCaptainId)
+    : createSnakeOrder(totalPicks, firstCaptainId, secondCaptainId);
 }
 
 class DraftManager {
@@ -180,6 +198,7 @@ class DraftManager {
     const requestedPlayers = interaction.options?.getInteger('players');
     const requestedCaptain1 = interaction.options?.getUser('captain1');
     const requestedCaptain2 = interaction.options?.getUser('captain2');
+    const draftMode = normalizeDraftMode(interaction.options?.getString('draft_type'));
     let draftPlayerCount = players.size;
 
     if ((requestedCaptain1 && !requestedCaptain2) || (!requestedCaptain1 && requestedCaptain2)) {
@@ -250,7 +269,7 @@ class DraftManager {
     const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
     const teamSize = draftPlayerCount / 2;
     const picksNeeded = draftPlayerCount - 2;
-    const pickOrder = createSnakeOrder(picksNeeded, captainA, captainB);
+    const pickOrder = createDraftOrder(picksNeeded, captainA, captainB, draftMode);
 
     const sessionId = `${guild.id}-${Date.now()}`;
     const session = {
@@ -265,6 +284,8 @@ class DraftManager {
       pool,
       pickOrder,
       pickIndex: 0,
+      draftMode,
+      pendingPickAnnouncement: null,
       teamSize,
       resources: {
         roleAId: null,
@@ -304,8 +325,9 @@ class DraftManager {
     }
   }
 
-  async runMockDraft(interaction, requestedPlayers, config, spawnVoice, broadcast) {
+  async runMockDraft(interaction, requestedPlayers, config, spawnVoice, broadcast, requestedDraftMode = 'snake') {
     const totalPlayers = Number.parseInt(requestedPlayers, 10);
+    const draftMode = normalizeDraftMode(requestedDraftMode);
     if (Number.isNaN(totalPlayers)) {
       await interaction.reply({ content: 'Mock player count must be a number.', flags: MessageFlags.Ephemeral });
       return;
@@ -330,7 +352,7 @@ class DraftManager {
     const [captainA, captainB, ...pool] = shuffled;
     const teamA = [captainA];
     const teamB = [captainB];
-    const pickOrder = createSnakeOrder(pool.length, captainA, captainB);
+    const pickOrder = createDraftOrder(pool.length, captainA, captainB, draftMode);
     const steps = [];
     const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
 
@@ -341,7 +363,8 @@ class DraftManager {
           .setDescription([
             `Simulating ${totalPlayers} fake players one pick at a time.`,
             `Captains: **${captainA}** vs **${captainB}**`,
-            `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`
+            `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`,
+            `Draft type: **${formatDraftMode(draftMode)}**`
           ].join('\n'))
           .addFields(
             { name: 'Team Alpha', value: formatNames(teamA), inline: true },
@@ -361,7 +384,7 @@ class DraftManager {
         });
     }
 
-    for (const picker of pickOrder) {
+    const applyMockPick = (picker) => {
       const pickIndex = randomInt(pool.length);
       const picked = pool.splice(pickIndex, 1)[0];
       if (picker === captainA) {
@@ -369,16 +392,11 @@ class DraftManager {
       } else {
         teamB.push(picked);
       }
-
-      const nextPicker = pickOrder[steps.length + 1];
       steps.push(`${picker} picked ${picked}`);
-      if (broadcast) {
-        await interaction.channel.send({
-          content: nextPicker
-            ? `🧪 ${picker} drafted ${picked}. Next pick: ${nextPicker}`
-            : `🧪 ${picker} drafted ${picked}. Mock draft picks complete.`
-        });
-      }
+      return picked;
+    };
+
+    const editMockReply = async () => {
       await reply.edit({
         embeds: [
           new EmbedBuilder()
@@ -386,7 +404,8 @@ class DraftManager {
             .setDescription([
               `Simulating ${totalPlayers} fake players one pick at a time.`,
               `Captains: **${captainA}** vs **${captainB}**`,
-              `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`
+              `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`,
+              `Draft type: **${formatDraftMode(draftMode)}**`
             ].join('\n'))
             .addFields(
               { name: `Team Alpha (${teamNameA})`, value: formatNames(teamA), inline: true },
@@ -395,8 +414,29 @@ class DraftManager {
             )
         ]
       }).catch(() => {});
+    };
 
-      await waitForNarrationThenPause(this.audioManager, guild, picker, picked, nextPicker);
+    for (let pickCursor = 0; pickCursor < pickOrder.length; pickCursor += 1) {
+      const picker = pickOrder[pickCursor];
+      const pickedNames = [applyMockPick(picker)];
+      const hasBackToBackSnakePick = draftMode === 'snake' && pickOrder[pickCursor + 1] === picker;
+
+      if (hasBackToBackSnakePick) {
+        pickCursor += 1;
+        pickedNames.push(applyMockPick(picker));
+      }
+
+      const nextPicker = pickOrder[pickCursor + 1];
+      if (broadcast) {
+        await interaction.channel.send({
+          content: nextPicker
+            ? `🧪 ${picker} drafted ${pickedNames.join(' and ')}. Next pick: ${nextPicker}`
+            : `🧪 ${picker} drafted ${pickedNames.join(' and ')}. Mock draft picks complete.`
+        });
+      }
+
+      await editMockReply();
+      await waitForNarrationThenPause(this.audioManager, guild, picker, pickedNames, nextPicker);
     }
 
     await playCountdownThenAnnounceMatchup(this.audioManager, guild?.id, teamNameA, teamNameB, interaction.channel);
@@ -518,6 +558,7 @@ class DraftManager {
         `**Status:** ${status}`,
         `**Captains:** <@${session.captains[0]}> vs <@${session.captains[1]}>`,
         `**Team size:** ${session.teamSize}v${session.teamSize}`,
+        `**Draft type:** ${formatDraftMode(session.draftMode)}`,
         currentCaptain ? `**Current pick:** <@${currentCaptain}>` : '**Current pick:** none'
       ].join('\n'))
       .addFields(
@@ -633,20 +674,41 @@ class DraftManager {
     const pickerName = interaction.member?.displayName || interaction.user.displayName || interaction.user.username;
     const pickedName = interaction.guild.members.cache.get(pickedId)?.displayName || 'the pick';
     const nextCaptainName = nextCaptain ? interaction.guild.members.cache.get(nextCaptain)?.displayName : null;
+    const hasBackToBackSnakePick = session.draftMode === 'snake' && nextCaptain === interaction.user.id;
+    const pendingAnnouncement = session.pendingPickAnnouncement;
+    let announcementCaptainName = pickerName;
+    let announcementPickedNames = [pickedName];
+    let shouldAnnouncePick = true;
+
+    if (pendingAnnouncement?.captainId === interaction.user.id) {
+      announcementCaptainName = pendingAnnouncement.captainName;
+      announcementPickedNames = [...pendingAnnouncement.pickedNames, pickedName];
+      session.pendingPickAnnouncement = null;
+    } else if (hasBackToBackSnakePick) {
+      session.pendingPickAnnouncement = {
+        captainId: interaction.user.id,
+        captainName: pickerName,
+        pickedNames: [pickedName]
+      };
+      shouldAnnouncePick = false;
+    } else {
+      session.pendingPickAnnouncement = null;
+    }
+
     const draftMessage = interaction.message || (session.messageId
       ? await interaction.channel.messages.fetch(session.messageId).catch(() => null)
       : null);
 
     if (draftMessage) {
       await draftMessage.edit({
-        embeds: [this.buildDraftEmbed(session, interaction.guild, { status: 'Drafting' })],
+        embeds: [this.buildDraftEmbed(session, interaction.guild, { status: shouldAnnouncePick ? 'Drafting' : 'Waiting for pick' })],
         components: []
       }).catch(() => {});
       session.messageId = draftMessage.id;
     }
 
-    if (this.audioManager) {
-      await this.audioManager.announcePick(interaction.guild, pickerName, pickedName, nextCaptainName).catch((error) => {
+    if (this.audioManager && shouldAnnouncePick) {
+      await this.audioManager.announcePicks(interaction.guild, announcementCaptainName, announcementPickedNames, nextCaptainName).catch((error) => {
         console.error('Failed to announce draft pick in voice:', error);
         return false;
       });
@@ -1021,6 +1083,7 @@ class DraftManager {
     if (session) {
       lines.push(`Active draft session: \`${session.id}\``);
       lines.push(`Team size: ${session.teamSize}v${session.teamSize}`);
+      lines.push(`Draft type: ${formatDraftMode(session.draftMode)}`);
       lines.push(`Drafted players: ${session.teamA.length + session.teamB.length}/${session.teamSize * 2}`);
       lines.push(`Channels created: ${session.resources.channelAId ? 'yes' : 'no'}`);
       lines.push(`Status: ${session.status}`);
