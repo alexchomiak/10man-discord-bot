@@ -384,6 +384,8 @@ class DraftManager {
         });
     }
 
+    await sleep(3_000);
+
     const applyMockPick = (picker) => {
       const pickIndex = randomInt(pool.length);
       const picked = pool.splice(pickIndex, 1)[0];
@@ -416,27 +418,33 @@ class DraftManager {
       }).catch(() => {});
     };
 
+    let pendingNarration = null;
     for (let pickCursor = 0; pickCursor < pickOrder.length; pickCursor += 1) {
       const picker = pickOrder[pickCursor];
-      const pickedNames = [applyMockPick(picker)];
-      const hasBackToBackSnakePick = draftMode === 'snake' && pickOrder[pickCursor + 1] === picker;
-
-      if (hasBackToBackSnakePick) {
-        pickCursor += 1;
-        pickedNames.push(applyMockPick(picker));
-      }
-
+      const picked = applyMockPick(picker);
       const nextPicker = pickOrder[pickCursor + 1];
+      const hasBackToBackSnakePick = draftMode === 'snake' && nextPicker === picker;
+      const narrationPickedNames = pendingNarration?.picker === picker
+        ? [...pendingNarration.pickedNames, picked]
+        : [picked];
+      const shouldNarrate = !hasBackToBackSnakePick;
+
       if (broadcast) {
         await interaction.channel.send({
           content: nextPicker
-            ? `🧪 ${picker} drafted ${pickedNames.join(' and ')}. Next pick: ${nextPicker}`
-            : `🧪 ${picker} drafted ${pickedNames.join(' and ')}. Mock draft picks complete.`
+            ? `🧪 ${picker} drafted ${picked}. Next pick: ${nextPicker}`
+            : `🧪 ${picker} drafted ${picked}. Mock draft picks complete.`
         });
       }
 
       await editMockReply();
-      await waitForNarrationThenPause(this.audioManager, guild, picker, pickedNames, nextPicker);
+
+      if (shouldNarrate) {
+        await waitForNarrationThenPause(this.audioManager, guild, picker, narrationPickedNames, nextPicker);
+        pendingNarration = null;
+      } else {
+        pendingNarration = { picker, pickedNames: narrationPickedNames };
+      }
     }
 
     await playCountdownThenAnnounceMatchup(this.audioManager, guild?.id, teamNameA, teamNameB, interaction.channel);
@@ -700,11 +708,13 @@ class DraftManager {
       : null);
 
     if (draftMessage) {
-      await draftMessage.edit({
-        embeds: [this.buildDraftEmbed(session, interaction.guild, { status: shouldAnnouncePick ? 'Drafting' : 'Waiting for pick' })],
-        components: []
-      }).catch(() => {});
       session.messageId = draftMessage.id;
+      if (shouldAnnouncePick) {
+        await draftMessage.edit({
+          embeds: [this.buildDraftEmbed(session, interaction.guild, { status: 'Drafting' })],
+          components: []
+        }).catch(() => {});
+      }
     }
 
     if (this.audioManager && shouldAnnouncePick) {
