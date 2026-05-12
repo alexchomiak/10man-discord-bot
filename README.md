@@ -66,7 +66,7 @@ Copy `.env.example` to `.env`:
 - `NOTIFICATION_TIME_CST` (optional, default `18:00`; daily post time in America/Chicago timezone)
 - `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification/player-link SQLite database file)
 - `STEAM_WEB_API_KEY` (optional unless linking `steamcommunity.com/id/...` vanity URLs; used with Steam ResolveVanityURL)
-- `LEETIFY_API_KEY` (optional; used to fetch linked players’ Premier ratings from Leetify)
+- `LEETIFY_API_KEY` (optional; used to fetch linked players’ Premier ratings from Leetify; sent as the documented `Authorization`/`_leetify_key` header value)
 - `LEETIFY_API_BASE` (optional, default `https://api.cs-prod.leetify.com`; override only if Leetify changes the public API host)
 - `RATING_REFRESH_INTERVAL_HOURS` (optional, default `24`; scheduled refresh interval for every linked player’s cached Premier rating)
 - `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)

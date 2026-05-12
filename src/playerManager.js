@@ -395,8 +395,8 @@ class PlayerManager {
     url.searchParams.set('steamId', steamId64);
     const data = await this.fetchJson(url, {
       accept: 'application/json',
-      authorization: `Bearer ${this.leetifyApiKey}`,
-      'x-api-key': this.leetifyApiKey
+      authorization: this.leetifyApiKey,
+      _leetify_key: this.leetifyApiKey
     });
     return findPremierRating(data);
   }
