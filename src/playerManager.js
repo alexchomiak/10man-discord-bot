@@ -10,6 +10,7 @@ const DEFAULT_HTTP_TIMEOUT_MS = 15_000;
 const DEFAULT_CONCURRENCY = 3;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const DEFAULT_LEETIFY_API_BASE = 'https://api-public.cs-prod.leetify.com';
+const DEFAULT_LEETIFY_LEGACY_API_BASE = 'https://api.cs-prod.leetify.com';
 const STEAM_API_BASE = 'https://api.steampowered.com';
 
 class PlayerManagerError extends Error {
@@ -18,6 +19,7 @@ class PlayerManagerError extends Error {
     this.name = 'PlayerManagerError';
     this.code = options.code || 'PLAYER_ERROR';
     this.cause = options.cause;
+    this.statusCode = options.statusCode || null;
   }
 }
 
@@ -35,6 +37,7 @@ function summarizeError(error) {
     name: error?.name,
     code: error?.code,
     message: error?.message,
+    statusCode: error?.statusCode,
     causeName: error?.cause?.name,
     causeCode: error?.cause?.code,
     causeMessage: error?.cause?.message
@@ -154,19 +157,53 @@ function stringifyJson(value) {
   return value && typeof value === 'object' ? JSON.stringify(value) : null;
 }
 
-function extractLeetifyMetadata(data) {
-  const premierRating = parseRatingValue(data?.ranks?.premier) || findPremierRating(data);
+function firstPresent(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '');
+}
+
+function isPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function findRecentPremierGame(games) {
+  if (!Array.isArray(games)) {
+    return null;
+  }
+
+  return games.find((game) => {
+    const skillLevel = parseRatingValue(game?.skillLevel ?? game?.skill_level);
+    return Number.isInteger(skillLevel) && skillLevel > 0;
+  }) || null;
+}
+
+function buildLegacyRanks(data, premierRating) {
   return {
+    ...(isPlainObject(data?.ranks) ? data.ranks : {}),
+    ...(premierRating ? { premier: premierRating } : {})
+  };
+}
+
+function extractLeetifyMetadata(data, source = 'leetify-public') {
+  const games = Array.isArray(data?.games) ? data.games : [];
+  const recentPremierGame = findRecentPremierGame(games);
+  const premierRating = parseRatingValue(data?.ranks?.premier)
+    || parseRatingValue(recentPremierGame?.skillLevel ?? recentPremierGame?.skill_level)
+    || findPremierRating(data);
+  const ranks = source === 'leetify-legacy' ? buildLegacyRanks(data, premierRating) : data?.ranks;
+
+  return {
+    source,
     premierRating,
-    profileName: data?.name || null,
-    profileId: data?.id || null,
-    privacyMode: data?.privacy_mode || null,
-    totalMatches: Number.isInteger(data?.total_matches) ? data.total_matches : null,
+    profileName: firstPresent(data?.name, data?.steam?.name, data?.profile?.name, data?.user?.name),
+    profileId: firstPresent(data?.id, data?.leetifyUserId, data?.leetify_user_id),
+    privacyMode: firstPresent(data?.privacy_mode, data?.privacyMode),
+    totalMatches: Number.isInteger(data?.total_matches) ? data.total_matches : games.length || null,
     winrate: typeof data?.winrate === 'number' ? data.winrate : null,
-    firstMatchDate: data?.first_match_date || null,
-    ranksJson: stringifyJson(data?.ranks),
-    ratingJson: stringifyJson(data?.rating),
-    statsJson: stringifyJson(data?.stats)
+    firstMatchDate: firstPresent(data?.first_match_date, data?.firstMatchDate),
+    ranksJson: stringifyJson(ranks),
+    ratingJson: stringifyJson(data?.rating || data?.ratings),
+    statsJson: stringifyJson(data?.stats || data?.lifetimeStats || data?.profileStats),
+    latestPremierGameJson: stringifyJson(recentPremierGame)
   };
 }
 
@@ -195,6 +232,7 @@ class PlayerManager {
     this.steamApiKey = config.steamWebApiKey || process.env.STEAM_WEB_API_KEY || null;
     this.leetifyApiKey = config.leetifyApiKey || process.env.LEETIFY_API_KEY || null;
     this.leetifyApiBase = config.leetifyApiBase || process.env.LEETIFY_API_BASE || DEFAULT_LEETIFY_API_BASE;
+    this.leetifyLegacyApiBase = config.leetifyLegacyApiBase || process.env.LEETIFY_LEGACY_API_BASE || DEFAULT_LEETIFY_LEGACY_API_BASE;
     this.refreshIntervalHours = parsePositiveNumber(config.ratingRefreshIntervalHours || process.env.RATING_REFRESH_INTERVAL_HOURS, DEFAULT_RATING_REFRESH_INTERVAL_HOURS);
     this.httpTimeoutMs = Number.parseInt(config.playerHttpTimeoutMs || process.env.PLAYER_HTTP_TIMEOUT_MS || DEFAULT_HTTP_TIMEOUT_MS, 10);
     this.db = null;
@@ -240,6 +278,8 @@ class PlayerManager {
         ranks_json TEXT,
         rating_json TEXT,
         stats_json TEXT,
+        latest_premier_game_json TEXT,
+        leetify_api_source TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
@@ -262,7 +302,9 @@ class PlayerManager {
       first_match_date: 'TEXT',
       ranks_json: 'TEXT',
       rating_json: 'TEXT',
-      stats_json: 'TEXT'
+      stats_json: 'TEXT',
+      latest_premier_game_json: 'TEXT',
+      leetify_api_source: 'TEXT'
     };
 
     for (const [name, type] of Object.entries(columns)) {
@@ -303,9 +345,9 @@ class PlayerManager {
     this.db.prepare(`
       INSERT INTO player_links (
         alias, alias_normalized, steam_profile_url, steam_id64, premier_rating, rating_source, rating_updated_at,
-        leetify_profile_name, leetify_profile_id, privacy_mode, total_matches, winrate, first_match_date, ranks_json, rating_json, stats_json, updated_at
+        leetify_profile_name, leetify_profile_id, privacy_mode, total_matches, winrate, first_match_date, ranks_json, rating_json, stats_json, latest_premier_game_json, leetify_api_source, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(alias_normalized) DO UPDATE SET
         alias = excluded.alias,
         steam_profile_url = excluded.steam_profile_url,
@@ -322,6 +364,8 @@ class PlayerManager {
         ranks_json = excluded.ranks_json,
         rating_json = excluded.rating_json,
         stats_json = excluded.stats_json,
+        latest_premier_game_json = excluded.latest_premier_game_json,
+        leetify_api_source = excluded.leetify_api_source,
         updated_at = excluded.updated_at
     `).run(
       cleanAlias,
@@ -329,7 +373,7 @@ class PlayerManager {
       profileUrl,
       steamId64,
       metadata?.premierRating || null,
-      metadata?.premierRating ? 'leetify' : null,
+      metadata?.premierRating ? metadata.source : null,
       metadata?.premierRating ? now : null,
       metadata?.profileName || null,
       metadata?.profileId || null,
@@ -340,6 +384,8 @@ class PlayerManager {
       metadata?.ranksJson || null,
       metadata?.ratingJson || null,
       metadata?.statsJson || null,
+      metadata?.latestPremierGameJson || null,
+      metadata?.source || null,
       now
     );
 
@@ -439,11 +485,11 @@ class PlayerManager {
       UPDATE player_links
       SET premier_rating = ?, rating_source = ?, rating_updated_at = ?,
         leetify_profile_name = ?, leetify_profile_id = ?, privacy_mode = ?, total_matches = ?, winrate = ?, first_match_date = ?,
-        ranks_json = ?, rating_json = ?, stats_json = ?, updated_at = ?
+        ranks_json = ?, rating_json = ?, stats_json = ?, latest_premier_game_json = ?, leetify_api_source = ?, updated_at = ?
       WHERE alias_normalized = ?
     `).run(
       metadata.premierRating || null,
-      metadata.premierRating ? 'leetify' : null,
+      metadata.premierRating ? metadata.source : null,
       metadata.premierRating ? now : null,
       metadata.profileName || null,
       metadata.profileId || null,
@@ -454,6 +500,8 @@ class PlayerManager {
       metadata.ranksJson || null,
       metadata.ratingJson || null,
       metadata.statsJson || null,
+      metadata.latestPremierGameJson || null,
+      metadata.source || null,
       now,
       link.alias_normalized
     );
@@ -476,16 +524,31 @@ class PlayerManager {
     return response.steamid;
   }
 
-  async fetchLeetifyProfileMetadata(steamId64) {
-    const url = new URL('/v3/profile', this.leetifyApiBase);
-    url.searchParams.set('steam64_id', steamId64);
+  leetifyHeaders() {
     const headers = { accept: 'application/json' };
     if (this.leetifyApiKey) {
       headers.authorization = this.leetifyApiKey;
       headers._leetify_key = this.leetifyApiKey;
     }
-    const data = await this.fetchJson(url, headers);
-    return extractLeetifyMetadata(data);
+    return headers;
+  }
+
+  async fetchLeetifyProfileMetadata(steamId64) {
+    const publicUrl = new URL('/v3/profile', this.leetifyApiBase);
+    publicUrl.searchParams.set('steam64_id', steamId64);
+    try {
+      const data = await this.fetchJson(publicUrl, this.leetifyHeaders());
+      return extractLeetifyMetadata(data, 'leetify-public');
+    } catch (error) {
+      if (error?.code !== 'API_HTTP_ERROR' || error?.statusCode !== 404) {
+        throw error;
+      }
+      console.warn(`[players] public Leetify profile returned 404 for ${steamId64}; trying legacy profile API.`);
+    }
+
+    const legacyUrl = new URL(`/api/profile/id/${encodeURIComponent(steamId64)}`, this.leetifyLegacyApiBase);
+    const data = await this.fetchJson(legacyUrl, this.leetifyHeaders());
+    return extractLeetifyMetadata(data, 'leetify-legacy');
   }
 
   async fetchPremierRating(steamId64) {
@@ -510,7 +573,7 @@ class PlayerManager {
         response.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
           if (response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new PlayerManagerError(`API request failed with HTTP ${response.statusCode}.`, { code: 'API_HTTP_ERROR' }));
+            reject(new PlayerManagerError(`API request failed with HTTP ${response.statusCode}.`, { code: 'API_HTTP_ERROR', statusCode: response.statusCode }));
             return;
           }
           try {

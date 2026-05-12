@@ -48,6 +48,7 @@ const config = {
   steamWebApiKey: process.env.STEAM_WEB_API_KEY || null,
   leetifyApiKey: process.env.LEETIFY_API_KEY || null,
   leetifyApiBase: process.env.LEETIFY_API_BASE || 'https://api-public.cs-prod.leetify.com',
+  leetifyLegacyApiBase: process.env.LEETIFY_LEGACY_API_BASE || 'https://api.cs-prod.leetify.com',
   ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24'
 };
 
@@ -169,6 +170,7 @@ function formatPlayerInfo(link) {
       `Steam profile: ${link.steam_profile_url}`,
       `Premier rating: ${link.premier_rating ? `**${link.premier_rating}**` : '`none cached`'}`,
       `Rating source: \`${escapeInlineCode(link.rating_source)}\``,
+      `Leetify API source: \`${escapeInlineCode(link.leetify_api_source)}\``,
       `Rating updated: \`${escapeInlineCode(link.rating_updated_at)}\``,
       `Total matches: \`${escapeInlineCode(link.total_matches)}\``,
       `Winrate: \`${escapeInlineCode(link.winrate === null || link.winrate === undefined ? null : `${Math.round(link.winrate * 1000) / 10}%`)}\``,
@@ -179,6 +181,7 @@ function formatPlayerInfo(link) {
     formatObjectFields('Ranks', link.ranks_json),
     formatObjectFields('Rating', link.rating_json),
     formatObjectFields('Stats', link.stats_json),
+    formatObjectFields('Latest Premier game', link.latest_premier_game_json),
     formatCompetitiveRanks(link.ranks_json)
   ].filter(Boolean);
 
