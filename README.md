@@ -10,6 +10,8 @@ A Discord bot that runs a random-captain team draft from a voice channel, create
 - `/link alias:<name> url:<steam profile>` to store an alias → Steam profile mapping and cache the player Premier rating
 - `/unlink alias:<name>` to remove a stored alias mapping
 - `/get-info alias:<name>` to inspect the stored DB record for an alias from Discord
+- `/refresh alias:<name>` to refresh one linked player’s Leetify Premier metadata
+- `/refresh-voice` to refresh linked players in your current voice channel before starting a match
 - `/draft-status` to inspect active draft/mock resources
 - `/draft-cancel` to cancel active draft and cleanup resources
 - `/draft-cleanup` to force cleanup resources if something gets stuck
@@ -65,6 +67,7 @@ Copy `.env.example` to `.env`:
 - `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification/player-link SQLite database file)
 - `STEAM_WEB_API_KEY` (optional unless linking `steamcommunity.com/id/...` vanity URLs; used with Steam ResolveVanityURL)
 - `LEETIFY_API_KEY` (optional; used to fetch linked players’ Premier ratings from Leetify)
+- `LEETIFY_API_BASE` (optional, default `https://api.cs-prod.leetify.com`; override only if Leetify changes the public API host)
 - `RATING_REFRESH_INTERVAL_HOURS` (optional, default `24`; scheduled refresh interval for every linked player’s cached Premier rating)
 - `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)
 - `BUILD_DATE` (optional, default `unknown`; set automatically in Docker CI to commit date)
@@ -92,6 +95,8 @@ When `LEETIFY_API_KEY` is configured, linking and refresh jobs call Leetify’s 
 Rating refreshes happen in two ways:
 
 - Scheduled refresh: every `RATING_REFRESH_INTERVAL_HOURS` hours, the bot refreshes every linked player in the SQLite DB.
+- Manual alias refresh: `/refresh alias:<name>` refreshes one linked player and returns the updated DB fields.
+- Manual voice refresh: `/refresh-voice` refreshes linked players currently in your voice call, useful immediately before starting a match.
 - Draft refresh: `/team-draft refresh_ratings:true` refreshes linked players currently in the voice call before the draft message is posted. This defaults to false to avoid surprising Leetify rate-limit usage. Refreshes are concurrency-limited to 3 in-flight API calls.
 
 Inspect a stored mapping with `/get-info alias:<name>`, which returns the DB fields Discord-side for quick verification. Remove a mapping with `/unlink alias:<name>`.

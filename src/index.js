@@ -47,6 +47,7 @@ const config = {
   ttsMusicDuckVolume: process.env.TTS_MUSIC_DUCK_VOLUME || '0.12',
   steamWebApiKey: process.env.STEAM_WEB_API_KEY || null,
   leetifyApiKey: process.env.LEETIFY_API_KEY || null,
+  leetifyApiBase: process.env.LEETIFY_API_BASE || 'https://api.cs-prod.leetify.com',
   ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24'
 };
 
@@ -118,6 +119,20 @@ function formatPlayerInfo(link) {
     `Created: \`${escapeInlineCode(link.created_at)}\``,
     `Updated: \`${escapeInlineCode(link.updated_at)}\``
   ].join('\n');
+}
+
+function formatRefreshSummary(result) {
+  return `Refreshed Premier ratings for ${result.updated}/${result.total} linked players${result.failed ? ` (${result.failed} failed)` : ''}.`;
+}
+
+async function getInvokerVoiceMembers(interaction) {
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  const voiceChannel = member.voice?.channel;
+  if (!voiceChannel) {
+    return null;
+  }
+
+  return voiceChannel.members.filter((voiceMember) => !voiceMember.user.bot);
 }
 
 const audioManager = new AudioManager(config);
@@ -248,6 +263,25 @@ const getInfoCommand = new SlashCommandBuilder()
       .setMaxLength(100)
   );
 
+const refreshCommand = new SlashCommandBuilder()
+  .setName('refresh')
+  .setDescription('Refresh Leetify Premier metadata for one linked player alias.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false)
+  .addStringOption((option) =>
+    option
+      .setName('alias')
+      .setDescription('Alias to refresh in the player link database.')
+      .setRequired(true)
+      .setMaxLength(100)
+  );
+
+const refreshVoiceCommand = new SlashCommandBuilder()
+  .setName('refresh-voice')
+  .setDescription('Refresh Leetify Premier metadata for linked players in your voice channel.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
 const draftStatusCommand = new SlashCommandBuilder()
   .setName('draft-status')
   .setDescription('Show current draft/mock status for this server.')
@@ -307,7 +341,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
+    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -388,6 +422,41 @@ client.on(Events.InteractionCreate, async (interaction) => {
           : `No player link found for \`${escapeInlineCode(alias)}\`. Use /link first to create a DB record.`,
         flags: MessageFlags.Ephemeral
       });
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'refresh') {
+      const alias = interaction.options.getString('alias', true);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const link = await playerManager.refreshRatingForAlias(alias);
+        await interaction.editReply({
+          content: link
+            ? [`Refreshed \`${escapeInlineCode(link.alias)}\`.`, '', formatPlayerInfo(link)].join('\n')
+            : `No player link found for \`${escapeInlineCode(alias)}\`. Use /link first to create a DB record.`
+        });
+      } catch (error) {
+        console.error('Failed to refresh player:', summarizePlayerError(error));
+        await interaction.editReply({ content: error.message || 'Failed to refresh player metadata.' });
+      }
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'refresh-voice') {
+      const members = await getInvokerVoiceMembers(interaction);
+      if (!members) {
+        await interaction.reply({ content: 'Join a voice channel first.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const result = await playerManager.refreshRatingsForMembers(members);
+        await interaction.editReply({ content: formatRefreshSummary(result) });
+      } catch (error) {
+        console.error('Failed to refresh voice players:', summarizePlayerError(error));
+        await interaction.editReply({ content: error.message || 'Failed to refresh voice player metadata.' });
+      }
       return;
     }
 

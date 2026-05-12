@@ -9,7 +9,7 @@ const DEFAULT_RATING_REFRESH_INTERVAL_HOURS = 24;
 const DEFAULT_HTTP_TIMEOUT_MS = 15_000;
 const DEFAULT_CONCURRENCY = 3;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-const LEETIFY_API_BASE = 'https://api.cs-prod.leetify.com';
+const DEFAULT_LEETIFY_API_BASE = 'https://api.cs-prod.leetify.com';
 const STEAM_API_BASE = 'https://api.steampowered.com';
 
 class PlayerManagerError extends Error {
@@ -80,41 +80,70 @@ function extractSteamIdentifier(profileUrl) {
   throw new PlayerManagerError('Steam profile URL must look like steamcommunity.com/id/name or steamcommunity.com/profiles/SteamID64.', { code: 'UNSUPPORTED_STEAM_PROFILE_URL' });
 }
 
-function findPremierRating(value, parentKey = '') {
+function parseRatingValue(value) {
+  if (Number.isInteger(value)) {
+    return value;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+
+  if (typeof value === 'string') {
+    const match = value.match(/\d[\d,\s]*/);
+    if (match) {
+      return Number.parseInt(match[0].replace(/[,\s]/g, ''), 10);
+    }
+  }
+
+  return null;
+}
+
+function isLikelyPremierRating(path, key, rating) {
+  if (!Number.isInteger(rating) || rating <= 0 || rating > 50_000) {
+    return false;
+  }
+
+  const normalizedPath = `${path}.${key}`.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  if (normalizedPath.includes('premier') || normalizedPath.includes('csrating')) {
+    return true;
+  }
+
+  if (normalizedPath.includes('currentrank') && rating >= 1_000) {
+    return true;
+  }
+
+  return normalizedPath.includes('cs2')
+    && (normalizedPath.includes('rank') || normalizedPath.includes('rating') || normalizedPath.includes('skilllevel'))
+    && rating >= 1_000;
+}
+
+function findPremierRating(value, path = '') {
   if (!value || typeof value !== 'object') {
     return null;
   }
 
-  const directKeys = [
-    'premierRating',
-    'premier_rating',
-    'premierRank',
-    'premier_rank',
-    'csRating',
-    'cs_rating',
-    'rating'
-  ];
-
-  for (const key of directKeys) {
-    const candidate = value[key];
-    if (Number.isInteger(candidate) && candidate > 0) {
-      return candidate;
-    }
-    if (typeof candidate === 'string') {
-      const parsed = Number.parseInt(candidate.replace(/[,\s]/g, ''), 10);
-      if (Number.isInteger(parsed) && parsed > 0) {
-        return parsed;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const nested = findPremierRating(value[index], `${path}[${index}]`);
+      if (nested) {
+        return nested;
       }
+    }
+    return null;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    const rating = parseRatingValue(child);
+    if (isLikelyPremierRating(path, key, rating)) {
+      return rating;
     }
   }
 
   for (const [key, child] of Object.entries(value)) {
-    const keyPath = `${parentKey}.${key}`.toLowerCase();
-    if (keyPath.includes('premier') || keyPath.includes('cs2') || keyPath.includes('rank')) {
-      const nested = findPremierRating(child, keyPath);
-      if (nested) {
-        return nested;
-      }
+    const nested = findPremierRating(child, path ? `${path}.${key}` : key);
+    if (nested) {
+      return nested;
     }
   }
 
@@ -145,6 +174,7 @@ class PlayerManager {
     this.dbPath = config.sqlitePath || '/app/data/bot.db';
     this.steamApiKey = config.steamWebApiKey || process.env.STEAM_WEB_API_KEY || null;
     this.leetifyApiKey = config.leetifyApiKey || process.env.LEETIFY_API_KEY || null;
+    this.leetifyApiBase = config.leetifyApiBase || process.env.LEETIFY_API_BASE || DEFAULT_LEETIFY_API_BASE;
     this.refreshIntervalHours = parsePositiveNumber(config.ratingRefreshIntervalHours || process.env.RATING_REFRESH_INTERVAL_HOURS, DEFAULT_RATING_REFRESH_INTERVAL_HOURS);
     this.httpTimeoutMs = Number.parseInt(config.playerHttpTimeoutMs || process.env.PLAYER_HTTP_TIMEOUT_MS || DEFAULT_HTTP_TIMEOUT_MS, 10);
     this.db = null;
@@ -281,6 +311,17 @@ class PlayerManager {
     return rating ? `${name} (${rating})` : name;
   }
 
+  async refreshRatingForAlias(alias) {
+    this.initDb();
+    const link = this.getByAlias(alias);
+    if (!link) {
+      return null;
+    }
+
+    await this.refreshLinkRating(link);
+    return this.getByAlias(alias);
+  }
+
   async refreshAllRatings() {
     this.initDb();
     if (this.refreshInProgress) {
@@ -350,11 +391,12 @@ class PlayerManager {
       return null;
     }
 
-    const url = new URL('/v3/profile', LEETIFY_API_BASE);
+    const url = new URL('/v3/profile', this.leetifyApiBase);
     url.searchParams.set('steamId', steamId64);
     const data = await this.fetchJson(url, {
-      authorization: this.leetifyApiKey,
-      _leetify_key: this.leetifyApiKey
+      accept: 'application/json',
+      authorization: `Bearer ${this.leetifyApiKey}`,
+      'x-api-key': this.leetifyApiKey
     });
     return findPremierRating(data);
   }
