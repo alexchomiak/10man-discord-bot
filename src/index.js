@@ -47,7 +47,7 @@ const config = {
   ttsMusicDuckVolume: process.env.TTS_MUSIC_DUCK_VOLUME || '0.12',
   steamWebApiKey: process.env.STEAM_WEB_API_KEY || null,
   leetifyApiKey: process.env.LEETIFY_API_KEY || null,
-  leetifyApiBase: process.env.LEETIFY_API_BASE || 'https://api.cs-prod.leetify.com',
+  leetifyApiBase: process.env.LEETIFY_API_BASE || 'https://api-public.cs-prod.leetify.com',
   ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24'
 };
 
@@ -107,18 +107,82 @@ function escapeInlineCode(value) {
   return String(value ?? 'none').replace(/`/g, 'ˋ');
 }
 
+function parseStoredJson(value) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function formatNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Number.parseFloat(value.toFixed(4)).toString()
+    : String(value);
+}
+
+function formatObjectFields(title, value, limit = 30) {
+  const data = parseStoredJson(value);
+  if (!data || typeof data !== 'object') {
+    return null;
+  }
+
+  const entries = Object.entries(data)
+    .filter(([, fieldValue]) => fieldValue !== null && fieldValue !== undefined && !Array.isArray(fieldValue) && typeof fieldValue !== 'object')
+    .slice(0, limit);
+
+  if (entries.length === 0) {
+    return null;
+  }
+
+  return [`**${title}**`, ...entries.map(([key, fieldValue]) => `• ${key}: \`${escapeInlineCode(formatNumber(fieldValue))}\``)].join('\n');
+}
+
+function formatCompetitiveRanks(value) {
+  const ranks = parseStoredJson(value);
+  const competitive = Array.isArray(ranks?.competitive)
+    ? ranks.competitive.filter((rank) => Number.isInteger(rank?.rank) && rank.rank > 0)
+    : [];
+  if (competitive.length === 0) {
+    return null;
+  }
+
+  return [`**Competitive ranks**`, ...competitive.map((rank) => `• ${rank.map_name}: \`${rank.rank}\``)].join('\n');
+}
+
+function truncateDiscordMessage(content, maxLength = 1_900) {
+  return content.length > maxLength ? `${content.slice(0, maxLength - 14)}\n…truncated` : content;
+}
+
 function formatPlayerInfo(link) {
-  return [
-    `Alias: \`${escapeInlineCode(link.alias)}\``,
-    `Normalized alias: \`${escapeInlineCode(link.alias_normalized)}\``,
-    `SteamID64: \`${escapeInlineCode(link.steam_id64)}\``,
-    `Steam profile: ${link.steam_profile_url}`,
-    `Premier rating: ${link.premier_rating ? `**${link.premier_rating}**` : '`none cached`'}`,
-    `Rating source: \`${escapeInlineCode(link.rating_source)}\``,
-    `Rating updated: \`${escapeInlineCode(link.rating_updated_at)}\``,
-    `Created: \`${escapeInlineCode(link.created_at)}\``,
-    `Updated: \`${escapeInlineCode(link.updated_at)}\``
-  ].join('\n');
+  const sections = [
+    [
+      `Alias: \`${escapeInlineCode(link.alias)}\``,
+      `Normalized alias: \`${escapeInlineCode(link.alias_normalized)}\``,
+      `Leetify name: \`${escapeInlineCode(link.leetify_profile_name)}\``,
+      `Privacy: \`${escapeInlineCode(link.privacy_mode)}\``,
+      `SteamID64: \`${escapeInlineCode(link.steam_id64)}\``,
+      `Steam profile: ${link.steam_profile_url}`,
+      `Premier rating: ${link.premier_rating ? `**${link.premier_rating}**` : '`none cached`'}`,
+      `Rating source: \`${escapeInlineCode(link.rating_source)}\``,
+      `Rating updated: \`${escapeInlineCode(link.rating_updated_at)}\``,
+      `Total matches: \`${escapeInlineCode(link.total_matches)}\``,
+      `Winrate: \`${escapeInlineCode(link.winrate === null || link.winrate === undefined ? null : `${Math.round(link.winrate * 1000) / 10}%`)}\``,
+      `First match: \`${escapeInlineCode(link.first_match_date)}\``,
+      `Created: \`${escapeInlineCode(link.created_at)}\``,
+      `Updated: \`${escapeInlineCode(link.updated_at)}\``
+    ].join('\n'),
+    formatObjectFields('Ranks', link.ranks_json),
+    formatObjectFields('Rating', link.rating_json),
+    formatObjectFields('Stats', link.stats_json),
+    formatCompetitiveRanks(link.ranks_json)
+  ].filter(Boolean);
+
+  return truncateDiscordMessage(sections.join('\n\n'));
 }
 
 function formatRefreshSummary(result) {

@@ -66,8 +66,8 @@ Copy `.env.example` to `.env`:
 - `NOTIFICATION_TIME_CST` (optional, default `18:00`; daily post time in America/Chicago timezone)
 - `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification/player-link SQLite database file)
 - `STEAM_WEB_API_KEY` (optional unless linking `steamcommunity.com/id/...` vanity URLs; used with Steam ResolveVanityURL)
-- `LEETIFY_API_KEY` (optional; used to fetch linked players’ Premier ratings from Leetify; sent as the documented `Authorization`/`_leetify_key` header value)
-- `LEETIFY_API_BASE` (optional, default `https://api.cs-prod.leetify.com`; override only if Leetify changes the public API host)
+- `LEETIFY_API_KEY` (optional; public Leetify profile refreshes work without it, but if set it is sent as the documented `Authorization`/`_leetify_key` header value)
+- `LEETIFY_API_BASE` (optional, default `https://api-public.cs-prod.leetify.com`; override only if Leetify changes the public API host)
 - `RATING_REFRESH_INTERVAL_HOURS` (optional, default `24`; scheduled refresh interval for every linked player’s cached Premier rating)
 - `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)
 - `BUILD_DATE` (optional, default `unknown`; set automatically in Docker CI to commit date)
@@ -90,7 +90,7 @@ When the daily message rolls over, previous-day message metadata and interested 
 
 Use `/link alias:<name> url:<steam profile>` to store a local mapping in SQLite. The URL can be a `steamcommunity.com/profiles/<SteamID64>` URL or a `steamcommunity.com/id/<vanity>` URL. Vanity URLs require `STEAM_WEB_API_KEY` so the bot can call Steam `ResolveVanityURL`; direct SteamID64 profile URLs do not.
 
-When `LEETIFY_API_KEY` is configured, linking and refresh jobs call Leetify’s `/v3/profile?steamId=<SteamID64>` endpoint and cache the player’s Premier rating when one is available. Linked players with a cached Premier rating render in draft dropdowns as `alias (11300)` style labels; unlinked players or players without a rating render normally.
+Linking and refresh jobs call Leetify’s public `/v3/profile?steam64_id=<SteamID64>` endpoint and cache the player’s Premier rating plus the nested `ranks`, `rating`, and `stats` metadata when available. Linked players with a cached Premier rating render in draft dropdowns as `alias (11300)` style labels; unlinked players or players without a rating render normally.
 
 Rating refreshes happen in two ways:
 
@@ -99,7 +99,7 @@ Rating refreshes happen in two ways:
 - Manual voice refresh: `/refresh-voice` refreshes linked players currently in your voice call, useful immediately before starting a match.
 - Draft refresh: `/team-draft refresh_ratings:true` refreshes linked players currently in the voice call before the draft message is posted. This defaults to false to avoid surprising Leetify rate-limit usage. Refreshes are concurrency-limited to 3 in-flight API calls.
 
-Inspect a stored mapping with `/get-info alias:<name>`, which returns the DB fields Discord-side for quick verification. Remove a mapping with `/unlink alias:<name>`.
+Inspect a stored mapping with `/get-info alias:<name>`, which returns the DB fields plus cached Leetify ranks/rating/stats Discord-side for quick verification. Remove a mapping with `/unlink alias:<name>`.
 
 ## Invite the Bot User to Your Server
 

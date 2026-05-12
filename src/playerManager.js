@@ -9,7 +9,7 @@ const DEFAULT_RATING_REFRESH_INTERVAL_HOURS = 24;
 const DEFAULT_HTTP_TIMEOUT_MS = 15_000;
 const DEFAULT_CONCURRENCY = 3;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-const DEFAULT_LEETIFY_API_BASE = 'https://api.cs-prod.leetify.com';
+const DEFAULT_LEETIFY_API_BASE = 'https://api-public.cs-prod.leetify.com';
 const STEAM_API_BASE = 'https://api.steampowered.com';
 
 class PlayerManagerError extends Error {
@@ -150,6 +150,26 @@ function findPremierRating(value, path = '') {
   return null;
 }
 
+function stringifyJson(value) {
+  return value && typeof value === 'object' ? JSON.stringify(value) : null;
+}
+
+function extractLeetifyMetadata(data) {
+  const premierRating = parseRatingValue(data?.ranks?.premier) || findPremierRating(data);
+  return {
+    premierRating,
+    profileName: data?.name || null,
+    profileId: data?.id || null,
+    privacyMode: data?.privacy_mode || null,
+    totalMatches: Number.isInteger(data?.total_matches) ? data.total_matches : null,
+    winrate: typeof data?.winrate === 'number' ? data.winrate : null,
+    firstMatchDate: data?.first_match_date || null,
+    ranksJson: stringifyJson(data?.ranks),
+    ratingJson: stringifyJson(data?.rating),
+    statsJson: stringifyJson(data?.stats)
+  };
+}
+
 async function runLimited(items, concurrency, task) {
   const results = [];
   let nextIndex = 0;
@@ -211,6 +231,15 @@ class PlayerManager {
         premier_rating INTEGER,
         rating_source TEXT,
         rating_updated_at TEXT,
+        leetify_profile_name TEXT,
+        leetify_profile_id TEXT,
+        privacy_mode TEXT,
+        total_matches INTEGER,
+        winrate REAL,
+        first_match_date TEXT,
+        ranks_json TEXT,
+        rating_json TEXT,
+        stats_json TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
@@ -218,6 +247,29 @@ class PlayerManager {
       CREATE INDEX IF NOT EXISTS idx_player_links_alias_normalized ON player_links(alias_normalized);
       CREATE INDEX IF NOT EXISTS idx_player_links_steam_id64 ON player_links(steam_id64);
     `);
+
+    this.addMissingPlayerLinkColumns();
+  }
+
+  addMissingPlayerLinkColumns() {
+    const existingColumns = new Set(this.db.prepare('PRAGMA table_info(player_links)').all().map((column) => column.name));
+    const columns = {
+      leetify_profile_name: 'TEXT',
+      leetify_profile_id: 'TEXT',
+      privacy_mode: 'TEXT',
+      total_matches: 'INTEGER',
+      winrate: 'REAL',
+      first_match_date: 'TEXT',
+      ranks_json: 'TEXT',
+      rating_json: 'TEXT',
+      stats_json: 'TEXT'
+    };
+
+    for (const [name, type] of Object.entries(columns)) {
+      if (!existingColumns.has(name)) {
+        this.db.prepare(`ALTER TABLE player_links ADD COLUMN ${name} ${type}`).run();
+      }
+    }
   }
 
   scheduleRefresh() {
@@ -242,15 +294,18 @@ class PlayerManager {
     const steam = extractSteamIdentifier(steamProfileUrl);
     const steamId64 = steam.steamId64 || await this.resolveVanityUrl(steam.vanity);
     const profileUrl = steam.steamId64 ? steam.profileUrl : `https://steamcommunity.com/id/${encodeURIComponent(steam.vanity)}`;
-    const rating = await this.fetchPremierRating(steamId64).catch((error) => {
-      console.warn('[players] failed to fetch rating during link:', summarizeError(error));
+    const metadata = await this.fetchLeetifyProfileMetadata(steamId64).catch((error) => {
+      console.warn('[players] failed to fetch Leetify metadata during link:', summarizeError(error));
       return null;
     });
 
     const now = new Date().toISOString();
     this.db.prepare(`
-      INSERT INTO player_links (alias, alias_normalized, steam_profile_url, steam_id64, premier_rating, rating_source, rating_updated_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO player_links (
+        alias, alias_normalized, steam_profile_url, steam_id64, premier_rating, rating_source, rating_updated_at,
+        leetify_profile_name, leetify_profile_id, privacy_mode, total_matches, winrate, first_match_date, ranks_json, rating_json, stats_json, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(alias_normalized) DO UPDATE SET
         alias = excluded.alias,
         steam_profile_url = excluded.steam_profile_url,
@@ -258,15 +313,33 @@ class PlayerManager {
         premier_rating = excluded.premier_rating,
         rating_source = excluded.rating_source,
         rating_updated_at = excluded.rating_updated_at,
+        leetify_profile_name = excluded.leetify_profile_name,
+        leetify_profile_id = excluded.leetify_profile_id,
+        privacy_mode = excluded.privacy_mode,
+        total_matches = excluded.total_matches,
+        winrate = excluded.winrate,
+        first_match_date = excluded.first_match_date,
+        ranks_json = excluded.ranks_json,
+        rating_json = excluded.rating_json,
+        stats_json = excluded.stats_json,
         updated_at = excluded.updated_at
     `).run(
       cleanAlias,
       aliasNormalized,
       profileUrl,
       steamId64,
-      rating,
-      rating ? 'leetify' : null,
-      rating ? now : null,
+      metadata?.premierRating || null,
+      metadata?.premierRating ? 'leetify' : null,
+      metadata?.premierRating ? now : null,
+      metadata?.profileName || null,
+      metadata?.profileId || null,
+      metadata?.privacyMode || null,
+      metadata?.totalMatches || null,
+      metadata?.winrate || null,
+      metadata?.firstMatchDate || null,
+      metadata?.ranksJson || null,
+      metadata?.ratingJson || null,
+      metadata?.statsJson || null,
       now
     );
 
@@ -360,14 +433,31 @@ class PlayerManager {
   }
 
   async refreshLinkRating(link) {
-    const rating = await this.fetchPremierRating(link.steam_id64);
+    const metadata = await this.fetchLeetifyProfileMetadata(link.steam_id64);
     const now = new Date().toISOString();
     this.db.prepare(`
       UPDATE player_links
-      SET premier_rating = ?, rating_source = ?, rating_updated_at = ?, updated_at = ?
+      SET premier_rating = ?, rating_source = ?, rating_updated_at = ?,
+        leetify_profile_name = ?, leetify_profile_id = ?, privacy_mode = ?, total_matches = ?, winrate = ?, first_match_date = ?,
+        ranks_json = ?, rating_json = ?, stats_json = ?, updated_at = ?
       WHERE alias_normalized = ?
-    `).run(rating, rating ? 'leetify' : null, rating ? now : null, now, link.alias_normalized);
-    return { alias: link.alias, rating };
+    `).run(
+      metadata.premierRating || null,
+      metadata.premierRating ? 'leetify' : null,
+      metadata.premierRating ? now : null,
+      metadata.profileName || null,
+      metadata.profileId || null,
+      metadata.privacyMode || null,
+      metadata.totalMatches || null,
+      metadata.winrate || null,
+      metadata.firstMatchDate || null,
+      metadata.ranksJson || null,
+      metadata.ratingJson || null,
+      metadata.statsJson || null,
+      now,
+      link.alias_normalized
+    );
+    return { alias: link.alias, rating: metadata.premierRating };
   }
 
   async resolveVanityUrl(vanity) {
@@ -386,19 +476,21 @@ class PlayerManager {
     return response.steamid;
   }
 
-  async fetchPremierRating(steamId64) {
-    if (!this.leetifyApiKey) {
-      return null;
-    }
-
+  async fetchLeetifyProfileMetadata(steamId64) {
     const url = new URL('/v3/profile', this.leetifyApiBase);
-    url.searchParams.set('steamId', steamId64);
-    const data = await this.fetchJson(url, {
-      accept: 'application/json',
-      authorization: this.leetifyApiKey,
-      _leetify_key: this.leetifyApiKey
-    });
-    return findPremierRating(data);
+    url.searchParams.set('steam64_id', steamId64);
+    const headers = { accept: 'application/json' };
+    if (this.leetifyApiKey) {
+      headers.authorization = this.leetifyApiKey;
+      headers._leetify_key = this.leetifyApiKey;
+    }
+    const data = await this.fetchJson(url, headers);
+    return extractLeetifyMetadata(data);
+  }
+
+  async fetchPremierRating(steamId64) {
+    const metadata = await this.fetchLeetifyProfileMetadata(steamId64);
+    return metadata.premierRating;
   }
 
   fetchJson(url, headers = {}) {
