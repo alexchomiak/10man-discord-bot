@@ -172,7 +172,7 @@ function findRecentPremierGame(games) {
 
   return games.find((game) => {
     const skillLevel = parseRatingValue(game?.skillLevel ?? game?.skill_level);
-    return Number.isInteger(skillLevel) && skillLevel > 0;
+    return Number.isInteger(skillLevel) && skillLevel > 1_000;
   }) || null;
 }
 
