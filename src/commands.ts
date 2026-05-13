@@ -1,6 +1,6 @@
 const COMMANDS = Object.freeze({
   TEAM_DRAFT: {
-    name: 'team-draft',
+    name: 'start-draft',
     description: 'Start a random-captain team draft for everyone in your current voice channel.',
     options: Object.freeze({
       PLAYERS: { name: 'players', description: 'Optional even total players to draft; all voice members remain draftable.' },
