@@ -434,6 +434,19 @@ const announceCommand = new SlashCommandBuilder()
       .setMaxLength(100)
   );
 
+
+const resetAnnounceTimerCommand = new SlashCommandBuilder()
+  .setName('reset-announce-timer')
+  .setDescription('Clear a user announcement cooldown so their next fresh voice join can announce.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false)
+  .addUserOption((option) =>
+    option
+      .setName('alias')
+      .setDescription('User whose announcement cooldown should be reset.')
+      .setRequired(true)
+  );
+
 const audioStatusCommand = new SlashCommandBuilder()
   .setName('audio-status')
   .setDescription('Show Discord voice/TTS diagnostics for this server.')
@@ -444,7 +457,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, announceCommand, audioStatusCommand];
+    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, announceCommand, resetAnnounceTimerCommand, audioStatusCommand];
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -690,6 +703,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'announce') {
       await announcementManager.handleAnnounceCommand(interaction);
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'reset-announce-timer') {
+      await announcementManager.handleResetAnnounceTimerCommand(interaction);
       return;
     }
 

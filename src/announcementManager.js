@@ -118,6 +118,17 @@ class AnnouncementManager {
     `).run(toIso(when), toIso(when), guildId, userId);
   }
 
+  resetLastLeft(guildId, userId) {
+    this.initDb();
+    const now = toIso();
+    const result = this.db.prepare(`
+      UPDATE announcements
+      SET last_left_at = NULL, updated_at = ?
+      WHERE guild_id = ? AND user_id = ?
+    `).run(now, guildId, userId);
+    return result.changes > 0;
+  }
+
   async handleAnnounceCommand(interaction) {
     if (!interaction.guildId) {
       await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
@@ -147,6 +158,22 @@ class AnnouncementManager {
     this.saveMapping(interaction.guildId, user.id, fileName);
     await interaction.reply({
       content: `Announcement saved for ${user}: \`${fileName}\`.`,
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
+  async handleResetAnnounceTimerCommand(interaction) {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const user = interaction.options.getUser('alias', true);
+    const reset = this.resetLastLeft(interaction.guildId, user.id);
+    await interaction.reply({
+      content: reset
+        ? `Announcement cooldown reset for ${user}. Their next fresh voice join can announce immediately.`
+        : `No announcement mapping exists for ${user}. Use /announce first.`,
       flags: MessageFlags.Ephemeral
     });
   }
