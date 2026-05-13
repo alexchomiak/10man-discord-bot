@@ -42,6 +42,7 @@ const DISCORD_MESSAGES = Object.freeze({
   announcementInvalidFilename: 'Announcement filename must be a simple `.mp3` filename from the bot audio directory (no folders).',
   announcementFileMissing: (fileName, audioDirectory) => `No announcement file named \`${fileName}\` exists in \`${audioDirectory}\`.`,
   announcementSaved: (user, fileName) => `Announcement saved for ${user}: \`${fileName}\`.`,
+  announcementRemoved: (user) => `Announcement removed for ${user}. Their voice joins will no longer trigger an announcement.`,
   announcementCooldownReset: (user) => `Announcement cooldown reset for ${user}. Their next fresh voice join can announce immediately.`,
   announcementMappingMissing: (user, commandName) => `No announcement mapping exists for ${user}. Use /${commandName} first.`
 });

@@ -449,6 +449,18 @@ const resetAnnounceTimerCommand = new SlashCommandBuilder()
       .setRequired(true)
   );
 
+const removeAnnouncementCommand = new SlashCommandBuilder()
+  .setName(COMMANDS.REMOVE_ANNOUNCEMENT.name)
+  .setDescription(COMMANDS.REMOVE_ANNOUNCEMENT.description)
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false)
+  .addUserOption((option) =>
+    option
+      .setName(COMMANDS.REMOVE_ANNOUNCEMENT.options.ALIAS.name)
+      .setDescription(COMMANDS.REMOVE_ANNOUNCEMENT.options.ALIAS.description)
+      .setRequired(true)
+  );
+
 const audioStatusCommand = new SlashCommandBuilder()
   .setName(COMMANDS.AUDIO_STATUS.name)
   .setDescription(COMMANDS.AUDIO_STATUS.description)
@@ -459,7 +471,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, announceCommand, resetAnnounceTimerCommand, audioStatusCommand];
+    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, announceCommand, resetAnnounceTimerCommand, removeAnnouncementCommand, audioStatusCommand];
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -710,6 +722,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.RESET_ANNOUNCE_TIMER.name) {
       await announcementManager.handleResetAnnounceTimerCommand(interaction);
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.REMOVE_ANNOUNCEMENT.name) {
+      await announcementManager.handleRemoveAnnouncementCommand(interaction);
       return;
     }
 
