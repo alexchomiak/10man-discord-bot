@@ -801,12 +801,4 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   }
 });
 
-client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
-  try {
-    await playerManager.handleMemberNicknameUpdate(oldMember, newMember);
-  } catch (error) {
-    console.error('Nickname variable update error:', summarizePlayerError(error));
-  }
-});
-
 client.login(token);
