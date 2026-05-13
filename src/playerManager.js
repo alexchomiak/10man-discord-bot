@@ -169,8 +169,12 @@ function parseJson(value) {
   }
 }
 
+function stripDiscordMentionNoise(value) {
+  return String(value || '').replace(/<@!?(\d+)>/g, '$1');
+}
+
 function truncate(value, maxLength) {
-  const text = String(value || '');
+  const text = stripDiscordMentionNoise(value);
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
@@ -510,7 +514,7 @@ class PlayerManager {
   getLeaderboardRows(limit = 25) {
     return this.getAll()
       .map((link) => ({
-        alias: link.alias,
+        alias: firstPresent(link.leetify_profile_name, link.alias),
         premierRating: Number.isInteger(link.premier_rating) ? link.premier_rating : null,
         leetifyRank: parseLeetifyRank(link),
         ratingUpdatedAt: link.rating_updated_at
@@ -530,7 +534,7 @@ class PlayerManager {
     const rows = this.getLeaderboardRows();
     const updatedAt = new Date().toISOString();
     const title = `🏆 ${guildName} CS2 Leaderboard`;
-    const subtitle = 'Sorted by Premier rating, then Leetify rating. Auto-refreshes with the rating refresh job.';
+    const subtitle = 'Sorted by Premier rating. Auto-refreshes with the rating refresh job.';
 
     if (rows.length === 0) {
       return [
@@ -544,13 +548,12 @@ class PlayerManager {
     }
 
     const tableRows = [
-      `${'#'.padStart(2)}  ${'Player'.padEnd(20)} ${'Premier'.padStart(7)} ${'Leetify'.padStart(7)}`,
-      `${'--'}  ${'-'.repeat(20)} ${'-'.repeat(7)} ${'-'.repeat(7)}`,
+      `${'#'.padStart(2)}  ${'Player'.padEnd(24)} ${'Premier'.padStart(7)}`,
+      `${'--'}  ${'-'.repeat(24)} ${'-'.repeat(7)}`,
       ...rows.map((row, index) => [
         String(index + 1).padStart(2),
-        truncate(row.alias, 20).padEnd(20),
-        formatLeaderboardNumber(row.premierRating).padStart(7),
-        formatLeaderboardNumber(row.leetifyRank).padStart(7)
+        truncate(row.alias, 24).padEnd(24),
+        formatLeaderboardNumber(row.premierRating).padStart(7)
       ].join('  '))
     ];
 

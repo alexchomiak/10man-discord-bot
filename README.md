@@ -102,7 +102,7 @@ Rating refreshes happen in two ways:
 - Manual voice refresh: `/refresh-voice` refreshes linked players currently in your voice call, useful immediately before starting a match.
 - Draft refresh: `/team-draft refresh_ratings:true` refreshes linked players currently in the voice call before the draft message is posted. This defaults to false to avoid surprising Leetify rate-limit usage. Refreshes are concurrency-limited to 3 in-flight API calls.
 
-Use `/leaderboard` to post the server leaderboard in the current channel. Only one leaderboard is tracked per guild; rerunning the command updates the existing tracked message when possible. Use `/refresh-leaderboard` to force-refresh the existing message after linking or refreshing players. The leaderboard is sorted by Premier rating first and Leetify rating second, and it updates after each scheduled all-player rating refresh.
+Use `/leaderboard` to post the server leaderboard in the current channel. Only one leaderboard is tracked per guild; rerunning the command updates the existing tracked message when possible. Use `/refresh-leaderboard` to force-refresh the existing message after linking or refreshing players. The leaderboard displays player names with Premier ratings only, sorts by Premier rating first and cached Leetify rating only as a tie-breaker, and updates after each scheduled all-player rating refresh.
 
 Inspect a stored mapping with `/get-info alias:<name>`, which returns the DB fields plus cached Leetify source, ranks/rating/stats, and latest Premier game Discord-side for quick verification. Remove a mapping with `/unlink alias:<name>`.
 
