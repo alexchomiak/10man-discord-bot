@@ -14,6 +14,8 @@ const { NotificationManager } = require('./notificationManager');
 const { AudioManager } = require('./audioManager');
 const { AnnouncementManager } = require('./announcementManager');
 const { PlayerManager, summarizeError: summarizePlayerError } = require('./playerManager');
+const { COMMANDS, DRAFT_TYPE_CHOICES } = require('./commands.ts');
+const { DISCORD_MESSAGES } = require('./messages.ts');
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -87,7 +89,7 @@ function audioFailureMessage(error) {
     return error.message;
   }
 
-  return 'Voice audio failed. Check that I have permission to join and speak in that channel, then try again.';
+  return DISCORD_MESSAGES.AUDIO_FAILURE;
 }
 
 function formatBuildDate(buildDate) {
@@ -221,235 +223,235 @@ const client = new Client({
 const notificationManager = new NotificationManager(client, config);
 
 const teamDraftCommand = new SlashCommandBuilder()
-  .setName('team-draft')
-  .setDescription('Start a random-captain team draft for everyone in your current voice channel.')
+  .setName(COMMANDS.TEAM_DRAFT.name)
+  .setDescription(COMMANDS.TEAM_DRAFT.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addIntegerOption((option) =>
     option
-      .setName('players')
-      .setDescription('Optional even total players to draft; all voice members remain draftable.')
+      .setName(COMMANDS.TEAM_DRAFT.options.PLAYERS.name)
+      .setDescription(COMMANDS.TEAM_DRAFT.options.PLAYERS.description)
       .setMinValue(4)
   )
   .addUserOption((option) =>
     option
-      .setName('captain1')
-      .setDescription('Optional first captain (must be in the same voice channel).')
+      .setName(COMMANDS.TEAM_DRAFT.options.CAPTAIN_1.name)
+      .setDescription(COMMANDS.TEAM_DRAFT.options.CAPTAIN_1.description)
   )
   .addUserOption((option) =>
     option
-      .setName('captain2')
-      .setDescription('Optional second captain (must be in the same voice channel).')
+      .setName(COMMANDS.TEAM_DRAFT.options.CAPTAIN_2.name)
+      .setDescription(COMMANDS.TEAM_DRAFT.options.CAPTAIN_2.description)
   )
   .addStringOption((option) =>
     option
-      .setName('draft_type')
-      .setDescription('Draft order type (default: snake).')
+      .setName(COMMANDS.TEAM_DRAFT.options.DRAFT_TYPE.name)
+      .setDescription(COMMANDS.TEAM_DRAFT.options.DRAFT_TYPE.description)
       .addChoices(
-        { name: 'Snake', value: 'snake' },
-        { name: 'Regular alternating', value: 'regular' }
+        DRAFT_TYPE_CHOICES.SNAKE,
+        DRAFT_TYPE_CHOICES.REGULAR
       )
   )
   .addBooleanOption((option) =>
     option
-      .setName('refresh_ratings')
-      .setDescription('Refresh linked Premier ratings before starting this draft (default false).')
+      .setName(COMMANDS.TEAM_DRAFT.options.REFRESH_RATINGS.name)
+      .setDescription(COMMANDS.TEAM_DRAFT.options.REFRESH_RATINGS.description)
   );
 
 const teamDraftMockCommand = new SlashCommandBuilder()
-  .setName('team-draft-mock')
-  .setDescription('Run a mock draft with fake users so you can test solo.')
+  .setName(COMMANDS.TEAM_DRAFT_MOCK.name)
+  .setDescription(COMMANDS.TEAM_DRAFT_MOCK.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addIntegerOption((option) =>
     option
-      .setName('players')
-      .setDescription('Even number of fake players (minimum 4).')
+      .setName(COMMANDS.TEAM_DRAFT_MOCK.options.PLAYERS.name)
+      .setDescription(COMMANDS.TEAM_DRAFT_MOCK.options.PLAYERS.description)
       .setRequired(true)
       .setMinValue(4)
   )
   .addBooleanOption((option) =>
     option
-      .setName('spawn_voice')
-      .setDescription('After Start Mock Match, create a temporary private mock voice channel and move you there.')
+      .setName(COMMANDS.TEAM_DRAFT_MOCK.options.SPAWN_VOICE.name)
+      .setDescription(COMMANDS.TEAM_DRAFT_MOCK.options.SPAWN_VOICE.description)
   )
   .addBooleanOption((option) =>
     option
-      .setName('broadcast')
-      .setDescription('Broadcast mock draft results to the channel (default true).')
+      .setName(COMMANDS.TEAM_DRAFT_MOCK.options.BROADCAST.name)
+      .setDescription(COMMANDS.TEAM_DRAFT_MOCK.options.BROADCAST.description)
   )
   .addStringOption((option) =>
     option
-      .setName('draft_type')
-      .setDescription('Draft order type (default: snake).')
+      .setName(COMMANDS.TEAM_DRAFT_MOCK.options.DRAFT_TYPE.name)
+      .setDescription(COMMANDS.TEAM_DRAFT_MOCK.options.DRAFT_TYPE.description)
       .addChoices(
-        { name: 'Snake', value: 'snake' },
-        { name: 'Regular alternating', value: 'regular' }
+        DRAFT_TYPE_CHOICES.SNAKE,
+        DRAFT_TYPE_CHOICES.REGULAR
       )
   );
 
 
 const linkCommand = new SlashCommandBuilder()
-  .setName('link')
-  .setDescription('Link a player alias to a Steam profile and store their CS Premier rating.')
+  .setName(COMMANDS.LINK.name)
+  .setDescription(COMMANDS.LINK.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addStringOption((option) =>
     option
-      .setName('alias')
-      .setDescription('Alias/display name to use for draft rating labels.')
+      .setName(COMMANDS.LINK.options.ALIAS.name)
+      .setDescription(COMMANDS.LINK.options.ALIAS.description)
       .setRequired(true)
       .setMaxLength(100)
   )
   .addStringOption((option) =>
     option
-      .setName('url')
-      .setDescription('Steam profile URL, e.g. steamcommunity.com/id/foo or /profiles/SteamID64.')
+      .setName(COMMANDS.LINK.options.URL.name)
+      .setDescription(COMMANDS.LINK.options.URL.description)
       .setRequired(true)
   );
 
 const unlinkCommand = new SlashCommandBuilder()
-  .setName('unlink')
-  .setDescription('Remove a linked player alias from the local rating database.')
+  .setName(COMMANDS.UNLINK.name)
+  .setDescription(COMMANDS.UNLINK.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addStringOption((option) =>
     option
-      .setName('alias')
-      .setDescription('Alias to unlink.')
+      .setName(COMMANDS.UNLINK.options.ALIAS.name)
+      .setDescription(COMMANDS.UNLINK.options.ALIAS.description)
       .setRequired(true)
       .setMaxLength(100)
   );
 
 const getInfoCommand = new SlashCommandBuilder()
-  .setName('get-info')
-  .setDescription('Show the stored Steam/Premier DB record for a linked player alias.')
+  .setName(COMMANDS.GET_INFO.name)
+  .setDescription(COMMANDS.GET_INFO.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addStringOption((option) =>
     option
-      .setName('alias')
-      .setDescription('Alias to look up in the player link database.')
+      .setName(COMMANDS.GET_INFO.options.ALIAS.name)
+      .setDescription(COMMANDS.GET_INFO.options.ALIAS.description)
       .setRequired(true)
       .setMaxLength(100)
   );
 
 const refreshCommand = new SlashCommandBuilder()
-  .setName('refresh')
-  .setDescription('Refresh Leetify Premier metadata for one linked player alias.')
+  .setName(COMMANDS.REFRESH.name)
+  .setDescription(COMMANDS.REFRESH.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addStringOption((option) =>
     option
-      .setName('alias')
-      .setDescription('Alias to refresh in the player link database.')
+      .setName(COMMANDS.REFRESH.options.ALIAS.name)
+      .setDescription(COMMANDS.REFRESH.options.ALIAS.description)
       .setRequired(true)
       .setMaxLength(100)
   );
 
 const refreshVoiceCommand = new SlashCommandBuilder()
-  .setName('refresh-voice')
-  .setDescription('Refresh Leetify Premier metadata for linked players in your voice channel.')
+  .setName(COMMANDS.REFRESH_VOICE.name)
+  .setDescription(COMMANDS.REFRESH_VOICE.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
 const leaderboardCommand = new SlashCommandBuilder()
-  .setName('leaderboard')
-  .setDescription('Create or update this server’s maintained CS2 ratings leaderboard.')
+  .setName(COMMANDS.LEADERBOARD.name)
+  .setDescription(COMMANDS.LEADERBOARD.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
 const refreshLeaderboardCommand = new SlashCommandBuilder()
-  .setName('refresh-leaderboard')
-  .setDescription('Refresh this server’s existing maintained CS2 ratings leaderboard now.')
+  .setName(COMMANDS.REFRESH_LEADERBOARD.name)
+  .setDescription(COMMANDS.REFRESH_LEADERBOARD.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
 const draftStatusCommand = new SlashCommandBuilder()
-  .setName('draft-status')
-  .setDescription('Show current draft/mock status for this server.')
+  .setName(COMMANDS.DRAFT_STATUS.name)
+  .setDescription(COMMANDS.DRAFT_STATUS.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
 const draftCancelCommand = new SlashCommandBuilder()
-  .setName('draft-cancel')
-  .setDescription('Cancel the active draft in this server and clean temporary resources.')
+  .setName(COMMANDS.DRAFT_CANCEL.name)
+  .setDescription(COMMANDS.DRAFT_CANCEL.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
 const draftCleanupCommand = new SlashCommandBuilder()
-  .setName('draft-cleanup')
-  .setDescription('Force cleanup of active draft/mock temporary channels and roles.')
+  .setName(COMMANDS.DRAFT_CLEANUP.name)
+  .setDescription(COMMANDS.DRAFT_CLEANUP.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
 const returnToVoiceCommand = new SlashCommandBuilder()
-  .setName('return-to-voice')
-  .setDescription('Move drafted players back to the original voice channel and cleanup draft resources.')
+  .setName(COMMANDS.RETURN_TO_VOICE.name)
+  .setDescription(COMMANDS.RETURN_TO_VOICE.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
 const buildVersionCommand = new SlashCommandBuilder()
-  .setName('build-version')
-  .setDescription('Show the currently running build commit hash.')
+  .setName(COMMANDS.BUILD_VERSION.name)
+  .setDescription(COMMANDS.BUILD_VERSION.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
 const testLobbyMusicCommand = new SlashCommandBuilder()
-  .setName('test-lobby-music')
-  .setDescription('Join your voice channel and play lobby music if /app/data/lobby.mp3 exists.')
+  .setName(COMMANDS.TEST_LOBBY_MUSIC.name)
+  .setDescription(COMMANDS.TEST_LOBBY_MUSIC.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
 const testTtsCommand = new SlashCommandBuilder()
-  .setName('test-tts')
-  .setDescription('Make the bot say a test message in voice.')
+  .setName(COMMANDS.TEST_TTS.name)
+  .setDescription(COMMANDS.TEST_TTS.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addStringOption((option) =>
     option
-      .setName('message')
-      .setDescription('Message for the bot to say in voice.')
+      .setName(COMMANDS.TEST_TTS.options.MESSAGE.name)
+      .setDescription(COMMANDS.TEST_TTS.options.MESSAGE.description)
       .setRequired(true)
       .setMaxLength(200)
   );
 
 
 const announceCommand = new SlashCommandBuilder()
-  .setName('announce')
-  .setDescription('Set the MP3 announcement played when a user joins voice outside draft mode.')
+  .setName(COMMANDS.ANNOUNCE.name)
+  .setDescription(COMMANDS.ANNOUNCE.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addUserOption((option) =>
     option
-      .setName('alias')
-      .setDescription('User whose voice join should trigger this announcement.')
+      .setName(COMMANDS.ANNOUNCE.options.ALIAS.name)
+      .setDescription(COMMANDS.ANNOUNCE.options.ALIAS.description)
       .setRequired(true)
   )
   .addStringOption((option) =>
     option
-      .setName('filename')
-      .setDescription('MP3 filename in the bot audio directory, e.g. intro.mp3.')
+      .setName(COMMANDS.ANNOUNCE.options.FILENAME.name)
+      .setDescription(COMMANDS.ANNOUNCE.options.FILENAME.description)
       .setRequired(true)
       .setMaxLength(100)
   );
 
 
 const resetAnnounceTimerCommand = new SlashCommandBuilder()
-  .setName('reset-announce-timer')
-  .setDescription('Clear a user announcement cooldown so their next fresh voice join can announce.')
+  .setName(COMMANDS.RESET_ANNOUNCE_TIMER.name)
+  .setDescription(COMMANDS.RESET_ANNOUNCE_TIMER.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addUserOption((option) =>
     option
-      .setName('alias')
-      .setDescription('User whose announcement cooldown should be reset.')
+      .setName(COMMANDS.RESET_ANNOUNCE_TIMER.options.ALIAS.name)
+      .setDescription(COMMANDS.RESET_ANNOUNCE_TIMER.options.ALIAS.description)
       .setRequired(true)
   );
 
 const audioStatusCommand = new SlashCommandBuilder()
-  .setName('audio-status')
-  .setDescription('Show Discord voice/TTS diagnostics for this server.')
+  .setName(COMMANDS.AUDIO_STATUS.name)
+  .setDescription(COMMANDS.AUDIO_STATUS.description)
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
@@ -485,27 +487,27 @@ client.once(Events.ClientReady, async (readyClient) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
-    if (interaction.isChatInputCommand() && interaction.commandName === 'team-draft') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.TEAM_DRAFT.name) {
       await draftManager.startDraft(interaction, config);
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'team-draft-mock') {
-      const players = interaction.options.getInteger('players', true);
-      const spawnVoice = interaction.options.getBoolean('spawn_voice') ?? true;
-      const broadcast = interaction.options.getBoolean('broadcast') ?? true;
-      const draftType = interaction.options.getString('draft_type') ?? 'snake';
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.TEAM_DRAFT_MOCK.name) {
+      const players = interaction.options.getInteger(COMMANDS.TEAM_DRAFT_MOCK.options.PLAYERS.name, true);
+      const spawnVoice = interaction.options.getBoolean(COMMANDS.TEAM_DRAFT_MOCK.options.SPAWN_VOICE.name) ?? true;
+      const broadcast = interaction.options.getBoolean(COMMANDS.TEAM_DRAFT_MOCK.options.BROADCAST.name) ?? true;
+      const draftType = interaction.options.getString(COMMANDS.TEAM_DRAFT_MOCK.options.DRAFT_TYPE.name) ?? DRAFT_TYPE_CHOICES.SNAKE.value;
       await draftManager.runMockDraft(interaction, players, config, spawnVoice, broadcast, draftType);
       return;
     }
 
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'link') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.LINK.name) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         const linked = await playerManager.link(
-          interaction.options.getString('alias', true),
-          interaction.options.getString('url', true)
+          interaction.options.getString(COMMANDS.LINK.options.ALIAS.name, true),
+          interaction.options.getString(COMMANDS.LINK.options.URL.name, true)
         );
         await interaction.editReply({
           content: linked.premier_rating
@@ -519,8 +521,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'unlink') {
-      const alias = interaction.options.getString('alias', true);
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.UNLINK.name) {
+      const alias = interaction.options.getString(COMMANDS.UNLINK.options.ALIAS.name, true);
       const removed = playerManager.unlink(alias);
       await interaction.reply({
         content: removed ? `Unlinked \`${alias}\`.` : `No link found for \`${alias}\`.`,
@@ -529,27 +531,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'get-info') {
-      const alias = interaction.options.getString('alias', true);
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.GET_INFO.name) {
+      const alias = interaction.options.getString(COMMANDS.GET_INFO.options.ALIAS.name, true);
       const link = playerManager.getByAlias(alias);
       await interaction.reply({
         content: link
           ? formatPlayerInfo(link)
-          : `No player link found for \`${escapeInlineCode(alias)}\`. Use /link first to create a DB record.`,
+          : `No player link found for \`${escapeInlineCode(alias)}\`. Use /${COMMANDS.LINK.name} first to create a DB record.`,
         flags: MessageFlags.Ephemeral
       });
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'refresh') {
-      const alias = interaction.options.getString('alias', true);
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.REFRESH.name) {
+      const alias = interaction.options.getString(COMMANDS.REFRESH.options.ALIAS.name, true);
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         const link = await playerManager.refreshRatingForAlias(alias);
         await interaction.editReply({
           content: link
             ? [`Refreshed \`${escapeInlineCode(link.alias)}\`.`, '', formatPlayerInfo(link)].join('\n')
-            : `No player link found for \`${escapeInlineCode(alias)}\`. Use /link first to create a DB record.`
+            : `No player link found for \`${escapeInlineCode(alias)}\`. Use /${COMMANDS.LINK.name} first to create a DB record.`
         });
       } catch (error) {
         console.error('Failed to refresh player:', summarizePlayerError(error));
@@ -558,10 +560,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'refresh-voice') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.REFRESH_VOICE.name) {
       const members = await getInvokerVoiceMembers(interaction);
       if (!members) {
-        await interaction.reply({ content: 'Join a voice channel first.', flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: DISCORD_MESSAGES.JOIN_VOICE_FIRST, flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -577,7 +579,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'leaderboard') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.LEADERBOARD.name) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         const result = await playerManager.createOrUpdateLeaderboard(
@@ -598,7 +600,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'refresh-leaderboard') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.REFRESH_LEADERBOARD.name) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         const result = await playerManager.updateLeaderboard(
@@ -617,22 +619,22 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'draft-status') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.DRAFT_STATUS.name) {
       await draftManager.getDraftStatus(interaction);
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'draft-cancel') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.DRAFT_CANCEL.name) {
       await draftManager.cancelDraft(interaction);
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'draft-cleanup') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.DRAFT_CLEANUP.name) {
       await draftManager.cleanupDraft(interaction);
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'build-version') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.BUILD_VERSION.name) {
       const version = process.env.BUILD_VERSION || 'dev';
       const buildDate = formatBuildDate(process.env.BUILD_DATE);
       await interaction.reply({
@@ -642,11 +644,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'test-lobby-music') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.TEST_LOBBY_MUSIC.name) {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       const voiceChannel = member.voice?.channel;
       if (!voiceChannel) {
-        await interaction.reply({ content: 'Join a voice channel first.', flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: DISCORD_MESSAGES.JOIN_VOICE_FIRST, flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -661,17 +663,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.editReply({
         content: audioManager.hasMusicFile()
-          ? 'Joined voice and started/queued lobby music.'
-          : `Joined voice, but no lobby music file exists at \`${config.lobbyMusicPath}\`.`
+          ? DISCORD_MESSAGES.lobbyMusicQueued
+          : DISCORD_MESSAGES.lobbyMusicMissing(config.lobbyMusicPath)
       });
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'test-tts') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.TEST_TTS.name) {
       const member = await interaction.guild.members.fetch(interaction.user.id);
       const voiceChannel = member.voice?.channel;
       if (!voiceChannel) {
-        await interaction.reply({ content: 'Join a voice channel first.', flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: DISCORD_MESSAGES.JOIN_VOICE_FIRST, flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -684,7 +686,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
-      const message = interaction.options.getString('message', true);
+      const message = interaction.options.getString(COMMANDS.TEST_TTS.options.MESSAGE.name, true);
       const spoke = await audioManager.speak(interaction.guildId, message);
       const audioStatus = audioManager.status(interaction.guildId);
       const voiceReady = audioStatus?.connectionStatus === 'ready';
@@ -692,26 +694,26 @@ client.on(Events.InteractionCreate, async (interaction) => {
         content: spoke
           ? [
               voiceReady
-                ? 'Queued TTS test to voice.'
-                : `Queued TTS, but Discord voice is still ${audioStatus?.connectionStatus || 'not ready'} so speech is being held until the connection becomes ready.`,
-              audioStatus?.queue?.speechQueuedMs ? `Speech queued: ~${audioStatus.queue.speechQueuedMs}ms.` : null
+                ? DISCORD_MESSAGES.ttsQueued
+                : DISCORD_MESSAGES.ttsQueuedWaiting(audioStatus?.connectionStatus),
+              audioStatus?.queue?.speechQueuedMs ? DISCORD_MESSAGES.ttsSpeechQueued(audioStatus.queue.speechQueuedMs) : null
             ].filter(Boolean).join('\n')
-          : 'I joined voice, but TTS generation or playback failed. Check the bot logs for the detailed TTS error.'
+          : DISCORD_MESSAGES.ttsFailed
       });
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'announce') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.ANNOUNCE.name) {
       await announcementManager.handleAnnounceCommand(interaction);
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'reset-announce-timer') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.RESET_ANNOUNCE_TIMER.name) {
       await announcementManager.handleResetAnnounceTimerCommand(interaction);
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'audio-status') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.AUDIO_STATUS.name) {
       const status = audioManager.status(interaction.guildId);
       const dependencyReport = audioManager.dependencyReport();
       await interaction.reply({
@@ -730,7 +732,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === 'return-to-voice') {
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.RETURN_TO_VOICE.name) {
       await draftManager.returnToVoice(interaction);
       return;
     }

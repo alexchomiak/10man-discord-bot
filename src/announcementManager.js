@@ -2,6 +2,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 const { ChannelType, MessageFlags } = require('discord.js');
+const { COMMANDS } = require('./commands.ts');
+const { DISCORD_MESSAGES } = require('./messages.ts');
 
 const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000;
 const MP3_FILE_RE = /^[\w .()\[\]-]+\.mp3$/i;
@@ -131,16 +133,16 @@ class AnnouncementManager {
 
   async handleAnnounceCommand(interaction) {
     if (!interaction.guildId) {
-      await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: DISCORD_MESSAGES.SERVER_ONLY, flags: MessageFlags.Ephemeral });
       return;
     }
 
-    const user = interaction.options.getUser('alias', true);
-    const requestedFileName = interaction.options.getString('filename', true);
+    const user = interaction.options.getUser(COMMANDS.ANNOUNCE.options.ALIAS.name, true);
+    const requestedFileName = interaction.options.getString(COMMANDS.ANNOUNCE.options.FILENAME.name, true);
     const fileName = safeMp3FileName(requestedFileName);
     if (!fileName) {
       await interaction.reply({
-        content: 'Announcement filename must be a simple `.mp3` filename from the bot audio directory (no folders).',
+        content: DISCORD_MESSAGES.announcementInvalidFilename,
         flags: MessageFlags.Ephemeral
       });
       return;
@@ -149,7 +151,7 @@ class AnnouncementManager {
     const audioPath = this.resolveAudioPath(fileName);
     if (!audioPath || !fs.existsSync(audioPath)) {
       await interaction.reply({
-        content: `No announcement file named \`${fileName}\` exists in \`${this.audioDirectory}\`.`,
+        content: DISCORD_MESSAGES.announcementFileMissing(fileName, this.audioDirectory),
         flags: MessageFlags.Ephemeral
       });
       return;
@@ -157,23 +159,23 @@ class AnnouncementManager {
 
     this.saveMapping(interaction.guildId, user.id, fileName);
     await interaction.reply({
-      content: `Announcement saved for ${user}: \`${fileName}\`.`,
+      content: DISCORD_MESSAGES.announcementSaved(user, fileName),
       flags: MessageFlags.Ephemeral
     });
   }
 
   async handleResetAnnounceTimerCommand(interaction) {
     if (!interaction.guildId) {
-      await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: DISCORD_MESSAGES.SERVER_ONLY, flags: MessageFlags.Ephemeral });
       return;
     }
 
-    const user = interaction.options.getUser('alias', true);
+    const user = interaction.options.getUser(COMMANDS.RESET_ANNOUNCE_TIMER.options.ALIAS.name, true);
     const reset = this.resetLastLeft(interaction.guildId, user.id);
     await interaction.reply({
       content: reset
-        ? `Announcement cooldown reset for ${user}. Their next fresh voice join can announce immediately.`
-        : `No announcement mapping exists for ${user}. Use /announce first.`,
+        ? DISCORD_MESSAGES.announcementCooldownReset(user)
+        : DISCORD_MESSAGES.announcementMappingMissing(user, COMMANDS.ANNOUNCE.name),
       flags: MessageFlags.Ephemeral
     });
   }
