@@ -190,10 +190,61 @@ function formatLeaderboardNumber(value) {
   return String(value);
 }
 
+function parseNumeric(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function findLeetifyRatingValue(value, path = '') {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const nested = findLeetifyRatingValue(value[index], `${path}[${index}]`);
+      if (nested !== null) {
+        return nested;
+      }
+    }
+    return null;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    const normalizedPath = `${path}.${key}`.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (normalizedPath.includes('leetify')) {
+      const numeric = parseNumeric(child);
+      if (numeric !== null && numeric > -10 && numeric < 10) {
+        return numeric;
+      }
+    }
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    const nested = findLeetifyRatingValue(child, path ? `${path}.${key}` : key);
+    if (nested !== null) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
 function parseLeetifyRank(link) {
   const ranks = parseJson(link?.ranks_json);
-  const value = ranks?.leetify;
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const rating = parseJson(link?.rating_json);
+  const stats = parseJson(link?.stats_json);
+  return parseNumeric(ranks?.leetify)
+    ?? findLeetifyRatingValue(rating)
+    ?? findLeetifyRatingValue(stats);
 }
 
 function firstPresent(...values) {
@@ -215,10 +266,11 @@ function findRecentPremierGame(games) {
   }) || null;
 }
 
-function buildLegacyRanks(data, premierRating) {
+function buildLegacyRanks(data, premierRating, leetifyRating) {
   return {
     ...(isPlainObject(data?.ranks) ? data.ranks : {}),
-    ...(premierRating ? { premier: premierRating } : {})
+    ...(premierRating ? { premier: premierRating } : {}),
+    ...(leetifyRating !== null ? { leetify: leetifyRating } : {})
   };
 }
 
@@ -228,7 +280,11 @@ function extractLeetifyMetadata(data, source = 'leetify-public') {
   const premierRating = parseRatingValue(data?.ranks?.premier)
     || parseRatingValue(recentPremierGame?.skillLevel ?? recentPremierGame?.skill_level)
     || findPremierRating(data);
-  const ranks = source === 'leetify-legacy' ? buildLegacyRanks(data, premierRating) : data?.ranks;
+  const leetifyRating = parseNumeric(data?.ranks?.leetify)
+    ?? findLeetifyRatingValue(data?.rating || data?.ratings)
+    ?? findLeetifyRatingValue(data?.stats || data?.lifetimeStats || data?.profileStats)
+    ?? findLeetifyRatingValue(data);
+  const ranks = source === 'leetify-legacy' ? buildLegacyRanks(data, premierRating, leetifyRating) : data?.ranks;
 
   return {
     source,
@@ -534,7 +590,7 @@ class PlayerManager {
     const rows = this.getLeaderboardRows();
     const updatedAt = new Date().toISOString();
     const title = `🏆 ${guildName} CS2 Leaderboard`;
-    const subtitle = 'Sorted by Premier rating. Auto-refreshes with the rating refresh job.';
+    const subtitle = 'Sorted by Premier rating, then Leetify rating. Auto-refreshes with the rating refresh job.';
 
     if (rows.length === 0) {
       return [
@@ -548,12 +604,13 @@ class PlayerManager {
     }
 
     const tableRows = [
-      `${'#'.padStart(2)}  ${'Player'.padEnd(24)} ${'Premier'.padStart(7)}`,
-      `${'--'}  ${'-'.repeat(24)} ${'-'.repeat(7)}`,
+      `${'#'.padStart(2)}  ${'Player'.padEnd(22)} ${'Premier'.padStart(7)} ${'Leetify'.padStart(7)}`,
+      `${'--'}  ${'-'.repeat(22)} ${'-'.repeat(7)} ${'-'.repeat(7)}`,
       ...rows.map((row, index) => [
         String(index + 1).padStart(2),
-        truncate(row.alias, 24).padEnd(24),
-        formatLeaderboardNumber(row.premierRating).padStart(7)
+        truncate(row.alias, 22).padEnd(22),
+        formatLeaderboardNumber(row.premierRating).padStart(7),
+        formatLeaderboardNumber(row.leetifyRank).padStart(7)
       ].join('  '))
     ];
 
