@@ -54,6 +54,10 @@ function summarizeError(error) {
   };
 }
 
+function isMissingPermissionsError(error) {
+  return error?.code === 50013 || error?.code === '50013' || error?.rawError?.code === 50013;
+}
+
 function memberAliases(member) {
   return [
     member?.displayName,
@@ -435,6 +439,8 @@ class PlayerManager {
         alias_normalized TEXT NOT NULL UNIQUE,
         steam_profile_url TEXT NOT NULL,
         steam_id64 TEXT NOT NULL UNIQUE,
+        discord_user_id TEXT,
+        discord_guild_id TEXT,
         premier_rating INTEGER,
         rating_source TEXT,
         rating_updated_at TEXT,
@@ -479,12 +485,18 @@ class PlayerManager {
     `);
 
     this.addMissingPlayerLinkColumns();
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_player_links_discord_user_id ON player_links(discord_user_id);
+      CREATE INDEX IF NOT EXISTS idx_player_links_discord_member ON player_links(discord_guild_id, discord_user_id);
+    `);
     this.addMissingNicknameTemplateColumns();
   }
 
   addMissingPlayerLinkColumns() {
     const existingColumns = new Set(this.db.prepare('PRAGMA table_info(player_links)').all().map((column) => column.name));
     const columns = {
+      discord_user_id: 'TEXT',
+      discord_guild_id: 'TEXT',
       leetify_profile_name: 'TEXT',
       leetify_profile_id: 'TEXT',
       privacy_mode: 'TEXT',
@@ -531,7 +543,7 @@ class PlayerManager {
     }, delayMs);
   }
 
-  async link(alias, steamProfileUrl) {
+  async link(alias, steamProfileUrl, owner = {}) {
     this.initDb();
     const cleanAlias = String(alias || '').trim();
     const aliasNormalized = normalizeAlias(cleanAlias);
@@ -547,17 +559,21 @@ class PlayerManager {
       return null;
     });
 
+    const discordUserId = owner?.discordUserId ? String(owner.discordUserId) : null;
+    const discordGuildId = owner?.discordGuildId ? String(owner.discordGuildId) : null;
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO player_links (
-        alias, alias_normalized, steam_profile_url, steam_id64, premier_rating, rating_source, rating_updated_at,
+        alias, alias_normalized, steam_profile_url, steam_id64, discord_user_id, discord_guild_id, premier_rating, rating_source, rating_updated_at,
         leetify_profile_name, leetify_profile_id, privacy_mode, total_matches, winrate, first_match_date, ranks_json, rating_json, stats_json, latest_premier_game_json, leetify_api_source, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(alias_normalized) DO UPDATE SET
         alias = excluded.alias,
         steam_profile_url = excluded.steam_profile_url,
         steam_id64 = excluded.steam_id64,
+        discord_user_id = excluded.discord_user_id,
+        discord_guild_id = excluded.discord_guild_id,
         premier_rating = excluded.premier_rating,
         rating_source = excluded.rating_source,
         rating_updated_at = excluded.rating_updated_at,
@@ -578,6 +594,8 @@ class PlayerManager {
       aliasNormalized,
       profileUrl,
       steamId64,
+      discordUserId,
+      discordGuildId,
       metadata?.premierRating || null,
       metadata?.premierRating ? metadata.source : null,
       metadata?.premierRating ? now : null,
@@ -609,6 +627,28 @@ class PlayerManager {
     return this.db.prepare('SELECT * FROM player_links WHERE alias_normalized = ?').get(normalizeAlias(alias)) || null;
   }
 
+  getByDiscordMember(member) {
+    this.initDb();
+    const userId = member?.id || member?.user?.id;
+    if (!userId) {
+      return null;
+    }
+
+    const guildId = member?.guild?.id || null;
+    if (guildId) {
+      const guildLink = this.db.prepare(`
+        SELECT * FROM player_links
+        WHERE discord_user_id = ? AND (discord_guild_id = ? OR discord_guild_id IS NULL)
+        ORDER BY discord_guild_id IS NULL ASC, updated_at DESC
+      `).get(String(userId), String(guildId));
+      if (guildLink) {
+        return guildLink;
+      }
+    }
+
+    return this.db.prepare('SELECT * FROM player_links WHERE discord_user_id = ? ORDER BY updated_at DESC').get(String(userId)) || null;
+  }
+
   getAll() {
     this.initDb();
     return this.db.prepare('SELECT * FROM player_links ORDER BY alias COLLATE NOCASE').all();
@@ -616,6 +656,11 @@ class PlayerManager {
 
   getLinkForMember(member) {
     this.initDb();
+    const memberLink = this.getByDiscordMember(member);
+    if (memberLink) {
+      return memberLink;
+    }
+
     for (const alias of memberAliases(member)) {
       const link = this.getByAlias(alias);
       if (link) {
@@ -671,6 +716,11 @@ class PlayerManager {
   }
 
   getLinkForNicknameTemplate(member, template, previousMember = null) {
+    const memberLink = this.getByDiscordMember(member);
+    if (memberLink) {
+      return memberLink;
+    }
+
     for (const alias of this.nicknameAliasCandidates(member, template, previousMember)) {
       const link = this.getByAlias(alias);
       if (link) {
@@ -698,8 +748,19 @@ class PlayerManager {
       return false;
     }
 
-    await member.setNickname(renderedNickname || null, 'Rendered tracked nickname variables');
-    return true;
+    try {
+      await member.setNickname(renderedNickname || null, 'Rendered tracked nickname variables');
+      return true;
+    } catch (error) {
+      if (isMissingPermissionsError(error)) {
+        console.warn(
+          `[players] cannot update nickname for ${member.guild?.id || 'unknown-guild'}/${member.id}: `
+          + 'Discord denied Manage Nicknames/role hierarchy permissions.'
+        );
+        return false;
+      }
+      throw error;
+    }
   }
 
   async handleNicknameTemplateChange(member, nickname, previousMember = null) {
@@ -729,11 +790,13 @@ class PlayerManager {
     this.saveNicknameTemplate(member, normalizedNickname, renderedNickname, variableNames);
 
     if (!link) {
-      console.warn(`[players] nickname variables configured for ${member.id}, but no player link matched '${normalizedNickname}'.`);
+      const candidates = this.nicknameAliasCandidates(member, normalizedNickname, previousMember).join(', ');
+      console.warn(`[players] nickname variables configured for ${member.id}, but no player link matched '${normalizedNickname}' (tried: ${candidates || 'none'}).`);
+      return { action: 'saved_unmatched', renderedNickname, matched: false };
     }
 
     await this.applyRenderedNickname(member, renderedNickname);
-    return { action: 'saved', renderedNickname, matched: Boolean(link) };
+    return { action: 'saved', renderedNickname, matched: true };
   }
 
   async handleMemberNicknameUpdate(oldMember, newMember) {

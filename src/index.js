@@ -519,7 +519,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       try {
         const linked = await playerManager.link(
           interaction.options.getString(COMMANDS.LINK.options.ALIAS.name, true),
-          interaction.options.getString(COMMANDS.LINK.options.URL.name, true)
+          interaction.options.getString(COMMANDS.LINK.options.URL.name, true),
+          { discordUserId: interaction.user.id, discordGuildId: interaction.guildId }
         );
         await interaction.editReply({
           content: linked.premier_rating
@@ -790,11 +791,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 client.on(Events.Raw, (packet) => {
   logVoiceGatewayPacket(packet, client.user?.id);
-  if (packet?.t === 'GUILD_MEMBER_UPDATE') {
-    playerManager.handleRawGuildMemberUpdate(packet).catch((error) => {
-      console.error('Raw nickname variable update error:', summarizePlayerError(error));
-    });
-  }
 });
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
