@@ -1,7 +1,7 @@
-const MAX_TIMEOUT_MS = 2_147_483_647;
+const cron = require('node-cron');
+
 const MIN_INTERVAL_MS = 60_000;
 const DEFAULT_TIMEZONE = 'America/Chicago';
-
 
 function parseDailyTime(value, fallback = '18:00') {
   const raw = String(value || fallback).trim();
@@ -23,6 +23,41 @@ function formatDateTime(date) {
   return date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString() : 'unknown';
 }
 
+function buildDailyCronExpression(time) {
+  return `${time.minute} ${time.hour} * * *`;
+}
+
+function buildIntervalCronExpression(intervalMs) {
+  const safeIntervalMs = Math.max(MIN_INTERVAL_MS, Number.parseInt(intervalMs, 10) || MIN_INTERVAL_MS);
+  const intervalMinutes = safeIntervalMs / 60_000;
+
+  if (!Number.isInteger(intervalMinutes)) {
+    throw new Error('Interval scheduler jobs must use whole-minute intervals.');
+  }
+
+  if (intervalMinutes < 60) {
+    if (60 % intervalMinutes !== 0) {
+      throw new Error(`Cannot represent every ${intervalMinutes} minutes as a stable cron expression. Use a divisor of 60 or configure a cron expression directly.`);
+    }
+    return intervalMinutes === 1 ? '* * * * *' : `*/${intervalMinutes} * * * *`;
+  }
+
+  if (intervalMinutes % 60 !== 0) {
+    throw new Error(`Cannot represent every ${intervalMinutes} minutes as an hourly cron expression. Use whole-hour intervals or configure a cron expression directly.`);
+  }
+
+  const intervalHours = intervalMinutes / 60;
+  if (intervalHours === 24) {
+    return '0 0 * * *';
+  }
+
+  if (intervalHours >= 1 && intervalHours < 24 && 24 % intervalHours === 0) {
+    return intervalHours === 1 ? '0 * * * *' : `0 */${intervalHours} * * *`;
+  }
+
+  throw new Error(`Cannot represent every ${intervalHours} hours as a stable daily cron expression. Use a divisor of 24 or configure a cron expression directly.`);
+}
+
 class SchedulerManager {
   constructor(client, config = {}) {
     this.client = client;
@@ -33,30 +68,40 @@ class SchedulerManager {
 
   registerDailyJob({ id, label, time, timezone = DEFAULT_TIMEZONE, task }) {
     const parsedTime = typeof time === 'string' || !time ? parseDailyTime(time) : time;
-    this.jobs.push({
+    this.registerCronJob({
       id,
       label,
-      type: 'daily',
+      expression: buildDailyCronExpression(parsedTime),
       timezone,
-      time: parsedTime,
       task,
-      timer: null,
-      running: false,
-      nextRunAt: null
+      description: `daily at ${parsedTime.label} ${timezone}`
     });
   }
 
-  registerIntervalJob({ id, label, intervalMs, task }) {
-    const safeIntervalMs = Math.max(MIN_INTERVAL_MS, Number.parseInt(intervalMs, 10) || MIN_INTERVAL_MS);
+  registerIntervalJob({ id, label, intervalMs, timezone = 'UTC', task }) {
+    this.registerCronJob({
+      id,
+      label,
+      expression: buildIntervalCronExpression(intervalMs),
+      timezone,
+      task,
+      description: `interval ${Math.max(MIN_INTERVAL_MS, Number.parseInt(intervalMs, 10) || MIN_INTERVAL_MS)}ms`
+    });
+  }
+
+  registerCronJob({ id, label, expression, timezone = 'UTC', task, description = null }) {
+    if (!cron.validate(expression)) {
+      throw new Error(`Invalid cron expression for ${id}: '${expression}'.`);
+    }
+
     this.jobs.push({
       id,
       label,
-      type: 'interval',
-      intervalMs: safeIntervalMs,
+      expression,
+      timezone,
+      description: description || expression,
       task,
-      timer: null,
-      running: false,
-      nextRunAt: null
+      cronTask: null
     });
   }
 
@@ -67,75 +112,65 @@ class SchedulerManager {
     this.started = true;
 
     for (const job of this.jobs) {
-      this.schedule(job);
+      this.startJob(job);
     }
   }
 
-  stop() {
+  async stop() {
     for (const job of this.jobs) {
-      if (job.timer) {
-        clearTimeout(job.timer);
-        job.timer = null;
+      if (job.cronTask) {
+        await job.cronTask.destroy();
+        job.cronTask = null;
       }
-      job.nextRunAt = null;
-      job.running = false;
     }
     this.started = false;
   }
 
-  schedule(job, from = new Date()) {
-    if (job.timer) {
-      clearTimeout(job.timer);
-      job.timer = null;
-    }
-
-    job.nextRunAt = job.type === 'daily'
-      ? this.getNextDailyRunDate(job, from)
-      : new Date(from.getTime() + job.intervalMs);
-
-    const delayMs = Math.max(1_000, job.nextRunAt.getTime() - Date.now());
-    console.log(`[scheduler] scheduled ${job.id} (${job.label}) for ${job.nextRunAt.toISOString()}`);
-
-    job.timer = setTimeout(() => {
-      job.timer = null;
-      if (Date.now() + 1_000 < job.nextRunAt.getTime()) {
-        this.schedule(job, new Date(Date.now()));
-        return;
-      }
-      this.runJob(job).catch((error) => {
-        console.error(`[scheduler] unexpected scheduler failure for ${job.id}:`, error);
-      });
-    }, Math.min(delayMs, MAX_TIMEOUT_MS));
-  }
-
-  async runJob(job, reason = 'scheduled') {
-    const scheduledFor = job.nextRunAt || new Date();
-    if (job.running) {
-      const summary = 'Skipped because the previous run is still in progress.';
-      console.warn(`[scheduler] ${job.id} ${summary}`);
-      await this.postSchedulerEvent(job, 'skipped', summary, { scheduledFor, reason }).catch(() => {});
-      this.schedule(job);
+  startJob(job) {
+    if (job.cronTask) {
       return;
     }
 
-    job.running = true;
-    const startedAt = new Date();
+    job.cronTask = cron.createTask(job.expression, async (context) => {
+      await this.runJob(job, context);
+    }, {
+      name: job.id,
+      timezone: job.timezone,
+      noOverlap: true
+    });
+
+    job.cronTask.start();
+    this.logNextRun(job);
+  }
+
+  logNextRun(job) {
+    const nextRun = job.cronTask?.getNextRun?.() || null;
+    console.log([
+      `[scheduler] scheduled ${job.id} (${job.label})`,
+      `cron='${job.expression}'`,
+      `timezone='${job.timezone}'`,
+      `next=${formatDateTime(nextRun)}`
+    ].join(' '));
+  }
+
+  async runJob(job, context = {}) {
+    const scheduledFor = context.date || new Date();
+    const startedAt = context.triggeredAt || new Date();
     console.log(`[scheduler] starting ${job.id} (${job.label}) scheduled for ${formatDateTime(scheduledFor)}`);
 
     try {
-      const result = await job.task({ scheduledFor, startedAt, reason });
+      const result = await job.task({ scheduledFor, startedAt, reason: 'scheduled', cronContext: context });
       const summary = this.formatResult(result);
       console.log(`[scheduler] completed ${job.id}: ${summary}`);
-      await this.postSchedulerEvent(job, 'completed', summary, { scheduledFor, startedAt, reason }).catch((error) => {
+      await this.postSchedulerEvent(job, 'completed', summary, { scheduledFor, startedAt }).catch((error) => {
         console.warn(`[scheduler] failed to post scheduler event for ${job.id}:`, error?.message || error);
       });
     } catch (error) {
       const summary = error?.message || String(error);
       console.error(`[scheduler] failed ${job.id}:`, error);
-      await this.postSchedulerEvent(job, 'failed', summary, { scheduledFor, startedAt, reason }).catch(() => {});
+      await this.postSchedulerEvent(job, 'failed', summary, { scheduledFor, startedAt }).catch(() => {});
     } finally {
-      job.running = false;
-      this.schedule(job);
+      this.logNextRun(job);
     }
   }
 
@@ -163,56 +198,23 @@ class SchedulerManager {
       return;
     }
 
-    const statusEmoji = status === 'completed' ? '✅' : status === 'skipped' ? '⏭️' : '❌';
+    const statusEmoji = status === 'completed' ? '✅' : '❌';
     await channel.send({
       content: [
         `${statusEmoji} **${job.label}** ${status}.`,
+        `Cron: \`${job.expression}\` (${job.timezone})`,
         `Scheduled: \`${formatDateTime(context.scheduledFor)}\``,
         `Result: ${String(summary).slice(0, 1_500)}`
       ].join('\n'),
       allowedMentions: { parse: [] }
     });
   }
-
-  getZonedParts(date, timezone) {
-    const formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone,
-      hourCycle: 'h23',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-    const parts = formatter.formatToParts(date);
-    const get = (type) => Number.parseInt(parts.find((part) => part.type === type).value, 10);
-    return {
-      year: get('year'),
-      month: get('month'),
-      day: get('day'),
-      hour: get('hour'),
-      minute: get('minute')
-    };
-  }
-
-  getNextDailyRunDate(job, from = new Date()) {
-    const start = new Date(from.getTime() + 1_000);
-    start.setUTCSeconds(0, 0);
-
-    for (let minuteOffset = 0; minuteOffset <= 60 * 48; minuteOffset += 1) {
-      const candidate = new Date(start.getTime() + (minuteOffset * 60 * 1000));
-      const parts = this.getZonedParts(candidate, job.timezone);
-      if (parts.hour === job.time.hour && parts.minute === job.time.minute) {
-        return candidate;
-      }
-    }
-
-    throw new Error(`Could not find next run for daily job ${job.id} in timezone ${job.timezone}.`);
-  }
 }
 
 module.exports = {
   SchedulerManager,
   parseDailyTime,
+  buildDailyCronExpression,
+  buildIntervalCronExpression,
   DEFAULT_TIMEZONE
 };

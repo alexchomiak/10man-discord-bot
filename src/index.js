@@ -56,6 +56,7 @@ const config = {
   leetifyApiBase: process.env.LEETIFY_API_BASE || 'https://api-public.cs-prod.leetify.com',
   leetifyLegacyApiBase: process.env.LEETIFY_LEGACY_API_BASE || 'https://api.cs-prod.leetify.com',
   ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24',
+  ratingRefreshCron: process.env.RATING_REFRESH_CRON || null,
   schedulerEventsChannelId: process.env.SCHEDULER_EVENTS_CHANNEL || null
 };
 
@@ -233,12 +234,23 @@ schedulerManager.registerDailyJob({
   task: () => notificationManager.runDailyPromptJob()
 });
 
-schedulerManager.registerIntervalJob({
-  id: 'rating-refresh',
-  label: 'Linked player rating refresh',
-  intervalMs: Math.max(60_000, Number.parseFloat(config.ratingRefreshIntervalHours || '24') * 60 * 60 * 1000),
-  task: () => playerManager.runScheduledRatingRefresh()
-});
+if (config.ratingRefreshCron) {
+  schedulerManager.registerCronJob({
+    id: 'rating-refresh',
+    label: 'Linked player rating refresh',
+    expression: config.ratingRefreshCron,
+    timezone: 'UTC',
+    task: () => playerManager.runScheduledRatingRefresh()
+  });
+} else {
+  schedulerManager.registerIntervalJob({
+    id: 'rating-refresh',
+    label: 'Linked player rating refresh',
+    intervalMs: Math.max(60_000, Number.parseFloat(config.ratingRefreshIntervalHours || '24') * 60 * 60 * 1000),
+    timezone: 'UTC',
+    task: () => playerManager.runScheduledRatingRefresh()
+  });
+}
 
 const teamDraftCommand = new SlashCommandBuilder()
   .setName(COMMANDS.TEAM_DRAFT.name)
