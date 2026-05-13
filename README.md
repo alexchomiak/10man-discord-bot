@@ -31,8 +31,8 @@ A Discord bot that runs a random-captain team draft from a voice channel, create
   - 10 players => 5v5
 - Random captain assignment
 - Snake draft pick flow by default, with an optional regular alternating draft order
-- Draft pick updates are announced in chat after each selection; back-to-back snake picks by the same captain are combined into one voice announcement
-- Draft completion requires pressing **Start** (green button) to create channels/move players, or **Cancel** (red button) to abort
+- Draft pick updates are collected in the draft embed history instead of separate chat messages; back-to-back snake picks by the same captain are combined into one voice announcement
+- Draft completion keeps **Start** (green button) and **Cancel** (red button) on the main draft embed to create/move players or abort
 - Private temporary voice channels per team using temporary roles
 - Automatic cleanup when team channels empty
 - Optional daily CS2 notification message at configurable CST/CDT time (default 6:00 PM) with Interested / Not Interested / Subscribe / Unsubscribe buttons

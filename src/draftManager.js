@@ -80,6 +80,14 @@ function formatMentions(userIds, formatUser = (id) => `<@${id}>`) {
   return userIds.map((id) => formatUser(id)).join(', ');
 }
 
+function formatDraftPickHistory(history = []) {
+  if (!history.length) {
+    return 'No picks made yet.';
+  }
+
+  return truncateEmbedField(history.map((entry, index) => `${index + 1}. ${entry}`).join('\n'));
+}
+
 function normalizeDraftMode(mode) {
   return mode === 'regular' ? 'regular' : 'snake';
 }
@@ -335,6 +343,7 @@ class DraftManager {
       pickIndex: 0,
       draftMode,
       pendingPickAnnouncement: null,
+      draftHistory: [],
       teamSize,
       resources: {
         roleAId: null,
@@ -411,6 +420,7 @@ class DraftManager {
     const pickOrder = createDraftOrder(pool.length, captainA, captainB, draftMode);
     const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
     const formatMockPlayer = (name) => `**${name}**`;
+    const draftHistory = [];
     const buildMockSession = () => ({
       captains: [captainA, captainB],
       teamA,
@@ -419,6 +429,7 @@ class DraftManager {
       pickOrder,
       pickIndex: teamA.length + teamB.length - 2,
       draftMode,
+      draftHistory,
       teamSize: totalPlayers / 2,
       matchupNames: { teamNameA, teamNameB }
     });
@@ -477,13 +488,9 @@ class DraftManager {
         : [picked];
       const shouldNarrate = !hasBackToBackSnakePick;
 
-      if (broadcast) {
-        await interaction.channel.send({
-          content: nextPicker
-            ? `🧪 ${picker} drafted ${picked}. Next pick: ${nextPicker}`
-            : `🧪 ${picker} drafted ${picked}. Mock draft picks complete.`
-        });
-      }
+      draftHistory.push(nextPicker
+        ? `🧪 ${formatMockPlayer(picker)} drafted ${formatMockPlayer(picked)}. Next pick: ${formatMockPlayer(nextPicker)}`
+        : `🧪 ${formatMockPlayer(picker)} drafted ${formatMockPlayer(picked)}. Mock draft picks complete.`);
 
       await editMockReply();
 
@@ -502,18 +509,15 @@ class DraftManager {
       this.mockAudioSessionsById.set(mockSessionId, { guildId: guild.id, status: 'ready', spawnVoice, config });
     }
 
-    if (broadcast) {
-      await interaction.channel.send({
-        content: `🏁 Mock draft ready: **${teamNameA}** will match up against **${teamNameB}**. May the best team win. To Start the match, click the Start button on the message in ${draftChatName(interaction.channel)}.`,
-        components: guild ? [this.buildMockStartButton(mockSessionId)] : []
-      });
-    } else if (guild) {
-      await interaction.followUp({
-        content: 'Mock draft audio is ready. Press **Start Mock Match** to play the fight cue and disconnect audio.',
-        components: [this.buildMockStartButton(mockSessionId)],
-        flags: MessageFlags.Ephemeral
-      }).catch(() => {});
-    }
+    await reply.edit({
+      embeds: [
+        this.buildDraftEmbed(buildMockSession(), guild, {
+          status: guild ? 'Ready to start' : 'Complete',
+          formatUser: formatMockPlayer
+        })
+      ],
+      components: guild ? [this.buildMockStartButton(mockSessionId)] : []
+    }).catch(() => {});
 
   }
 
@@ -602,22 +606,39 @@ class DraftManager {
     const { teamNameA = 'Alpha', teamNameB = 'Bravo' } = session.matchupNames || {};
     const totalPicks = session.pickOrder.length;
     const formatUser = options.formatUser || ((id) => `<@${id}>`);
+    const normalizedStatus = String(status).toLowerCase();
+    const descriptionLines = [
+      `${statusIcon} **Status:** ${status}`,
+      `👑 **Captains:** ${formatUser(session.captains[0])} vs ${formatUser(session.captains[1])}`,
+      `👥 **Team size:** **${session.teamSize}v${session.teamSize}** · 🐍 **Draft:** **${formatDraftMode(session.draftMode)}**`,
+      currentCaptain ? `🎯 **Current pick:** ${formatUser(currentCaptain)}` : '🎯 **Current pick:** none'
+    ];
+
+    if (isComplete) {
+      descriptionLines.push(`🏁 **Matchup:** **${teamNameA}** vs **${teamNameB}**`);
+    }
+    if (normalizedStatus.includes('ready')) {
+      descriptionLines.push('✅ Press **Start** to create team channels, or **Cancel** to abort.');
+    }
+    if (normalizedStatus.includes('active')) {
+      descriptionLines.push('🔒 Teams have been moved to temporary private voice channels.');
+    }
 
     return new EmbedBuilder()
       .setTitle(title)
       .setColor(DRAFT_EMBED_COLOR)
-      .setDescription([
-        `${statusIcon} **Status:** ${status}`,
-        `👑 **Captains:** ${formatUser(session.captains[0])} vs ${formatUser(session.captains[1])}`,
-        `👥 **Team size:** **${session.teamSize}v${session.teamSize}** · 🐍 **Draft:** **${formatDraftMode(session.draftMode)}**`,
-        currentCaptain ? `🎯 **Current pick:** ${formatUser(currentCaptain)}` : '🎯 **Current pick:** none'
-      ].join('\n'))
+      .setDescription(descriptionLines.join('\n'))
       .addFields(
-        { name: `🟦 Team Alpha — ${teamNameA}`, value: this.buildDraftRoster(session.teamA, formatUser), inline: true },
-        { name: `🟥 Team Bravo — ${teamNameB}`, value: this.buildDraftRoster(session.teamB, formatUser), inline: true },
+        { name: `🟦 ${teamNameA}`, value: this.buildDraftRoster(session.teamA, formatUser), inline: false },
+        { name: `🟥 ${teamNameB}`, value: this.buildDraftRoster(session.teamB, formatUser), inline: false },
         {
           name: '🕹️ Undrafted',
           value: session.pool.length > 0 ? truncateEmbedField(formatMentions(session.pool, formatUser)) : 'No players left in the call.',
+          inline: false
+        },
+        {
+          name: '📜 Draft History',
+          value: formatDraftPickHistory(session.draftHistory),
           inline: false
         }
       )
@@ -668,28 +689,6 @@ class DraftManager {
     );
   }
 
-  async buildTeamTable(session, guild) {
-    const resolveName = async (id) => {
-      const cached = guild.members.cache.get(id);
-      if (cached) {
-        return cached.displayName;
-      }
-      const fetched = await guild.members.fetch(id).catch(() => null);
-      return fetched?.displayName || id;
-    };
-
-    const alpha = await Promise.all(session.teamA.map((id) => resolveName(id)));
-    const bravo = await Promise.all(session.teamB.map((id) => resolveName(id)));
-    const rows = Math.max(alpha.length, bravo.length);
-    const lines = ['# | Team Alpha               | Team Bravo'];
-    for (let i = 0; i < rows; i += 1) {
-      const a = (alpha[i] || '').padEnd(24, ' ');
-      const b = bravo[i] || '';
-      lines.push(`${String(i + 1).padEnd(2, ' ')}| ${a} | ${b}`);
-    }
-    return `\`\`\`\n${lines.join('\n')}\n\`\`\``;
-  }
-
   async handlePick(interaction, config) {
     const [, sessionId] = interaction.customId.split(':');
     const session = this.getSessionById(sessionId);
@@ -723,11 +722,9 @@ class DraftManager {
     session.pickIndex += 1;
 
     const nextCaptain = session.pickOrder[session.pickIndex];
-    await interaction.channel.send({
-      content: nextCaptain
-        ? `🧩 <@${interaction.user.id}> drafted <@${pickedId}>. Next pick: <@${nextCaptain}>`
-        : `🧩 <@${interaction.user.id}> drafted <@${pickedId}>. Draft picks complete.`
-    });
+    session.draftHistory.push(nextCaptain
+      ? `🧩 <@${interaction.user.id}> drafted <@${pickedId}>. Next pick: <@${nextCaptain}>`
+      : `🧩 <@${interaction.user.id}> drafted <@${pickedId}>. Draft picks complete.`);
 
     const pickerName = interaction.member?.displayName || interaction.user.displayName || interaction.user.username;
     const pickedName = interaction.guild.members.cache.get(pickedId)?.displayName || 'the pick';
@@ -802,37 +799,23 @@ class DraftManager {
       return { teamNameA: fallbackTeamNameA, teamNameB: fallbackTeamNameB };
     })();
     session.matchupNames = { teamNameA, teamNameB };
-    await interaction.channel.send({ content: `🏁 **${teamNameA}** will match up against **${teamNameB}**. May the best team win. To Start the match, click the Start button on the message in ${draftChatName(interaction.channel)}.` });
-    await this.postReadyToStart(interaction, session);
+    await this.markReadyToStart(interaction, session);
   }
 
-  async postReadyToStart(interaction, session) {
+  async markReadyToStart(interaction, session) {
     session.status = 'ready';
-    const channel = interaction.channel;
-    const teamTable = await this.buildTeamTable(session, interaction.guild);
-    const readyMessage = await channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle('Draft Ready')
-          .setDescription([
-            'Teams are ready. Press **Start** to create temporary private voice channels and move players.',
-            'Press **Cancel** to abort this draft.',
-            '',
-            teamTable
-          ].join('\n'))
-          .addFields(
-            { name: 'Team Alpha', value: formatMentions(session.teamA), inline: true },
-            { name: 'Team Bravo', value: formatMentions(session.teamB), inline: true },
-            {
-              name: 'Undrafted',
-              value: session.pool.length > 0 ? formatMentions(session.pool) : 'None',
-              inline: false
-            }
-          )
-      ],
-      components: [this.buildStartButtons(session.id)]
-    });
-    session.readyMessageId = readyMessage.id;
+    const draftMessage = interaction.message || (session.messageId
+      ? await interaction.channel.messages.fetch(session.messageId).catch(() => null)
+      : null);
+
+    if (draftMessage) {
+      session.messageId = draftMessage.id;
+      session.readyMessageId = draftMessage.id;
+      await draftMessage.edit({
+        embeds: [this.buildDraftEmbed(session, interaction.guild, { status: 'Ready to start' })],
+        components: [this.buildStartButtons(session.id)]
+      }).catch(() => {});
+    }
 
     if (session.matchupNames) {
       await playCountdownThenAnnounceMatchup(
@@ -847,7 +830,6 @@ class DraftManager {
 
   async finalizeDraft(interaction, session, config) {
     const guild = interaction.guild;
-    const channel = interaction.channel;
     const [nameA, nameB] = session.matchupNames
       ? [session.matchupNames.teamNameA, session.matchupNames.teamNameB]
       : shuffle(getTeamNamePool(config)).slice(0, 2);
@@ -923,15 +905,9 @@ class DraftManager {
       ]);
       session.status = 'active';
 
-      await interaction.editReply({ embeds: [this.buildDraftEmbed(session, guild)], components: [] });
-
-      await channel.send({
-        content: [
-          '✅ Draft complete. Teams have been moved to private voice channels.',
-          `**Team Alpha (${nameA})**: ${formatMentions(session.teamA)}`,
-          `**Team Bravo (${nameB})**: ${formatMentions(session.teamB)}`,
-          'Channels and roles are temporary and will be deleted once everyone leaves.'
-        ].join('\n')
+      await interaction.editReply({
+        embeds: [this.buildDraftEmbed(session, guild, { status: 'Active — teams moved to private voice channels' })],
+        components: []
       });
       this.audioManager?.stop(guild.id);
     } catch (error) {
@@ -969,7 +945,6 @@ class DraftManager {
     }
 
     await interaction.deferUpdate();
-    await interaction.channel.send({ content: '🥊 Playing fight cue before starting mock match...' }).catch(() => {});
     await playFightThenPause(this.audioManager, session.guildId);
     if (this.audioManager) {
       setTimeout(() => this.audioManager.stop(session.guildId), 3_000);
@@ -994,9 +969,11 @@ class DraftManager {
     }
     session.status = 'starting';
     await interaction.deferUpdate();
-    await interaction.channel.send({ content: '🥊 Playing fight cue before starting team channels...' });
+    await interaction.editReply({
+      embeds: [this.buildDraftEmbed(session, interaction.guild, { status: 'Starting team channels' })],
+      components: []
+    }).catch(() => {});
     await playFightThenPause(this.audioManager, interaction.guild.id);
-    await interaction.channel.send({ content: '🚀 Starting team channels and moving players...' });
     await this.finalizeDraft(interaction, session, config);
     if (this.audioManager) {
       setTimeout(() => this.audioManager.stop(interaction.guild.id), 3_000);
@@ -1017,9 +994,12 @@ class DraftManager {
       return;
     }
 
-    await this.clearDraftMessageComponents(guild, session);
+    await interaction.deferUpdate();
+    await interaction.editReply({
+      embeds: [this.buildDraftEmbed(session, guild, { status: 'Cancelled' })],
+      components: []
+    }).catch(() => {});
     await this.cleanupSession(guild, session);
-    await interaction.reply({ content: 'Draft cancelled.' });
   }
 
   async handleVoiceStateUpdate(oldState, newState) {
