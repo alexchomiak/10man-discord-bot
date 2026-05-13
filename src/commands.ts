@@ -70,6 +70,11 @@ const COMMANDS = Object.freeze({
     description: 'Clear a user announcement cooldown so their next fresh voice join can announce.',
     options: Object.freeze({ ALIAS: { name: 'alias', description: 'User whose announcement cooldown should be reset.' } })
   },
+  REMOVE_ANNOUNCEMENT: {
+    name: 'remove-announcement',
+    description: 'Remove a saved voice-join announcement for a user.',
+    options: Object.freeze({ ALIAS: { name: 'alias', description: 'User whose voice-join announcement should be removed.' } })
+  },
   AUDIO_STATUS: { name: 'audio-status', description: 'Show Discord voice/TTS diagnostics for this server.' }
 });
 

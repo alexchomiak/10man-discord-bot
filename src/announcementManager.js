@@ -131,6 +131,15 @@ class AnnouncementManager {
     return result.changes > 0;
   }
 
+  removeMapping(guildId, userId) {
+    this.initDb();
+    const result = this.db.prepare(`
+      DELETE FROM announcements
+      WHERE guild_id = ? AND user_id = ?
+    `).run(guildId, userId);
+    return result.changes > 0;
+  }
+
   async handleAnnounceCommand(interaction) {
     if (!interaction.guildId) {
       await interaction.reply({ content: DISCORD_MESSAGES.SERVER_ONLY, flags: MessageFlags.Ephemeral });
@@ -175,6 +184,22 @@ class AnnouncementManager {
     await interaction.reply({
       content: reset
         ? DISCORD_MESSAGES.announcementCooldownReset(user)
+        : DISCORD_MESSAGES.announcementMappingMissing(user, COMMANDS.ANNOUNCE.name),
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
+  async handleRemoveAnnouncementCommand(interaction) {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: DISCORD_MESSAGES.SERVER_ONLY, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const user = interaction.options.getUser(COMMANDS.REMOVE_ANNOUNCEMENT.options.ALIAS.name, true);
+    const removed = this.removeMapping(interaction.guildId, user.id);
+    await interaction.reply({
+      content: removed
+        ? DISCORD_MESSAGES.announcementRemoved(user)
         : DISCORD_MESSAGES.announcementMappingMissing(user, COMMANDS.ANNOUNCE.name),
       flags: MessageFlags.Ephemeral
     });

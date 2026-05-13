@@ -22,6 +22,7 @@ A Discord bot that runs a random-captain team draft from a voice channel, create
 - `/test-lobby-music` to join your voice channel and test draft lobby music
 - `/test-tts message:<text>` to test voice text-to-speech in the current voice channel
 - `/announce alias:<@user> filename:<file.mp3>` to save a voice-join announcement MP3 for a user; announcements are skipped while a draft is active and rate-limited after voice leaves
+- `/remove-announcement alias:<@user>` to delete a saved voice-join announcement so the user no longer triggers one
 - `/reset-announce-timer alias:<@user>` to clear a saved announcement cooldown for testing the next fresh voice join
 - `/audio-status` to show the current voice connection state, queued speech duration, and `@discordjs/voice` dependency report
 - Both commands are server-only (not available in DMs)
