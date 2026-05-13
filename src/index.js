@@ -12,6 +12,7 @@ const {
 const { DraftManager } = require('./draftManager');
 const { NotificationManager } = require('./notificationManager');
 const { AudioManager } = require('./audioManager');
+const { AnnouncementManager } = require('./announcementManager');
 const { PlayerManager, summarizeError: summarizePlayerError } = require('./playerManager');
 
 const token = process.env.DISCORD_TOKEN;
@@ -43,6 +44,8 @@ const config = {
   ttsHost: process.env.GOOGLE_TTS_HOST || 'https://translate.google.com',
   audioBufferMs: process.env.AUDIO_BUFFER_MS || '500',
   audioQueueMaxMs: process.env.AUDIO_QUEUE_MAX_MS || '5000',
+  announcementCooldownMs: process.env.ANNOUNCEMENT_COOLDOWN_MS || String(10 * 60 * 1000),
+  announcementAudioDirectory: process.env.ANNOUNCEMENT_AUDIO_DIRECTORY || null,
   lobbyMusicVolume: process.env.LOBBY_MUSIC_VOLUME || '0.35',
   ttsMusicDuckVolume: process.env.TTS_MUSIC_DUCK_VOLUME || '0.12',
   steamWebApiKey: process.env.STEAM_WEB_API_KEY || null,
@@ -205,6 +208,7 @@ async function getInvokerVoiceMembers(interaction) {
 const audioManager = new AudioManager(config);
 const playerManager = new PlayerManager(config);
 const draftManager = new DraftManager(audioManager, playerManager);
+const announcementManager = new AnnouncementManager(config, audioManager, draftManager);
 
 const client = new Client({
   intents: [
@@ -410,6 +414,39 @@ const testTtsCommand = new SlashCommandBuilder()
       .setMaxLength(200)
   );
 
+
+const announceCommand = new SlashCommandBuilder()
+  .setName('announce')
+  .setDescription('Set the MP3 announcement played when a user joins voice outside draft mode.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false)
+  .addUserOption((option) =>
+    option
+      .setName('alias')
+      .setDescription('User whose voice join should trigger this announcement.')
+      .setRequired(true)
+  )
+  .addStringOption((option) =>
+    option
+      .setName('filename')
+      .setDescription('MP3 filename in the bot audio directory, e.g. intro.mp3.')
+      .setRequired(true)
+      .setMaxLength(100)
+  );
+
+
+const resetAnnounceTimerCommand = new SlashCommandBuilder()
+  .setName('reset-announce-timer')
+  .setDescription('Clear a user announcement cooldown so their next fresh voice join can announce.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false)
+  .addUserOption((option) =>
+    option
+      .setName('alias')
+      .setDescription('User whose announcement cooldown should be reset.')
+      .setRequired(true)
+  );
+
 const audioStatusCommand = new SlashCommandBuilder()
   .setName('audio-status')
   .setDescription('Show Discord voice/TTS diagnostics for this server.')
@@ -420,7 +457,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
+    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, announceCommand, resetAnnounceTimerCommand, audioStatusCommand];
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -664,6 +701,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+    if (interaction.isChatInputCommand() && interaction.commandName === 'announce') {
+      await announcementManager.handleAnnounceCommand(interaction);
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'reset-announce-timer') {
+      await announcementManager.handleResetAnnounceTimerCommand(interaction);
+      return;
+    }
+
     if (interaction.isChatInputCommand() && interaction.commandName === 'audio-status') {
       const status = audioManager.status(interaction.guildId);
       const dependencyReport = audioManager.dependencyReport();
@@ -729,6 +776,7 @@ client.on(Events.Raw, (packet) => {
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   try {
     await draftManager.handleVoiceStateUpdate(oldState, newState);
+    await announcementManager.handleVoiceStateUpdate(oldState, newState);
   } catch (error) {
     console.error('Voice cleanup error:', error);
   }

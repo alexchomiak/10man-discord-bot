@@ -21,6 +21,8 @@ A Discord bot that runs a random-captain team draft from a voice channel, create
 - `/build-version` to show the running build commit hash/version
 - `/test-lobby-music` to join your voice channel and test draft lobby music
 - `/test-tts message:<text>` to test voice text-to-speech in the current voice channel
+- `/announce alias:<@user> filename:<file.mp3>` to save a voice-join announcement MP3 for a user; announcements are skipped while a draft is active and rate-limited after voice leaves
+- `/reset-announce-timer alias:<@user>` to clear a saved announcement cooldown for testing the next fresh voice join
 - `/audio-status` to show the current voice connection state, queued speech duration, and `@discordjs/voice` dependency report
 - Both commands are server-only (not available in DMs)
 - `/team-draft` updates are broadcast in the channel message for everyone; mock defaults to broadcast too
@@ -66,12 +68,14 @@ Copy `.env.example` to `.env`:
 - `NOTIFICATION_CHANNEL_ID` (optional channel ID for daily queue notification message)
 - `NOTIFICATION_ROLE_ID` (optional role ID to mention and manage via subscribe buttons)
 - `NOTIFICATION_TIME_CST` (optional, default `18:00`; daily post time in America/Chicago timezone)
-- `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification/player-link SQLite database file)
+- `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification/player-link/announcement SQLite database file)
 - `STEAM_WEB_API_KEY` (optional unless linking `steamcommunity.com/id/...` vanity URLs; used with Steam ResolveVanityURL)
 - `LEETIFY_API_KEY` (optional; public Leetify profile refreshes work without it, but if set it is sent as the documented `Authorization`/`_leetify_key` header value)
 - `LEETIFY_API_BASE` (optional, default `https://api-public.cs-prod.leetify.com`; override only if Leetify changes the public API host)
 - `LEETIFY_LEGACY_API_BASE` (optional, default `https://api.cs-prod.leetify.com`; fallback host for `/api/profile/id/<SteamID64>` when the public profile endpoint returns 404)
 - `RATING_REFRESH_INTERVAL_HOURS` (optional, default `24`; scheduled refresh interval for every linked player’s cached Premier rating)
+- `ANNOUNCEMENT_AUDIO_DIRECTORY` (optional, defaults to the directory containing `LOBBY_MUSIC_PATH`; stores MP3 files referenced by `/announce`)
+- `ANNOUNCEMENT_COOLDOWN_MS` (optional, default `600000`; minimum time after a mapped user leaves voice before another join announcement may play)
 - `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)
 - `BUILD_DATE` (optional, default `unknown`; set automatically in Docker CI to commit date)
 - `LOBBY_MUSIC_PATH` (optional, default `/app/data/lobby.mp3`; MP3 file for draft lobby music)
@@ -155,7 +159,7 @@ docker run -d \
 
 SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PATH`). The Docker entrypoint fixes ownership of `/app/data` before dropping to the non-root `node` user, so bind mounts/named volumes should remain writable by SQLite.
 
-Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. Put `final_countdown.mp3` and `fight.mp3` in the same directory as `lobby.mp3` to enable the post-draft and start-match music cues; all three tracks obey `LOBBY_MUSIC_VOLUME`, and automatically duck to `TTS_MUSIC_DUCK_VOLUME` while TTS is speaking. If `fight.mp3` is missing, the bot falls back to TTS saying `fight! fight! fight!`. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music` and `/test-tts` do not require a native Windows ffmpeg/Opus setup on your host.
+Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. Put `final_countdown.mp3` and `fight.mp3` in the same directory as `lobby.mp3` to enable the post-draft and start-match music cues; all three tracks obey `LOBBY_MUSIC_VOLUME`, and automatically duck to `TTS_MUSIC_DUCK_VOLUME` while TTS is speaking. If `fight.mp3` is missing, the bot falls back to TTS saying `fight! fight! fight!`. `/announce` files also default to this same directory unless `ANNOUNCEMENT_AUDIO_DIRECTORY` is set. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music`, `/test-tts`, and announcement playback do not require a native Windows ffmpeg/Opus setup on your host.
 
 
 ## Audio smoothness tuning
