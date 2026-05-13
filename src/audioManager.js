@@ -560,6 +560,18 @@ class AudioManager {
     return this.startMusic(session, this.getAudioTrackPath(fileName), { loop: options.loop ?? false, replace: options.replace ?? true });
   }
 
+  async playFileOnce(guildId, fileName) {
+    const session = this.sessions.get(guildId);
+    const played = this.playTrack(guildId, fileName, { loop: false, replace: true });
+    if (!played) {
+      return false;
+    }
+
+    await session?.musicDonePromise?.catch(() => false);
+    await sleep(this.audioBufferMs);
+    return true;
+  }
+
   async playFight(guildId) {
     const session = this.sessions.get(guildId);
     const played = this.playTrack(guildId, 'fight.mp3', { loop: false, replace: true });
