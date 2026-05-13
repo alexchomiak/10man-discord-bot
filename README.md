@@ -48,10 +48,11 @@ A Discord bot that runs a random-captain team draft from a voice channel, create
   - Manage Roles
   - Manage Channels
   - Move Members
+  - Manage Nicknames
   - Connect / View Channels
 - Discord install scopes/permissions:
   - Guild Install should include `bot` and `applications.commands`.
-  - Administrator is sufficient for channel permissions, but you can also explicitly grant Manage Roles, Manage Channels, Move Members, Connect, View Channels, and Speak.
+  - Administrator is sufficient for channel permissions, but you can also explicitly grant Manage Roles, Manage Channels, Move Members, Manage Nicknames, Connect, View Channels, and Speak.
 - Discord intent requirements:
   - The code requests `GuildVoiceStates`; this is required for Discord voice connections and is not replaced by Administrator permissions.
   - Enable **Server Members Intent** in Discord Developer Portal for draft player/member lookup.
@@ -102,7 +103,7 @@ Linking and refresh jobs call Leetify’s public `/v3/profile?steam64_id=<SteamI
 
 Rating refreshes happen in two ways:
 
-- Scheduled refresh: every `RATING_REFRESH_INTERVAL_HOURS` hours, the bot refreshes every linked player in the SQLite DB.
+- Scheduled refresh: every `RATING_REFRESH_INTERVAL_HOURS` hours, the bot refreshes every linked player in the SQLite DB and re-renders any watched nickname templates that include `%rating%`.
 - Manual alias refresh: `/refresh alias:<name>` refreshes one linked player and returns the updated DB fields.
 - Manual voice refresh: `/refresh-voice` refreshes linked players currently in your voice call, useful immediately before starting a match.
 - Draft refresh: `/team-draft refresh_ratings:true` refreshes linked players currently in the voice call before the draft message is posted. This defaults to false to avoid surprising Leetify rate-limit usage. Refreshes are concurrency-limited to 3 in-flight API calls.
@@ -110,6 +111,12 @@ Rating refreshes happen in two ways:
 Use `/leaderboard` to post the server leaderboard in the current channel. Only one leaderboard is tracked per guild; rerunning the command updates the existing tracked message when possible. Use `/refresh-leaderboard` to force-refresh the existing message after linking or refreshing players. The leaderboard displays player names, Premier ratings, and Leetify ratings; it sorts by Premier rating first and cached Leetify rating second, and updates after each scheduled all-player rating refresh. Legacy Leetify payloads read `recentGameRatings.leetify` directly and scale it into the displayed Leetify rating, so players without Premier can still show a Leetify rating when available.
 
 Inspect a stored mapping with `/get-info alias:<name>`, which returns the DB fields plus cached Leetify source, ranks/rating/stats, and latest Premier game Discord-side for quick verification. Remove a mapping with `/unlink alias:<name>`.
+
+### Rating nickname variables
+
+Members can opt into a rendered rating nickname by adding `%rating%` to their server nickname after they have a matching `/link` alias. For example, changing your nickname to `chomes -- %rating%` stores that template and immediately renders it as `chomes -- 17333` when the linked `chomes` alias has a cached Premier rating of `17333`.
+
+The bot stores the original nickname template per guild/user in SQLite, along with a `watch_rating` flag. The rendered nickname is remembered separately so the bot can ignore its own follow-up `GuildMemberUpdate` event, while a user changing to a plain nickname removes the watch. Each scheduled rating refresh re-renders all rows with `watch_rating = 1`, so rating changes are reflected without losing the original `%rating%` template. Future variables can add their own watch column and renderer without changing the storage shape.
 
 ## Invite the Bot User to Your Server
 

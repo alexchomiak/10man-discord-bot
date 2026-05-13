@@ -12,6 +12,16 @@ const MAX_RESPONSE_BYTES = 1024 * 1024;
 const DEFAULT_LEETIFY_API_BASE = 'https://api-public.cs-prod.leetify.com';
 const DEFAULT_LEETIFY_LEGACY_API_BASE = 'https://api.cs-prod.leetify.com';
 const STEAM_API_BASE = 'https://api.steampowered.com';
+const DISCORD_NICKNAME_MAX_LENGTH = 32;
+const NICKNAME_TOKEN_RE = /%([a-z_]+)%/gi;
+const NICKNAME_VARIABLES = {
+  rating: {
+    watchColumn: 'watch_rating',
+    render(link) {
+      return Number.isInteger(link?.premier_rating) ? String(link.premier_rating) : null;
+    }
+  }
+};
 
 class PlayerManagerError extends Error {
   constructor(message, options = {}) {
@@ -52,6 +62,35 @@ function memberAliases(member) {
     member?.user?.displayName,
     member?.user?.username
   ].filter(Boolean);
+}
+
+function uniqueNonEmpty(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function nicknameVariableNames(template) {
+  const found = new Set();
+  for (const match of String(template || '').matchAll(NICKNAME_TOKEN_RE)) {
+    const name = match[1]?.toLowerCase();
+    if (NICKNAME_VARIABLES[name]) {
+      found.add(name);
+    }
+  }
+  return [...found];
+}
+
+function stripNicknameVariables(template) {
+  return String(template || '')
+    .replace(NICKNAME_TOKEN_RE, ' ')
+    .replace(/(?:\s*[-–—|•·:]+\s*)+$/g, '')
+    .replace(/^(?:\s*[-–—|•·:]+\s*)+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function truncateNickname(value) {
+  const text = String(value || '').trim();
+  return text.length > DISCORD_NICKNAME_MAX_LENGTH ? text.slice(0, DISCORD_NICKNAME_MAX_LENGTH) : text;
 }
 
 function extractSteamIdentifier(profileUrl) {
@@ -424,9 +463,23 @@ class PlayerManager {
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS nickname_templates (
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        original_nickname TEXT NOT NULL,
+        last_rendered_nickname TEXT,
+        watch_rating INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (guild_id, user_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_nickname_templates_watch_rating ON nickname_templates(watch_rating);
     `);
 
     this.addMissingPlayerLinkColumns();
+    this.addMissingNicknameTemplateColumns();
   }
 
   addMissingPlayerLinkColumns() {
@@ -452,12 +505,24 @@ class PlayerManager {
     }
   }
 
+  addMissingNicknameTemplateColumns() {
+    const existingColumns = new Set(this.db.prepare('PRAGMA table_info(nickname_templates)').all().map((column) => column.name));
+    for (const variable of Object.values(NICKNAME_VARIABLES)) {
+      if (!existingColumns.has(variable.watchColumn)) {
+        this.db.prepare(`ALTER TABLE nickname_templates ADD COLUMN ${variable.watchColumn} INTEGER NOT NULL DEFAULT 0`).run();
+      }
+    }
+  }
+
   scheduleRefresh() {
     this.stop();
     const delayMs = Math.max(60_000, this.refreshIntervalHours * 60 * 60 * 1000);
     this.refreshTimer = setTimeout(async () => {
       await this.refreshAllRatings().catch((error) => {
         console.error('[players] scheduled rating refresh failed:', summarizeError(error));
+      });
+      await this.updateWatchedNicknames().catch((error) => {
+        console.error('[players] scheduled nickname update failed:', summarizeError(error));
       });
       await this.updateAllLeaderboards().catch((error) => {
         console.error('[players] scheduled leaderboard update failed:', summarizeError(error));
@@ -563,6 +628,146 @@ class PlayerManager {
   getRatingForMember(member) {
     const link = this.getLinkForMember(member);
     return Number.isInteger(link?.premier_rating) ? link.premier_rating : null;
+  }
+
+  getNicknameTemplate(guildId, userId) {
+    this.initDb();
+    return this.db.prepare('SELECT * FROM nickname_templates WHERE guild_id = ? AND user_id = ?').get(guildId, userId) || null;
+  }
+
+  getWatchedRatingNicknames() {
+    this.initDb();
+    return this.db.prepare('SELECT * FROM nickname_templates WHERE watch_rating = 1 ORDER BY guild_id, user_id').all();
+  }
+
+  saveNicknameTemplate(member, originalNickname, lastRenderedNickname, variableNames) {
+    this.initDb();
+    const now = new Date().toISOString();
+    const watchEntries = Object.entries(NICKNAME_VARIABLES).map(([name, variable]) => [variable.watchColumn, variableNames.includes(name) ? 1 : 0]);
+    const watchColumns = watchEntries.map(([column]) => column);
+    const insertColumns = ['guild_id', 'user_id', 'original_nickname', 'last_rendered_nickname', ...watchColumns, 'updated_at'];
+    const updateColumns = ['original_nickname', 'last_rendered_nickname', ...watchColumns, 'updated_at'];
+    const values = [member.guild.id, member.id, originalNickname, lastRenderedNickname, ...watchEntries.map(([, value]) => value), now];
+
+    this.db.prepare(`
+      INSERT INTO nickname_templates (${insertColumns.join(', ')})
+      VALUES (${insertColumns.map(() => '?').join(', ')})
+      ON CONFLICT(guild_id, user_id) DO UPDATE SET
+        ${updateColumns.map((column) => `${column} = excluded.${column}`).join(',\n        ')}
+    `).run(...values);
+  }
+
+  deleteNicknameTemplate(guildId, userId) {
+    this.initDb();
+    return this.db.prepare('DELETE FROM nickname_templates WHERE guild_id = ? AND user_id = ?').run(guildId, userId).changes > 0;
+  }
+
+  nicknameAliasCandidates(member, template, previousMember = null) {
+    return uniqueNonEmpty([
+      stripNicknameVariables(template),
+      ...memberAliases(previousMember),
+      ...memberAliases(member)
+    ]);
+  }
+
+  getLinkForNicknameTemplate(member, template, previousMember = null) {
+    for (const alias of this.nicknameAliasCandidates(member, template, previousMember)) {
+      const link = this.getByAlias(alias);
+      if (link) {
+        return link;
+      }
+    }
+    return null;
+  }
+
+  renderNicknameTemplate(template, link) {
+    const rendered = String(template || '').replace(NICKNAME_TOKEN_RE, (token, rawName) => {
+      const variable = NICKNAME_VARIABLES[String(rawName || '').toLowerCase()];
+      if (!variable) {
+        return token;
+      }
+
+      const value = variable.render(link);
+      return value === null || value === undefined ? token : value;
+    });
+    return truncateNickname(rendered);
+  }
+
+  async applyRenderedNickname(member, renderedNickname) {
+    if (!member || member.nickname === renderedNickname) {
+      return false;
+    }
+
+    await member.setNickname(renderedNickname || null, 'Rendered tracked nickname variables');
+    return true;
+  }
+
+  async handleMemberNicknameUpdate(oldMember, newMember) {
+    this.initDb();
+    if (!newMember?.guild || newMember.user?.bot) {
+      return { action: 'ignored' };
+    }
+
+    const oldNickname = oldMember?.nickname || null;
+    const newNickname = newMember?.nickname || null;
+    if (oldNickname === newNickname) {
+      return { action: 'unchanged' };
+    }
+
+    const existing = this.getNicknameTemplate(newMember.guild.id, newMember.id);
+    const variableNames = nicknameVariableNames(newNickname);
+    if (variableNames.length === 0) {
+      if (existing?.last_rendered_nickname && newNickname === existing.last_rendered_nickname) {
+        return { action: 'rendered_update_ignored' };
+      }
+
+      if (existing) {
+        this.deleteNicknameTemplate(newMember.guild.id, newMember.id);
+        return { action: 'deleted' };
+      }
+
+      return { action: 'ignored' };
+    }
+
+    const link = this.getLinkForNicknameTemplate(newMember, newNickname, oldMember);
+    const renderedNickname = this.renderNicknameTemplate(newNickname, link);
+    this.saveNicknameTemplate(newMember, newNickname, renderedNickname, variableNames);
+
+    if (!link) {
+      console.warn(`[players] nickname variables configured for ${newMember.id}, but no player link matched '${newNickname}'.`);
+    }
+
+    await this.applyRenderedNickname(newMember, renderedNickname);
+    return { action: 'saved', renderedNickname, matched: Boolean(link) };
+  }
+
+  async updateWatchedNicknames() {
+    this.initDb();
+    if (!this.client) {
+      return { total: 0, updated: 0, failed: 0, skipped: true };
+    }
+
+    const records = this.getWatchedRatingNicknames();
+    let updated = 0;
+    let failed = 0;
+
+    for (const record of records) {
+      try {
+        const guild = await this.client.guilds.fetch(record.guild_id);
+        const member = await guild.members.fetch(record.user_id);
+        const link = this.getLinkForNicknameTemplate(member, record.original_nickname);
+        const renderedNickname = this.renderNicknameTemplate(record.original_nickname, link);
+        this.saveNicknameTemplate(member, record.original_nickname, renderedNickname, nicknameVariableNames(record.original_nickname));
+        if (await this.applyRenderedNickname(member, renderedNickname)) {
+          updated += 1;
+        }
+      } catch (error) {
+        failed += 1;
+        console.warn(`[players] failed to update watched nickname for ${record.guild_id}/${record.user_id}:`, summarizeError(error));
+      }
+    }
+
+    return { total: records.length, updated, failed };
   }
 
   formatMemberLabel(member) {
