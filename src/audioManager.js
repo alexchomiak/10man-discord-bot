@@ -18,6 +18,7 @@ const {
 } = require('@discordjs/voice');
 const ffmpegPath = require('ffmpeg-static');
 const googleTTS = require('google-tts-api');
+const { SPEECH, formatSpeechList } = require('./speech.ts');
 
 const FRAME_BYTES = 3840; // 20ms of 48khz signed 16-bit stereo PCM.
 const DEFAULT_MUSIC_PATH = '/app/data/lobby.mp3';
@@ -596,7 +597,7 @@ class AudioManager {
     const session = this.sessions.get(guildId);
     const played = this.playTrack(guildId, 'fight.mp3', { loop: false, replace: true });
     if (!played) {
-      await this.speak(guildId, 'fight! fight! fight!');
+      await this.speak(guildId, SPEECH.FIGHT_FALLBACK);
       return false;
     }
 
@@ -673,13 +674,8 @@ class AudioManager {
   }
 
   async announcePicks(guild, captainName, pickedNames, nextCaptainName) {
-    const picks = pickedNames.filter(Boolean);
-    const pickedText = picks.length > 1
-      ? `${picks.slice(0, -1).join(', ')} and ${picks.at(-1)}`
-      : picks[0] || 'the pick';
-    const message = nextCaptainName
-      ? `${captainName} drafted ${pickedText}. Next pick, ${nextCaptainName}.`
-      : `${captainName} drafted ${pickedText}. Draft picks complete.`;
+    const pickedText = formatSpeechList(pickedNames);
+    const message = SPEECH.draftPick({ captainName, pickedText, nextCaptainName });
     await this.speak(guild.id, message).catch(() => false);
   }
 
