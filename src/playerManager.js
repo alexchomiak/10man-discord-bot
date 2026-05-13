@@ -198,10 +198,6 @@ function medalForRank(rank) {
   return ['🥇', '🥈', '🥉'][rank - 1] || `**${rank}.**`;
 }
 
-function displayNameForMember(member) {
-  return member?.displayName || member?.user?.globalName || member?.user?.displayName || member?.user?.username || member?.id || null;
-}
-
 function parseNumeric(value) {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -670,13 +666,7 @@ class PlayerManager {
         const member = this.resolveLeaderboardMember(row, memberLookup);
         const fallbackName = truncate(firstPresent(row.leetifyName, row.alias), 40);
         const mention = member ? `<@${member.id}>` : `**${fallbackName}**`;
-        const resolvedName = member ? displayNameForMember(member) : null;
-        const aliases = [
-          resolvedName && normalizeAlias(resolvedName) !== normalizeAlias(row.alias) ? `aka ${truncate(row.alias, 28)}` : null,
-          row.leetifyName && normalizeAlias(row.leetifyName) !== normalizeAlias(row.alias) ? `Leetify: ${truncate(row.leetifyName, 28)}` : null
-        ].filter(Boolean).join(' · ');
-        const aliasText = aliases ? `\n> ${aliases}` : '';
-        return `${medalForRank(rank)} ${mention} — ${formatRatingChip('Premier', row.premierRating)} · ${formatRatingChip('Leetify', row.leetifyRank)}${aliasText}`;
+        return `${medalForRank(rank)} ${mention} — ${formatRatingChip('Premier', row.premierRating)} · ${formatRatingChip('Leetify', row.leetifyRank)}`;
       }).join('\n');
 
     return {
