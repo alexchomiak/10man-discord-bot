@@ -349,6 +349,12 @@ const refreshVoiceCommand = new SlashCommandBuilder()
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
+const leaderboardCommand = new SlashCommandBuilder()
+  .setName('leaderboard')
+  .setDescription('Create or update this server’s maintained CS2 ratings leaderboard.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
 const draftStatusCommand = new SlashCommandBuilder()
   .setName('draft-status')
   .setDescription('Show current draft/mock status for this server.')
@@ -408,7 +414,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
+    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -430,7 +436,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     console.error('Failed to register slash commands:', error);
   }
 
-  playerManager.start();
+  playerManager.start(readyClient);
   await notificationManager.start();
 });
 
@@ -523,6 +529,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
       } catch (error) {
         console.error('Failed to refresh voice players:', summarizePlayerError(error));
         await interaction.editReply({ content: error.message || 'Failed to refresh voice player metadata.' });
+      }
+      return;
+    }
+
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'leaderboard') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const result = await playerManager.createOrUpdateLeaderboard(
+          interaction.guildId,
+          interaction.channel,
+          interaction.guild?.name || 'Server'
+        );
+        await interaction.editReply({
+          content: result.created
+            ? `Created leaderboard: ${result.message.url}`
+            : `Updated existing leaderboard: ${result.message.url}`
+        });
+      } catch (error) {
+        console.error('Failed to create/update leaderboard:', summarizePlayerError(error));
+        await interaction.editReply({ content: error.message || 'Failed to create or update leaderboard.' });
       }
       return;
     }

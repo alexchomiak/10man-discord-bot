@@ -157,6 +157,41 @@ function stringifyJson(value) {
   return value && typeof value === 'object' ? JSON.stringify(value) : null;
 }
 
+function parseJson(value) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function truncate(value, maxLength) {
+  const text = String(value || '');
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function formatLeaderboardNumber(value) {
+  if (value === null || value === undefined || value === '') {
+    return '-';
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Number.parseFloat(value.toFixed(2)).toString();
+  }
+
+  return String(value);
+}
+
+function parseLeetifyRank(link) {
+  const ranks = parseJson(link?.ranks_json);
+  const value = ranks?.leetify;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function firstPresent(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== '');
 }
@@ -238,9 +273,17 @@ class PlayerManager {
     this.db = null;
     this.refreshTimer = null;
     this.refreshInProgress = false;
+    this.client = null;
   }
 
-  start() {
+  setClient(client) {
+    this.client = client;
+  }
+
+  start(client = null) {
+    if (client) {
+      this.setClient(client);
+    }
     this.initDb();
     this.scheduleRefresh();
   }
@@ -286,6 +329,14 @@ class PlayerManager {
 
       CREATE INDEX IF NOT EXISTS idx_player_links_alias_normalized ON player_links(alias_normalized);
       CREATE INDEX IF NOT EXISTS idx_player_links_steam_id64 ON player_links(steam_id64);
+
+      CREATE TABLE IF NOT EXISTS player_leaderboards (
+        guild_id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
     `);
 
     this.addMissingPlayerLinkColumns();
@@ -320,6 +371,9 @@ class PlayerManager {
     this.refreshTimer = setTimeout(async () => {
       await this.refreshAllRatings().catch((error) => {
         console.error('[players] scheduled rating refresh failed:', summarizeError(error));
+      });
+      await this.updateAllLeaderboards().catch((error) => {
+        console.error('[players] scheduled leaderboard update failed:', summarizeError(error));
       });
       this.scheduleRefresh();
     }, delayMs);
@@ -428,6 +482,136 @@ class PlayerManager {
     const name = member?.displayName || member?.user?.displayName || member?.user?.username || member?.id;
     const rating = this.getRatingForMember(member);
     return rating ? `${name} (${rating})` : name;
+  }
+
+  getLeaderboardRecord(guildId) {
+    this.initDb();
+    return this.db.prepare('SELECT * FROM player_leaderboards WHERE guild_id = ?').get(guildId) || null;
+  }
+
+  saveLeaderboardRecord(guildId, channelId, messageId) {
+    this.initDb();
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO player_leaderboards (guild_id, channel_id, message_id, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(guild_id) DO UPDATE SET
+        channel_id = excluded.channel_id,
+        message_id = excluded.message_id,
+        updated_at = excluded.updated_at
+    `).run(guildId, channelId, messageId, now);
+  }
+
+  getLeaderboardRecords() {
+    this.initDb();
+    return this.db.prepare('SELECT * FROM player_leaderboards ORDER BY guild_id').all();
+  }
+
+  getLeaderboardRows(limit = 25) {
+    return this.getAll()
+      .map((link) => ({
+        alias: link.alias,
+        premierRating: Number.isInteger(link.premier_rating) ? link.premier_rating : null,
+        leetifyRank: parseLeetifyRank(link),
+        ratingUpdatedAt: link.rating_updated_at
+      }))
+      .filter((row) => row.premierRating !== null || row.leetifyRank !== null)
+      .sort((a, b) => {
+        const premierDiff = (b.premierRating || 0) - (a.premierRating || 0);
+        if (premierDiff !== 0) {
+          return premierDiff;
+        }
+        return (b.leetifyRank || Number.NEGATIVE_INFINITY) - (a.leetifyRank || Number.NEGATIVE_INFINITY);
+      })
+      .slice(0, limit);
+  }
+
+  buildLeaderboardContent(guildName = 'Server') {
+    const rows = this.getLeaderboardRows();
+    const updatedAt = new Date().toISOString();
+    const title = `🏆 ${guildName} CS2 Leaderboard`;
+    const subtitle = 'Sorted by Premier rating, then Leetify rating. Auto-refreshes with the rating refresh job.';
+
+    if (rows.length === 0) {
+      return [
+        `**${title}**`,
+        subtitle,
+        '',
+        'No linked players with cached ratings yet. Use `/link` and `/refresh` to populate the leaderboard.',
+        '',
+        `_Last updated: ${updatedAt}_`
+      ].join('\n');
+    }
+
+    const tableRows = [
+      `${'#'.padStart(2)}  ${'Player'.padEnd(20)} ${'Premier'.padStart(7)} ${'Leetify'.padStart(7)}`,
+      `${'--'}  ${'-'.repeat(20)} ${'-'.repeat(7)} ${'-'.repeat(7)}`,
+      ...rows.map((row, index) => [
+        String(index + 1).padStart(2),
+        truncate(row.alias, 20).padEnd(20),
+        formatLeaderboardNumber(row.premierRating).padStart(7),
+        formatLeaderboardNumber(row.leetifyRank).padStart(7)
+      ].join('  '))
+    ];
+
+    return [
+      `**${title}**`,
+      subtitle,
+      '```',
+      tableRows.join('\n'),
+      '```',
+      `_Last updated: ${updatedAt}_`
+    ].join('\n');
+  }
+
+  async createOrUpdateLeaderboard(guildId, channel, guildName = 'Server') {
+    this.initDb();
+    const content = this.buildLeaderboardContent(guildName);
+    const existing = this.getLeaderboardRecord(guildId);
+
+    if (existing && this.client) {
+      try {
+        const existingChannel = await this.client.channels.fetch(existing.channel_id);
+        const existingMessage = await existingChannel.messages.fetch(existing.message_id);
+        const message = await existingMessage.edit({ content });
+        this.saveLeaderboardRecord(guildId, existing.channel_id, existing.message_id);
+        return { message, created: false };
+      } catch (error) {
+        console.warn('[players] failed to update existing leaderboard, creating a new one:', summarizeError(error));
+      }
+    }
+
+    const message = await channel.send({ content });
+    this.saveLeaderboardRecord(guildId, message.channelId || channel.id, message.id);
+    return { message, created: true };
+  }
+
+  async updateAllLeaderboards() {
+    this.initDb();
+    if (!this.client) {
+      return { total: 0, updated: 0, failed: 0, skipped: true };
+    }
+
+    const records = this.getLeaderboardRecords();
+    let updated = 0;
+    let failed = 0;
+
+    for (const record of records) {
+      try {
+        const guild = await this.client.guilds.fetch(record.guild_id).catch(() => null);
+        const content = this.buildLeaderboardContent(guild?.name || 'Server');
+        const channel = await this.client.channels.fetch(record.channel_id);
+        const message = await channel.messages.fetch(record.message_id);
+        await message.edit({ content });
+        this.saveLeaderboardRecord(record.guild_id, record.channel_id, record.message_id);
+        updated += 1;
+      } catch (error) {
+        failed += 1;
+        console.warn(`[players] failed to update leaderboard for guild ${record.guild_id}:`, summarizeError(error));
+      }
+    }
+
+    return { total: records.length, updated, failed };
   }
 
   async refreshRatingForAlias(alias) {
