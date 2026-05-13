@@ -358,7 +358,6 @@ class PlayerManager {
     this.refreshIntervalHours = parsePositiveNumber(config.ratingRefreshIntervalHours || process.env.RATING_REFRESH_INTERVAL_HOURS, DEFAULT_RATING_REFRESH_INTERVAL_HOURS);
     this.httpTimeoutMs = Number.parseInt(config.playerHttpTimeoutMs || process.env.PLAYER_HTTP_TIMEOUT_MS || DEFAULT_HTTP_TIMEOUT_MS, 10);
     this.db = null;
-    this.refreshTimer = null;
     this.refreshInProgress = false;
     this.client = null;
   }
@@ -372,14 +371,10 @@ class PlayerManager {
       this.setClient(client);
     }
     this.initDb();
-    this.scheduleRefresh();
   }
 
   stop() {
-    if (this.refreshTimer) {
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = null;
-    }
+    // Scheduling is owned by SchedulerManager. Kept for compatibility.
   }
 
   initDb() {
@@ -452,18 +447,17 @@ class PlayerManager {
     }
   }
 
-  scheduleRefresh() {
-    this.stop();
-    const delayMs = Math.max(60_000, this.refreshIntervalHours * 60 * 60 * 1000);
-    this.refreshTimer = setTimeout(async () => {
-      await this.refreshAllRatings().catch((error) => {
-        console.error('[players] scheduled rating refresh failed:', summarizeError(error));
-      });
-      await this.updateAllLeaderboards().catch((error) => {
-        console.error('[players] scheduled leaderboard update failed:', summarizeError(error));
-      });
-      this.scheduleRefresh();
-    }, delayMs);
+  async runScheduledRatingRefresh() {
+    const refreshResult = await this.refreshAllRatings();
+    const leaderboardResult = await this.updateAllLeaderboards();
+    return {
+      players: refreshResult.skipped
+        ? `skipped (${refreshResult.reason})`
+        : `${refreshResult.updated}/${refreshResult.total} refreshed${refreshResult.failed ? `, ${refreshResult.failed} failed` : ''}`,
+      leaderboards: leaderboardResult.skipped
+        ? 'skipped'
+        : `${leaderboardResult.updated}/${leaderboardResult.total} updated${leaderboardResult.failed ? `, ${leaderboardResult.failed} failed` : ''}`
+    };
   }
 
   async link(alias, steamProfileUrl) {

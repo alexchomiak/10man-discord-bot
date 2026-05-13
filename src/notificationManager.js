@@ -3,7 +3,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 
-const TARGET_TIMEZONE = 'America/Chicago';
+const { DEFAULT_TIMEZONE, parseDailyTime } = require('./schedulerManager');
+
+const TARGET_TIMEZONE = DEFAULT_TIMEZONE;
 
 class NotificationManager {
   constructor(client, config) {
@@ -14,10 +16,10 @@ class NotificationManager {
       messageDateKey: null,
       interested: new Set()
     };
-    this.timeout = null;
-    const [hourRaw, minuteRaw] = String(this.config.notificationTimeCst || '18:00').split(':');
-    this.targetHour = Number.parseInt(hourRaw, 10);
-    this.targetMinute = Number.parseInt(minuteRaw || '0', 10);
+    const notificationTime = parseDailyTime(this.config.notificationTimeCst || '18:00');
+    this.targetHour = notificationTime.hour;
+    this.targetMinute = notificationTime.minute;
+    this.targetTimeLabel = notificationTime.label;
     this.dbPath = this.config.sqlitePath || '/app/data/bot.db';
     this.db = null;
   }
@@ -26,9 +28,9 @@ class NotificationManager {
     return Boolean(this.config.notificationChannelId && this.config.notificationRoleId);
   }
 
-  async start() {
+  async initialize() {
     if (!this.isEnabled()) {
-      return;
+      return { enabled: false, reason: 'notification channel or role is not configured' };
     }
 
     this.initDb();
@@ -52,7 +54,11 @@ class NotificationManager {
       }
     }
 
-    this.scheduleNextDailyPrompt();
+    return {
+      enabled: true,
+      messageDateKey: this.state.messageDateKey || 'none',
+      targetTime: this.targetTimeLabel
+    };
   }
 
   buildButtons() {
@@ -288,7 +294,7 @@ class NotificationManager {
   getChicagoParts(date) {
     const formatter = new Intl.DateTimeFormat('en-US', {
       timeZone: TARGET_TIMEZONE,
-      hour12: false,
+      hourCycle: 'h23',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -306,31 +312,22 @@ class NotificationManager {
     };
   }
 
-  getNextRunDate(from = new Date()) {
-    for (let minuteOffset = 1; minuteOffset <= 60 * 48; minuteOffset += 1) {
-      const candidate = new Date(from.getTime() + (minuteOffset * 60 * 1000));
-      const parts = this.getChicagoParts(candidate);
-      if (parts.hour === this.targetHour && parts.minute === this.targetMinute) {
-        return candidate;
-      }
-    }
-    return new Date(from.getTime() + (24 * 60 * 60 * 1000));
-  }
-
-  scheduleNextDailyPrompt() {
-    const now = new Date();
-    const nextRun = this.getNextRunDate(now);
-    const delayMs = Math.max(1000, nextRun.getTime() - now.getTime());
-
-    if (this.timeout) {
-      clearTimeout(this.timeout);
+  async runDailyPromptJob() {
+    if (!this.isEnabled()) {
+      return { skipped: true, reason: 'notification channel or role is not configured' };
     }
 
-    this.timeout = setTimeout(async () => {
-      await this.postDailyPrompt();
-      this.scheduleNextDailyPrompt();
-    }, delayMs);
+    this.initDb();
+    this.loadStateFromDb();
+    const channel = await this.client.channels.fetch(this.config.notificationChannelId).catch(() => null);
+    if (!channel || !('send' in channel) || !('messages' in channel)) {
+      return { skipped: true, reason: 'notification channel is unavailable' };
+    }
+
+    await this.postDailyPrompt(channel);
+    return { posted: true, messageId: this.state.messageId, dateKey: this.state.messageDateKey };
   }
+
 }
 
 module.exports = {

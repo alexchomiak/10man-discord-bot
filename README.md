@@ -74,7 +74,9 @@ Copy `.env.example` to `.env`:
 - `LEETIFY_API_KEY` (optional; public Leetify profile refreshes work without it, but if set it is sent as the documented `Authorization`/`_leetify_key` header value)
 - `LEETIFY_API_BASE` (optional, default `https://api-public.cs-prod.leetify.com`; override only if Leetify changes the public API host)
 - `LEETIFY_LEGACY_API_BASE` (optional, default `https://api.cs-prod.leetify.com`; fallback host for `/api/profile/id/<SteamID64>` when the public profile endpoint returns 404)
-- `RATING_REFRESH_INTERVAL_HOURS` (optional, default `24`; scheduled refresh interval for every linked player’s cached Premier rating)
+- `RATING_REFRESH_INTERVAL_HOURS` (optional, default `24`; scheduled refresh interval for every linked player’s cached Premier rating; must map to a stable cron cadence such as 1, 2, 3, 4, 6, 8, 12, or 24)
+- `RATING_REFRESH_CRON` (optional; overrides `RATING_REFRESH_INTERVAL_HOURS` with an explicit node-cron expression in UTC)
+- `SCHEDULER_EVENTS_CHANNEL` (optional channel ID; when set, background scheduler jobs post completion/failure summaries there for monitoring)
 - `ANNOUNCEMENT_AUDIO_DIRECTORY` (optional, defaults to the directory containing `LOBBY_MUSIC_PATH`; stores MP3 files referenced by `/announce`)
 - `ANNOUNCEMENT_COOLDOWN_MS` (optional, default `600000`; minimum time after a mapped user leaves voice before another join announcement may play)
 - `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)
@@ -90,8 +92,9 @@ Copy `.env.example` to `.env`:
 - `AUDIO_BUFFER_MS` (optional, default `500`; lobby-music PCM prebuffer to smooth jitter; increase to `1000` if music sputters)
 - `AUDIO_QUEUE_MAX_MS` (optional, default `5000`; max decoded lobby-music PCM queued in memory)
 
-Notification scheduler is restart-safe: on startup, if today's daily message already exists, the bot reuses it and schedules the next run instead of reposting immediately.
-When the daily message rolls over, previous-day message metadata and interested rows are removed from SQLite (no unbounded growth).
+Background work is owned by a single in-process `node-cron` scheduler that logs every registered cron expression and next-run time at startup and after each execution. `NOTIFICATION_TIME_CST` is interpreted as an America/Chicago `HH:mm` wall-clock time, so changing it and restarting the bot changes the next scheduled daily prompt. Notification startup is restart-safe: on startup, if today's daily message already exists, the bot reuses it and schedules the next run instead of reposting immediately. When the daily message rolls over, previous-day message metadata and interested rows are removed from SQLite (no unbounded growth).
+
+If `SCHEDULER_EVENTS_CHANNEL` is configured, the bot also posts a short Discord message whenever the daily notification job or rating-refresh job completes, skips, or fails. If it is unset, the same job activity is only written to logs.
 
 
 ## Player links and Premier ratings
@@ -102,7 +105,7 @@ Linking and refresh jobs call Leetify’s public `/v3/profile?steam64_id=<SteamI
 
 Rating refreshes happen in two ways:
 
-- Scheduled refresh: every `RATING_REFRESH_INTERVAL_HOURS` hours, the bot refreshes every linked player in the SQLite DB.
+- Scheduled refresh: on the configured `node-cron` cadence (`RATING_REFRESH_CRON`, or the cron expression derived from `RATING_REFRESH_INTERVAL_HOURS`), the central scheduler refreshes every linked player in the SQLite DB and then updates tracked leaderboards.
 - Manual alias refresh: `/refresh alias:<name>` refreshes one linked player and returns the updated DB fields.
 - Manual voice refresh: `/refresh-voice` refreshes linked players currently in your voice call, useful immediately before starting a match.
 - Draft refresh: `/team-draft refresh_ratings:true` refreshes linked players currently in the voice call before the draft message is posted. This defaults to false to avoid surprising Leetify rate-limit usage. Refreshes are concurrency-limited to 3 in-flight API calls.

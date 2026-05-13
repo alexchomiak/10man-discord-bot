@@ -14,6 +14,7 @@ const { NotificationManager } = require('./notificationManager');
 const { AudioManager } = require('./audioManager');
 const { AnnouncementManager } = require('./announcementManager');
 const { PlayerManager, summarizeError: summarizePlayerError } = require('./playerManager');
+const { SchedulerManager, parseDailyTime, DEFAULT_TIMEZONE } = require('./schedulerManager');
 const { COMMANDS, DRAFT_TYPE_CHOICES } = require('./commands.ts');
 const { DISCORD_MESSAGES } = require('./messages.ts');
 
@@ -54,7 +55,9 @@ const config = {
   leetifyApiKey: process.env.LEETIFY_API_KEY || null,
   leetifyApiBase: process.env.LEETIFY_API_BASE || 'https://api-public.cs-prod.leetify.com',
   leetifyLegacyApiBase: process.env.LEETIFY_LEGACY_API_BASE || 'https://api.cs-prod.leetify.com',
-  ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24'
+  ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24',
+  ratingRefreshCron: process.env.RATING_REFRESH_CRON || null,
+  schedulerEventsChannelId: process.env.SCHEDULER_EVENTS_CHANNEL || null
 };
 
 
@@ -221,6 +224,33 @@ const client = new Client({
   partials: [Partials.GuildMember]
 });
 const notificationManager = new NotificationManager(client, config);
+const schedulerManager = new SchedulerManager(client, config);
+
+schedulerManager.registerDailyJob({
+  id: 'daily-cs2-notification',
+  label: 'Daily CS2 notification prompt',
+  time: parseDailyTime(config.notificationTimeCst),
+  timezone: DEFAULT_TIMEZONE,
+  task: () => notificationManager.runDailyPromptJob()
+});
+
+if (config.ratingRefreshCron) {
+  schedulerManager.registerCronJob({
+    id: 'rating-refresh',
+    label: 'Linked player rating refresh',
+    expression: config.ratingRefreshCron,
+    timezone: 'UTC',
+    task: () => playerManager.runScheduledRatingRefresh()
+  });
+} else {
+  schedulerManager.registerIntervalJob({
+    id: 'rating-refresh',
+    label: 'Linked player rating refresh',
+    intervalMs: Math.max(60_000, Number.parseFloat(config.ratingRefreshIntervalHours || '24') * 60 * 60 * 1000),
+    timezone: 'UTC',
+    task: () => playerManager.runScheduledRatingRefresh()
+  });
+}
 
 const teamDraftCommand = new SlashCommandBuilder()
   .setName(COMMANDS.TEAM_DRAFT.name)
@@ -494,7 +524,9 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
 
   playerManager.start(readyClient);
-  await notificationManager.start();
+  const notificationInit = await notificationManager.initialize();
+  console.log('[scheduler] notification initialization:', notificationInit);
+  await schedulerManager.start();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {

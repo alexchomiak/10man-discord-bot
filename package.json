@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/index.js",
-    "check": "node --check src/index.js && node --check src/draftManager.js && node --check src/notificationManager.js && node --check src/audioManager.js && node --check src/announcementManager.js && node --check src/playerManager.js && node --check src/commands.ts && node --check src/messages.ts && node --check src/speech.ts"
+    "check": "node --check src/index.js && node --check src/draftManager.js && node --check src/notificationManager.js && node --check src/schedulerManager.js && node --check src/audioManager.js && node --check src/announcementManager.js && node --check src/playerManager.js && node --check src/commands.ts && node --check src/messages.ts && node --check src/speech.ts"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -20,6 +20,7 @@
     "ffmpeg-static": "^5.2.0",
     "google-tts-api": "^2.0.2",
     "libsodium-wrappers": "^0.7.15",
+    "node-cron": "^4.2.1",
     "opusscript": "^0.1.1"
   }
 }
