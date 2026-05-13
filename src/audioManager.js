@@ -325,7 +325,7 @@ class AudioManager {
     return fs.existsSync(this.musicPath);
   }
 
-  async join(channel) {
+  async join(channel, options = {}) {
     const guildId = channel.guild.id;
     this.info('join requested', { guildId, channelId: channel.id, channelName: channel.name });
     const existing = this.sessions.get(guildId);
@@ -408,7 +408,9 @@ class AudioManager {
       throw toAudioError('Discord voice audio setup failed before playback could start.', 'VOICE_AUDIO_SETUP_FAILED', error);
     }
 
-    this.startMusic(session);
+    if (options.startMusic !== false) {
+      this.startMusic(session);
+    }
     await this.waitForReadyOrContinue(guildId, session);
     return session;
   }
@@ -550,19 +552,33 @@ class AudioManager {
     return true;
   }
 
-  playTrack(guildId, fileName, options = {}) {
+  hasActivePlayback(guildId) {
     const session = this.sessions.get(guildId);
     if (!session) {
-      this.warn('track playback requested without active voice session', { guildId, fileName });
       return false;
     }
 
-    return this.startMusic(session, this.getAudioTrackPath(fileName), { loop: options.loop ?? false, replace: options.replace ?? true });
+    const queue = session.mixer.queueStats();
+    return Boolean(session.musicProcess || queue.speechBytes > 0);
   }
 
-  async playFileOnce(guildId, fileName) {
+  playTrackPath(guildId, trackPath, options = {}) {
     const session = this.sessions.get(guildId);
-    const played = this.playTrack(guildId, fileName, { loop: false, replace: true });
+    if (!session) {
+      this.warn('track playback requested without active voice session', { guildId, trackPath });
+      return false;
+    }
+
+    return this.startMusic(session, trackPath, { loop: options.loop ?? false, replace: options.replace ?? true });
+  }
+
+  playTrack(guildId, fileName, options = {}) {
+    return this.playTrackPath(guildId, this.getAudioTrackPath(fileName), options);
+  }
+
+  async playFilePathOnce(guildId, trackPath) {
+    const session = this.sessions.get(guildId);
+    const played = this.playTrackPath(guildId, trackPath, { loop: false, replace: true });
     if (!played) {
       return false;
     }
@@ -570,6 +586,10 @@ class AudioManager {
     await session?.musicDonePromise?.catch(() => false);
     await sleep(this.audioBufferMs);
     return true;
+  }
+
+  async playFileOnce(guildId, fileName) {
+    return this.playFilePathOnce(guildId, this.getAudioTrackPath(fileName));
   }
 
   async playFight(guildId) {

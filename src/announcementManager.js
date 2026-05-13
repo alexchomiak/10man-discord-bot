@@ -224,7 +224,8 @@ class AnnouncementManager {
       return;
     }
 
-    if (this.inFlightByGuild.has(guildId)) {
+    // First eligible join wins: do not queue announcements or interrupt active audio.
+    if (this.inFlightByGuild.has(guildId) || this.audioManager?.hasActivePlayback(guildId)) {
       return;
     }
 
@@ -250,12 +251,12 @@ class AnnouncementManager {
         return;
       }
 
-      await this.audioManager.join(voiceChannel);
-      if (this.isDraftActive(guildId)) {
+      await this.audioManager.join(voiceChannel, { startMusic: false });
+      if (this.isDraftActive(guildId) || this.audioManager.hasActivePlayback(guildId)) {
         return;
       }
 
-      await this.audioManager.playFileOnce(guildId, mapping.file_name);
+      await this.audioManager.playFilePathOnce(guildId, audioPath);
     } catch (error) {
       console.error('[announcements] failed to play announcement:', summarizeError(error));
     } finally {
