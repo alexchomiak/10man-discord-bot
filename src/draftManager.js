@@ -76,8 +76,8 @@ function shuffle(array) {
   return result;
 }
 
-function formatMentions(userIds) {
-  return userIds.map((id) => `<@${id}>`).join(', ');
+function formatMentions(userIds, formatUser = (id) => `<@${id}>`) {
+  return userIds.map((id) => formatUser(id)).join(', ');
 }
 
 function normalizeDraftMode(mode) {
@@ -409,23 +409,25 @@ class DraftManager {
     const teamA = [captainA];
     const teamB = [captainB];
     const pickOrder = createDraftOrder(pool.length, captainA, captainB, draftMode);
-    const steps = [];
     const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
+    const formatMockPlayer = (name) => `**${name}**`;
+    const buildMockSession = () => ({
+      captains: [captainA, captainB],
+      teamA,
+      teamB,
+      pool,
+      pickOrder,
+      pickIndex: teamA.length + teamB.length - 2,
+      draftMode,
+      teamSize: totalPlayers / 2,
+      matchupNames: { teamNameA, teamNameB }
+    });
 
     const reply = await interaction.reply({
       embeds: [
-        this.buildMockDraftEmbed({
-          totalPlayers,
-          captainA,
-          captainB,
-          teamA,
-          teamB,
-          teamNameA,
-          teamNameB,
-          draftMode,
-          steps,
+        this.buildDraftEmbed(buildMockSession(), guild, {
           status: 'Draft starting',
-          currentPicker: pickOrder[0]
+          formatUser: formatMockPlayer
         })
       ],
       ...(broadcast ? {} : { flags: MessageFlags.Ephemeral }),
@@ -450,25 +452,15 @@ class DraftManager {
       } else {
         teamB.push(picked);
       }
-      steps.push({ picker, picked });
       return picked;
     };
 
     const editMockReply = async () => {
       await reply.edit({
         embeds: [
-          this.buildMockDraftEmbed({
-            totalPlayers,
-            captainA,
-            captainB,
-            teamA,
-            teamB,
-            teamNameA,
-            teamNameB,
-            draftMode,
-            steps,
+          this.buildDraftEmbed(buildMockSession(), guild, {
             status: pool.length > 0 ? 'Drafting' : 'Complete',
-            currentPicker: pickOrder[steps.length]
+            formatUser: formatMockPlayer
           })
         ]
       }).catch(() => {});
@@ -594,62 +586,11 @@ class DraftManager {
     });
   }
 
-  buildDraftRoster(userIds) {
+  buildDraftRoster(userIds, formatUser = (id) => `<@${id}>`) {
     return truncateEmbedField(numberedList(userIds, (userId, index) => {
       const captainBadge = index === 0 ? '👑 ' : '';
-      return `${index + 1}. ${captainBadge}<@${userId}>`;
+      return `${index + 1}. ${captainBadge}${formatUser(userId)}`;
     }));
-  }
-
-  buildMockRoster(names) {
-    return truncateEmbedField(numberedList(names, (name, index) => {
-      const captainBadge = index === 0 ? '👑 ' : '';
-      return `${index + 1}. ${captainBadge}**${name}**`;
-    }));
-  }
-
-  buildMockDraftLog(steps) {
-    if (!steps.length) {
-      return 'Draft starting...';
-    }
-
-    return truncateEmbedField(numberedList(steps, (step, index) => `${index + 1}. **${step.picker}** → **${step.picked}**`));
-  }
-
-  buildMockDraftEmbed({
-    totalPlayers,
-    captainA,
-    captainB,
-    teamA,
-    teamB,
-    teamNameA,
-    teamNameB,
-    draftMode,
-    steps,
-    status,
-    currentPicker
-  }) {
-    const isComplete = status === 'Complete';
-    const statusIcon = draftStatusIcon(status, isComplete);
-
-    return new EmbedBuilder()
-      .setTitle(`${isComplete ? '✅' : '🧪'} Mock Draft Live Simulation`)
-      .setColor(DRAFT_EMBED_COLOR)
-      .setDescription([
-        `${statusIcon} **Status:** ${status}`,
-        `👑 **Captains:** **${captainA}** vs **${captainB}**`,
-        `👥 **Team size:** **${totalPlayers / 2}v${totalPlayers / 2}** · 🐍 **Draft:** **${formatDraftMode(draftMode)}**`,
-        currentPicker ? `🎯 **Current pick:** **${currentPicker}**` : '🎯 **Current pick:** none',
-        '',
-        `Simulating **${totalPlayers}** fake players one pick at a time.`
-      ].join('\n'))
-      .addFields(
-        { name: `🟦 Team Alpha — ${teamNameA}`, value: this.buildMockRoster(teamA), inline: true },
-        { name: `🟥 Team Bravo — ${teamNameB}`, value: this.buildMockRoster(teamB), inline: true },
-        { name: '📋 Draft Board', value: this.buildMockDraftLog(steps), inline: false }
-      )
-      .setFooter({ text: `${formatDraftMode(draftMode)} draft · ${steps.length}/${Math.max(totalPlayers - 2, 0)} picks made` })
-      .setTimestamp();
   }
 
   buildDraftEmbed(session, guild, options = {}) {
@@ -660,22 +601,23 @@ class DraftManager {
     const statusIcon = draftStatusIcon(status, isComplete);
     const { teamNameA = 'Alpha', teamNameB = 'Bravo' } = session.matchupNames || {};
     const totalPicks = session.pickOrder.length;
+    const formatUser = options.formatUser || ((id) => `<@${id}>`);
 
     return new EmbedBuilder()
       .setTitle(title)
       .setColor(DRAFT_EMBED_COLOR)
       .setDescription([
         `${statusIcon} **Status:** ${status}`,
-        `👑 **Captains:** <@${session.captains[0]}> vs <@${session.captains[1]}>`,
+        `👑 **Captains:** ${formatUser(session.captains[0])} vs ${formatUser(session.captains[1])}`,
         `👥 **Team size:** **${session.teamSize}v${session.teamSize}** · 🐍 **Draft:** **${formatDraftMode(session.draftMode)}**`,
-        currentCaptain ? `🎯 **Current pick:** <@${currentCaptain}>` : '🎯 **Current pick:** none'
+        currentCaptain ? `🎯 **Current pick:** ${formatUser(currentCaptain)}` : '🎯 **Current pick:** none'
       ].join('\n'))
       .addFields(
-        { name: `🟦 Team Alpha — ${teamNameA}`, value: this.buildDraftRoster(session.teamA), inline: true },
-        { name: `🟥 Team Bravo — ${teamNameB}`, value: this.buildDraftRoster(session.teamB), inline: true },
+        { name: `🟦 Team Alpha — ${teamNameA}`, value: this.buildDraftRoster(session.teamA, formatUser), inline: true },
+        { name: `🟥 Team Bravo — ${teamNameB}`, value: this.buildDraftRoster(session.teamB, formatUser), inline: true },
         {
           name: '🕹️ Undrafted',
-          value: session.pool.length > 0 ? truncateEmbedField(formatMentions(session.pool)) : 'No players left in the call.',
+          value: session.pool.length > 0 ? truncateEmbedField(formatMentions(session.pool, formatUser)) : 'No players left in the call.',
           inline: false
         }
       )
