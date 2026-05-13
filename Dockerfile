@@ -1,10 +1,6 @@
-FROM node:20-bookworm-slim
+FROM node:20-bookworm-slim AS deps
 
 WORKDIR /app
-ARG BUILD_VERSION=dev
-ARG BUILD_DATE=unknown
-ENV BUILD_VERSION=$BUILD_VERSION
-ENV BUILD_DATE=$BUILD_DATE
 ENV NODE_ENV=production
 
 RUN apt-get update \
@@ -15,6 +11,17 @@ COPY package.json ./
 RUN npm install --omit=dev \
   && npm cache clean --force
 
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+ARG BUILD_VERSION=dev
+ARG BUILD_DATE=unknown
+ENV BUILD_VERSION=$BUILD_VERSION
+ENV BUILD_DATE=$BUILD_DATE
+ENV NODE_ENV=production
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json ./
 COPY src ./src
 RUN mkdir -p /app/data \
   && chown -R node:node /app
