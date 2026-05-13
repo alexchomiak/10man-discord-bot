@@ -12,10 +12,7 @@ const {
 const { DraftManager } = require('./draftManager');
 const { NotificationManager } = require('./notificationManager');
 const { AudioManager } = require('./audioManager');
-<<<<<<< ours
-=======
 const { PlayerManager, summarizeError: summarizePlayerError } = require('./playerManager');
->>>>>>> theirs
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -47,16 +44,12 @@ const config = {
   audioBufferMs: process.env.AUDIO_BUFFER_MS || '500',
   audioQueueMaxMs: process.env.AUDIO_QUEUE_MAX_MS || '5000',
   lobbyMusicVolume: process.env.LOBBY_MUSIC_VOLUME || '0.35',
-<<<<<<< ours
-  ttsMusicDuckVolume: process.env.TTS_MUSIC_DUCK_VOLUME || '0.12'
-=======
   ttsMusicDuckVolume: process.env.TTS_MUSIC_DUCK_VOLUME || '0.12',
   steamWebApiKey: process.env.STEAM_WEB_API_KEY || null,
   leetifyApiKey: process.env.LEETIFY_API_KEY || null,
   leetifyApiBase: process.env.LEETIFY_API_BASE || 'https://api-public.cs-prod.leetify.com',
   leetifyLegacyApiBase: process.env.LEETIFY_LEGACY_API_BASE || 'https://api.cs-prod.leetify.com',
   ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24'
->>>>>>> theirs
 };
 
 
@@ -111,10 +104,6 @@ function formatBuildDate(buildDate) {
   }).format(parsed);
 }
 
-<<<<<<< ours
-const audioManager = new AudioManager(config);
-const draftManager = new DraftManager(audioManager);
-=======
 function escapeInlineCode(value) {
   return String(value ?? 'none').replace(/`/g, 'ˋ');
 }
@@ -216,7 +205,6 @@ async function getInvokerVoiceMembers(interaction) {
 const audioManager = new AudioManager(config);
 const playerManager = new PlayerManager(config);
 const draftManager = new DraftManager(audioManager, playerManager);
->>>>>>> theirs
 
 const client = new Client({
   intents: [
@@ -257,14 +245,11 @@ const teamDraftCommand = new SlashCommandBuilder()
         { name: 'Snake', value: 'snake' },
         { name: 'Regular alternating', value: 'regular' }
       )
-<<<<<<< ours
-=======
   )
   .addBooleanOption((option) =>
     option
       .setName('refresh_ratings')
       .setDescription('Refresh linked Premier ratings before starting this draft (default false).')
->>>>>>> theirs
   );
 
 const teamDraftMockCommand = new SlashCommandBuilder()
@@ -299,8 +284,6 @@ const teamDraftMockCommand = new SlashCommandBuilder()
       )
   );
 
-<<<<<<< ours
-=======
 
 const linkCommand = new SlashCommandBuilder()
   .setName('link')
@@ -378,7 +361,6 @@ const refreshLeaderboardCommand = new SlashCommandBuilder()
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
->>>>>>> theirs
 const draftStatusCommand = new SlashCommandBuilder()
   .setName('draft-status')
   .setDescription('Show current draft/mock status for this server.')
@@ -438,11 +420,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-<<<<<<< ours
-    const commands = [teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
-=======
     const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
->>>>>>> theirs
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -464,10 +442,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     console.error('Failed to register slash commands:', error);
   }
 
-<<<<<<< ours
-=======
   playerManager.start(readyClient);
->>>>>>> theirs
   await notificationManager.start();
 });
 
@@ -487,8 +462,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-<<<<<<< ours
-=======
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'link') {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -607,7 +580,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
->>>>>>> theirs
     if (interaction.isChatInputCommand() && interaction.commandName === 'draft-status') {
       await draftManager.getDraftStatus(interaction);
       return;

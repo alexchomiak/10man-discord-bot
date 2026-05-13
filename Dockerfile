@@ -1,6 +1,3 @@
-<<<<<<< ours
-FROM node:20-alpine
-=======
 FROM node:20-bookworm-slim AS deps
 
 WORKDIR /app
@@ -15,22 +12,12 @@ RUN npm install --omit=dev \
   && npm cache clean --force
 
 FROM node:20-bookworm-slim
->>>>>>> theirs
 
 WORKDIR /app
 ARG BUILD_VERSION=dev
 ARG BUILD_DATE=unknown
 ENV BUILD_VERSION=$BUILD_VERSION
 ENV BUILD_DATE=$BUILD_DATE
-<<<<<<< ours
-
-COPY package.json ./
-RUN npm install --omit=dev
-
-COPY src ./src
-RUN mkdir -p /app/data
-
-=======
 ENV NODE_ENV=production
 
 RUN apt-get update \
@@ -46,5 +33,4 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
   && chown -R node:node /app
 
 ENTRYPOINT ["docker-entrypoint.sh"]
->>>>>>> theirs
 CMD ["npm", "start"]

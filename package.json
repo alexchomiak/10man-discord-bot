@@ -6,11 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/index.js",
-<<<<<<< ours
-    "check": "node --check src/index.js && node --check src/draftManager.js && node --check src/notificationManager.js && node --check src/audioManager.js"
-=======
     "check": "node --check src/index.js && node --check src/draftManager.js && node --check src/notificationManager.js && node --check src/audioManager.js && node --check src/playerManager.js"
->>>>>>> theirs
   },
   "engines": {
     "node": ">=20.0.0"

@@ -7,8 +7,6 @@ A Discord bot that runs a random-captain team draft from a voice channel, create
 - `/team-draft` slash command
 - `/team-draft players:<optional even number> captain1:<@user> captain2:<@user> draft_type:<snake|regular>` to set total drafted players, manually pick captains, and choose draft order (default `snake`; captains must be in same voice channel)
 - `/team-draft-mock players:<even number> [spawn_voice:true|false] [broadcast:true|false] [draft_type:snake|regular]` for solo testing with fake users; it simulates picks with voice narration timing, switches to `final_countdown.mp3`, and posts a **Start Mock Match** button that plays `fight.mp3`/TTS, optionally creates/moves you to mock voice, then disconnects audio
-<<<<<<< ours
-=======
 - `/link alias:<name> url:<steam profile>` to store an alias → Steam profile mapping and cache the player Premier rating
 - `/unlink alias:<name>` to remove a stored alias mapping
 - `/get-info alias:<name>` to inspect the stored DB record for an alias from Discord
@@ -16,7 +14,6 @@ A Discord bot that runs a random-captain team draft from a voice channel, create
 - `/refresh-voice` to refresh linked players in your current voice channel before starting a match
 - `/leaderboard` to create or update the one maintained ratings leaderboard message for the server
 - `/refresh-leaderboard` to refresh the existing maintained leaderboard after linking or refreshing players
->>>>>>> theirs
 - `/draft-status` to inspect active draft/mock resources
 - `/draft-cancel` to cancel active draft and cleanup resources
 - `/draft-cleanup` to force cleanup resources if something gets stuck
