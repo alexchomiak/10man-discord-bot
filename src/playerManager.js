@@ -702,6 +702,40 @@ class PlayerManager {
     return true;
   }
 
+  async handleNicknameTemplateChange(member, nickname, previousMember = null) {
+    this.initDb();
+    if (!member?.guild || member.user?.bot) {
+      return { action: 'ignored' };
+    }
+
+    const normalizedNickname = nickname || null;
+    const existing = this.getNicknameTemplate(member.guild.id, member.id);
+    const variableNames = nicknameVariableNames(normalizedNickname);
+    if (variableNames.length === 0) {
+      if (existing?.last_rendered_nickname && normalizedNickname === existing.last_rendered_nickname) {
+        return { action: 'rendered_update_ignored' };
+      }
+
+      if (existing) {
+        this.deleteNicknameTemplate(member.guild.id, member.id);
+        return { action: 'deleted' };
+      }
+
+      return { action: 'ignored' };
+    }
+
+    const link = this.getLinkForNicknameTemplate(member, normalizedNickname, previousMember);
+    const renderedNickname = this.renderNicknameTemplate(normalizedNickname, link);
+    this.saveNicknameTemplate(member, normalizedNickname, renderedNickname, variableNames);
+
+    if (!link) {
+      console.warn(`[players] nickname variables configured for ${member.id}, but no player link matched '${normalizedNickname}'.`);
+    }
+
+    await this.applyRenderedNickname(member, renderedNickname);
+    return { action: 'saved', renderedNickname, matched: Boolean(link) };
+  }
+
   async handleMemberNicknameUpdate(oldMember, newMember) {
     this.initDb();
     if (!newMember?.guild || newMember.user?.bot) {
@@ -710,35 +744,29 @@ class PlayerManager {
 
     const oldNickname = oldMember?.nickname || null;
     const newNickname = newMember?.nickname || null;
-    if (oldNickname === newNickname) {
+    if (oldNickname === newNickname && nicknameVariableNames(newNickname).length === 0) {
       return { action: 'unchanged' };
     }
 
-    const existing = this.getNicknameTemplate(newMember.guild.id, newMember.id);
-    const variableNames = nicknameVariableNames(newNickname);
-    if (variableNames.length === 0) {
-      if (existing?.last_rendered_nickname && newNickname === existing.last_rendered_nickname) {
-        return { action: 'rendered_update_ignored' };
-      }
+    return this.handleNicknameTemplateChange(newMember, newNickname, oldMember);
+  }
 
-      if (existing) {
-        this.deleteNicknameTemplate(newMember.guild.id, newMember.id);
-        return { action: 'deleted' };
-      }
-
+  async handleRawGuildMemberUpdate(packet) {
+    this.initDb();
+    if (packet?.t !== 'GUILD_MEMBER_UPDATE' || !this.client) {
       return { action: 'ignored' };
     }
 
-    const link = this.getLinkForNicknameTemplate(newMember, newNickname, oldMember);
-    const renderedNickname = this.renderNicknameTemplate(newNickname, link);
-    this.saveNicknameTemplate(newMember, newNickname, renderedNickname, variableNames);
-
-    if (!link) {
-      console.warn(`[players] nickname variables configured for ${newMember.id}, but no player link matched '${newNickname}'.`);
+    const data = packet.d || {};
+    const guildId = data.guild_id;
+    const userId = data.user?.id;
+    if (!guildId || !userId || data.user?.bot) {
+      return { action: 'ignored' };
     }
 
-    await this.applyRenderedNickname(newMember, renderedNickname);
-    return { action: 'saved', renderedNickname, matched: Boolean(link) };
+    const guild = this.client.guilds.cache.get(guildId) || await this.client.guilds.fetch(guildId);
+    const member = guild.members.cache.get(userId) || await guild.members.fetch(userId);
+    return this.handleNicknameTemplateChange(member, data.nick || null);
   }
 
   async updateWatchedNicknames() {
