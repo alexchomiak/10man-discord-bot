@@ -203,6 +203,26 @@ function parseNumeric(value) {
   return null;
 }
 
+function normalizeLeetifyRating(value, { scale = 1 } = {}) {
+  const numeric = parseNumeric(value);
+  if (numeric === null) {
+    return null;
+  }
+
+  const rating = numeric * scale;
+  return Number.isFinite(rating) ? Number.parseFloat(rating.toFixed(2)) : null;
+}
+
+function parseLegacyLeetifyRating(data) {
+  return normalizeLeetifyRating(data?.recentGameRatings?.leetify, { scale: 100 });
+}
+
+function parsePublicLeetifyRating(data) {
+  return normalizeLeetifyRating(data?.ranks?.leetify)
+    ?? findLeetifyRatingValue(data?.rating || data?.ratings)
+    ?? findLeetifyRatingValue(data?.stats || data?.lifetimeStats || data?.profileStats);
+}
+
 function findLeetifyRatingValue(value, path = '') {
   if (!value || typeof value !== 'object') {
     return null;
@@ -280,10 +300,9 @@ function extractLeetifyMetadata(data, source = 'leetify-public') {
   const premierRating = parseRatingValue(data?.ranks?.premier)
     || parseRatingValue(recentPremierGame?.skillLevel ?? recentPremierGame?.skill_level)
     || findPremierRating(data);
-  const leetifyRating = parseNumeric(data?.ranks?.leetify)
-    ?? findLeetifyRatingValue(data?.rating || data?.ratings)
-    ?? findLeetifyRatingValue(data?.stats || data?.lifetimeStats || data?.profileStats)
-    ?? findLeetifyRatingValue(data);
+  const leetifyRating = source === 'leetify-legacy'
+    ? parseLegacyLeetifyRating(data)
+    : parsePublicLeetifyRating(data);
   const ranks = source === 'leetify-legacy' ? buildLegacyRanks(data, premierRating, leetifyRating) : data?.ranks;
 
   return {
