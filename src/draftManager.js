@@ -9,6 +9,45 @@ const {
   MessageFlags
 } = require('discord.js');
 
+const DRAFT_EMBED_COLOR = 0xf1c40f;
+
+function draftStatusIcon(status, isComplete = false) {
+  if (isComplete) {
+    return '✅';
+  }
+
+  const normalized = String(status || '').toLowerCase();
+  if (normalized.includes('draft')) {
+    return '🟢';
+  }
+  if (normalized.includes('wait')) {
+    return '🕒';
+  }
+  if (normalized.includes('ready')) {
+    return '🏁';
+  }
+  if (normalized.includes('active')) {
+    return '⚔️';
+  }
+  return '🧩';
+}
+
+function numberedList(items, formatter) {
+  if (!items.length) {
+    return 'None';
+  }
+
+  return items.map((item, index) => formatter(item, index)).join('\n');
+}
+
+function truncateEmbedField(value, maxLength = 1024) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength - 24).trimEnd()}\n… and more`;
+}
+
 const DEFAULT_TEAM_NAMES = [
   'Mirage',
   'Inferno',
@@ -39,10 +78,6 @@ function shuffle(array) {
 
 function formatMentions(userIds) {
   return userIds.map((id) => `<@${id}>`).join(', ');
-}
-
-function formatNames(names) {
-  return names.join(', ');
 }
 
 function normalizeDraftMode(mode) {
@@ -379,19 +414,19 @@ class DraftManager {
 
     const reply = await interaction.reply({
       embeds: [
-        new EmbedBuilder()
-          .setTitle('Mock Draft Live Simulation (Solo Test)')
-          .setDescription([
-            `Simulating ${totalPlayers} fake players one pick at a time.`,
-            `Captains: **${captainA}** vs **${captainB}**`,
-            `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`,
-            `Draft type: **${formatDraftMode(draftMode)}**`
-          ].join('\n'))
-          .addFields(
-            { name: 'Team Alpha', value: formatNames(teamA), inline: true },
-            { name: 'Team Bravo', value: formatNames(teamB), inline: true },
-            { name: 'Draft Order', value: 'Draft starting...', inline: false }
-          )
+        this.buildMockDraftEmbed({
+          totalPlayers,
+          captainA,
+          captainB,
+          teamA,
+          teamB,
+          teamNameA,
+          teamNameB,
+          draftMode,
+          steps,
+          status: 'Draft starting',
+          currentPicker: pickOrder[0]
+        })
       ],
       ...(broadcast ? {} : { flags: MessageFlags.Ephemeral }),
       fetchReply: true
@@ -415,26 +450,26 @@ class DraftManager {
       } else {
         teamB.push(picked);
       }
-      steps.push(`${picker} picked ${picked}`);
+      steps.push({ picker, picked });
       return picked;
     };
 
     const editMockReply = async () => {
       await reply.edit({
         embeds: [
-          new EmbedBuilder()
-            .setTitle('Mock Draft Live Simulation (Solo Test)')
-            .setDescription([
-              `Simulating ${totalPlayers} fake players one pick at a time.`,
-              `Captains: **${captainA}** vs **${captainB}**`,
-              `Team size: **${totalPlayers / 2}v${totalPlayers / 2}**`,
-              `Draft type: **${formatDraftMode(draftMode)}**`
-            ].join('\n'))
-            .addFields(
-              { name: `Team Alpha (${teamNameA})`, value: formatNames(teamA), inline: true },
-              { name: `Team Bravo (${teamNameB})`, value: formatNames(teamB), inline: true },
-              { name: 'Draft Order', value: steps.join('\n'), inline: false }
-            )
+          this.buildMockDraftEmbed({
+            totalPlayers,
+            captainA,
+            captainB,
+            teamA,
+            teamB,
+            teamNameA,
+            teamNameB,
+            draftMode,
+            steps,
+            status: pool.length > 0 ? 'Drafting' : 'Complete',
+            currentPicker: pickOrder[steps.length]
+          })
         ]
       }).catch(() => {});
     };
@@ -559,45 +594,93 @@ class DraftManager {
     });
   }
 
-  buildLiveDraftTable(session, guild) {
-    const resolveName = (id) => guild.members.cache.get(id)?.displayName || id;
-    const alpha = session.teamA.map((id) => resolveName(id));
-    const bravo = session.teamB.map((id) => resolveName(id));
-    const rows = Math.max(alpha.length, bravo.length);
-    const lines = ['# | Team Alpha               | Team Bravo'];
+  buildDraftRoster(userIds) {
+    return truncateEmbedField(numberedList(userIds, (userId, index) => {
+      const captainBadge = index === 0 ? '👑 ' : '';
+      return `${index + 1}. ${captainBadge}<@${userId}>`;
+    }));
+  }
 
-    for (let i = 0; i < rows; i += 1) {
-      const a = (alpha[i] || '').slice(0, 24).padEnd(24, ' ');
-      const b = (bravo[i] || '').slice(0, 24);
-      lines.push(`${String(i + 1).padEnd(2, ' ')}| ${a} | ${b}`);
+  buildMockRoster(names) {
+    return truncateEmbedField(numberedList(names, (name, index) => {
+      const captainBadge = index === 0 ? '👑 ' : '';
+      return `${index + 1}. ${captainBadge}**${name}**`;
+    }));
+  }
+
+  buildMockDraftLog(steps) {
+    if (!steps.length) {
+      return 'Draft starting...';
     }
 
-    return `\`\`\`\n${lines.join('\n')}\n\`\`\``;
+    return truncateEmbedField(numberedList(steps, (step, index) => `${index + 1}. **${step.picker}** → **${step.picked}**`));
+  }
+
+  buildMockDraftEmbed({
+    totalPlayers,
+    captainA,
+    captainB,
+    teamA,
+    teamB,
+    teamNameA,
+    teamNameB,
+    draftMode,
+    steps,
+    status,
+    currentPicker
+  }) {
+    const isComplete = status === 'Complete';
+    const statusIcon = draftStatusIcon(status, isComplete);
+
+    return new EmbedBuilder()
+      .setTitle(`${isComplete ? '✅' : '🧪'} Mock Draft Live Simulation`)
+      .setColor(DRAFT_EMBED_COLOR)
+      .setDescription([
+        `${statusIcon} **Status:** ${status}`,
+        `👑 **Captains:** **${captainA}** vs **${captainB}**`,
+        `👥 **Team size:** **${totalPlayers / 2}v${totalPlayers / 2}** · 🐍 **Draft:** **${formatDraftMode(draftMode)}**`,
+        currentPicker ? `🎯 **Current pick:** **${currentPicker}**` : '🎯 **Current pick:** none',
+        '',
+        `Simulating **${totalPlayers}** fake players one pick at a time.`
+      ].join('\n'))
+      .addFields(
+        { name: `🟦 Team Alpha — ${teamNameA}`, value: this.buildMockRoster(teamA), inline: true },
+        { name: `🟥 Team Bravo — ${teamNameB}`, value: this.buildMockRoster(teamB), inline: true },
+        { name: '📋 Draft Board', value: this.buildMockDraftLog(steps), inline: false }
+      )
+      .setFooter({ text: `${formatDraftMode(draftMode)} draft · ${steps.length}/${Math.max(totalPlayers - 2, 0)} picks made` })
+      .setTimestamp();
   }
 
   buildDraftEmbed(session, guild, options = {}) {
     const isComplete = session.pickIndex >= session.pickOrder.length;
     const currentCaptain = !isComplete ? session.pickOrder[session.pickIndex] : null;
-    const title = isComplete ? 'Team Draft Complete' : 'Team Draft';
+    const title = isComplete ? '✅ Team Draft Complete' : '🧩 Team Draft';
     const status = options.status || (isComplete ? 'Complete' : 'Waiting for pick');
+    const statusIcon = draftStatusIcon(status, isComplete);
+    const { teamNameA = 'Alpha', teamNameB = 'Bravo' } = session.matchupNames || {};
+    const totalPicks = session.pickOrder.length;
 
     return new EmbedBuilder()
       .setTitle(title)
+      .setColor(DRAFT_EMBED_COLOR)
       .setDescription([
-        `**Status:** ${status}`,
-        `**Captains:** <@${session.captains[0]}> vs <@${session.captains[1]}>`,
-        `**Team size:** ${session.teamSize}v${session.teamSize}`,
-        `**Draft type:** ${formatDraftMode(session.draftMode)}`,
-        currentCaptain ? `**Current pick:** <@${currentCaptain}>` : '**Current pick:** none'
+        `${statusIcon} **Status:** ${status}`,
+        `👑 **Captains:** <@${session.captains[0]}> vs <@${session.captains[1]}>`,
+        `👥 **Team size:** **${session.teamSize}v${session.teamSize}** · 🐍 **Draft:** **${formatDraftMode(session.draftMode)}**`,
+        currentCaptain ? `🎯 **Current pick:** <@${currentCaptain}>` : '🎯 **Current pick:** none'
       ].join('\n'))
       .addFields(
-        { name: 'Teams', value: this.buildLiveDraftTable(session, guild), inline: false },
+        { name: `🟦 Team Alpha — ${teamNameA}`, value: this.buildDraftRoster(session.teamA), inline: true },
+        { name: `🟥 Team Bravo — ${teamNameB}`, value: this.buildDraftRoster(session.teamB), inline: true },
         {
-          name: 'Undrafted',
-          value: session.pool.length > 0 ? formatMentions(session.pool) : 'No players left in the call.',
+          name: '🕹️ Undrafted',
+          value: session.pool.length > 0 ? truncateEmbedField(formatMentions(session.pool)) : 'No players left in the call.',
           inline: false
         }
-      );
+      )
+      .setFooter({ text: `${formatDraftMode(session.draftMode)} draft · ${session.pickIndex}/${totalPicks} picks made` })
+      .setTimestamp();
   }
 
   buildPickMenu(session, guild) {
