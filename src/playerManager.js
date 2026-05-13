@@ -180,14 +180,26 @@ function truncate(value, maxLength) {
 
 function formatLeaderboardNumber(value) {
   if (value === null || value === undefined || value === '') {
-    return '-';
+    return '—';
   }
 
   if (typeof value === 'number' && Number.isFinite(value)) {
-    return Number.parseFloat(value.toFixed(2)).toString();
+    return Number.parseFloat(value.toFixed(2)).toLocaleString('en-US');
   }
 
   return String(value);
+}
+
+function formatRatingChip(label, value) {
+  return `**${label}:** ${formatLeaderboardNumber(value)}`;
+}
+
+function medalForRank(rank) {
+  return ['🥇', '🥈', '🥉'][rank - 1] || `**${rank}.**`;
+}
+
+function displayNameForMember(member) {
+  return member?.displayName || member?.user?.globalName || member?.user?.displayName || member?.user?.username || member?.id || null;
 }
 
 function parseNumeric(value) {
@@ -589,7 +601,9 @@ class PlayerManager {
   getLeaderboardRows(limit = 25) {
     return this.getAll()
       .map((link) => ({
-        alias: firstPresent(link.leetify_profile_name, link.alias),
+        alias: link.alias,
+        aliasNormalized: link.alias_normalized,
+        leetifyName: link.leetify_profile_name,
         premierRating: Number.isInteger(link.premier_rating) ? link.premier_rating : null,
         leetifyRank: parseLeetifyRank(link),
         ratingUpdatedAt: link.rating_updated_at
@@ -605,54 +619,99 @@ class PlayerManager {
       .slice(0, limit);
   }
 
-  buildLeaderboardContent(guildName = 'Server') {
-    const rows = this.getLeaderboardRows();
-    const updatedAt = new Date().toISOString();
-    const title = `🏆 ${guildName} CS2 Leaderboard`;
-    const subtitle = 'Sorted by Premier rating, then Leetify rating. Auto-refreshes with the rating refresh job.';
-
-    if (rows.length === 0) {
-      return [
-        `**${title}**`,
-        subtitle,
-        '',
-        'No linked players with cached ratings yet. Use `/link` and `/refresh` to populate the leaderboard.',
-        '',
-        `_Last updated: ${updatedAt}_`
-      ].join('\n');
+  async buildMemberLookup(guild) {
+    if (!guild?.members) {
+      return new Map();
     }
 
-    const tableRows = [
-      `${'#'.padStart(2)}  ${'Player'.padEnd(22)} ${'Premier'.padStart(7)} ${'Leetify'.padStart(7)}`,
-      `${'--'}  ${'-'.repeat(22)} ${'-'.repeat(7)} ${'-'.repeat(7)}`,
-      ...rows.map((row, index) => [
-        String(index + 1).padStart(2),
-        truncate(row.alias, 22).padEnd(22),
-        formatLeaderboardNumber(row.premierRating).padStart(7),
-        formatLeaderboardNumber(row.leetifyRank).padStart(7)
-      ].join('  '))
-    ];
+    try {
+      await guild.members.fetch();
+    } catch (error) {
+      console.warn('[players] could not fetch guild members for leaderboard mentions; using cache only:', summarizeError(error));
+    }
 
-    return [
-      `**${title}**`,
-      subtitle,
-      '```',
-      tableRows.join('\n'),
-      '```',
-      `_Last updated: ${updatedAt}_`
-    ].join('\n');
+    const lookup = new Map();
+    for (const member of guild.members.cache.values()) {
+      if (member.user?.bot) {
+        continue;
+      }
+      const aliases = [member.id, ...memberAliases(member)].map((alias) => normalizeAlias(stripDiscordMentionNoise(alias)));
+      for (const alias of aliases) {
+        if (alias && !lookup.has(alias)) {
+          lookup.set(alias, member);
+        }
+      }
+    }
+    return lookup;
+  }
+
+  resolveLeaderboardMember(row, memberLookup) {
+    const candidates = [row.aliasNormalized, row.alias, row.leetifyName]
+      .map((alias) => normalizeAlias(stripDiscordMentionNoise(alias)))
+      .filter(Boolean);
+    for (const candidate of candidates) {
+      const member = memberLookup.get(candidate);
+      if (member) {
+        return member;
+      }
+    }
+    return null;
+  }
+
+  async buildLeaderboardPayload(guildName = 'Server', guild = null) {
+    const rows = this.getLeaderboardRows();
+    const updatedAt = new Date();
+    const title = `🏆 ${guildName} CS2 Leaderboard`;
+    const memberLookup = await this.buildMemberLookup(guild);
+    const description = rows.length === 0
+      ? 'No linked players with cached ratings yet. Use `/link` and `/refresh` to populate the leaderboard.'
+      : rows.map((row, index) => {
+        const rank = index + 1;
+        const member = this.resolveLeaderboardMember(row, memberLookup);
+        const fallbackName = truncate(firstPresent(row.leetifyName, row.alias), 40);
+        const mention = member ? `<@${member.id}>` : `**${fallbackName}**`;
+        const resolvedName = member ? displayNameForMember(member) : null;
+        const aliases = [
+          resolvedName && normalizeAlias(resolvedName) !== normalizeAlias(row.alias) ? `aka ${truncate(row.alias, 28)}` : null,
+          row.leetifyName && normalizeAlias(row.leetifyName) !== normalizeAlias(row.alias) ? `Leetify: ${truncate(row.leetifyName, 28)}` : null
+        ].filter(Boolean).join(' · ');
+        const aliasText = aliases ? `\n> ${aliases}` : '';
+        return `${medalForRank(rank)} ${mention} — ${formatRatingChip('Premier', row.premierRating)} · ${formatRatingChip('Leetify', row.leetifyRank)}${aliasText}`;
+      }).join('\n');
+
+    return {
+      content: '',
+      embeds: [{
+        title,
+        description,
+        color: 0xf1c40f,
+        fields: rows.length > 0 ? [{
+          name: 'How this is sorted',
+          value: 'Premier rating first, then Leetify rating. Mentions are resolved from saved aliases so names are clickable without pinging anyone.',
+          inline: false
+        }] : [],
+        footer: { text: `Last updated ${updatedAt.toISOString()}` },
+        timestamp: updatedAt.toISOString()
+      }],
+      allowedMentions: { parse: [] }
+    };
+  }
+
+  async buildLeaderboardContent(guildName = 'Server', guild = null) {
+    const payload = await this.buildLeaderboardPayload(guildName, guild);
+    return payload.embeds[0]?.description || '';
   }
 
   async createOrUpdateLeaderboard(guildId, channel, guildName = 'Server') {
     this.initDb();
-    const content = this.buildLeaderboardContent(guildName);
+    const payload = await this.buildLeaderboardPayload(guildName, channel.guild || null);
     const existing = this.getLeaderboardRecord(guildId);
 
     if (existing && this.client) {
       try {
         const existingChannel = await this.client.channels.fetch(existing.channel_id);
         const existingMessage = await existingChannel.messages.fetch(existing.message_id);
-        const message = await existingMessage.edit({ content });
+        const message = await existingMessage.edit(payload);
         this.saveLeaderboardRecord(guildId, existing.channel_id, existing.message_id);
         return { message, created: false };
       } catch (error) {
@@ -660,7 +719,7 @@ class PlayerManager {
       }
     }
 
-    const message = await channel.send({ content });
+    const message = await channel.send(payload);
     this.saveLeaderboardRecord(guildId, message.channelId || channel.id, message.id);
     return { message, created: true };
   }
@@ -676,10 +735,11 @@ class PlayerManager {
       return { updated: false, reason: 'No leaderboard has been created for this server yet. Run `/leaderboard` first.' };
     }
 
-    const content = this.buildLeaderboardContent(guildName);
     const channel = await this.client.channels.fetch(record.channel_id);
+    const guild = channel.guild || await this.client.guilds.fetch(guildId).catch(() => null);
+    const payload = await this.buildLeaderboardPayload(guildName, guild);
     const message = await channel.messages.fetch(record.message_id);
-    await message.edit({ content });
+    await message.edit(payload);
     this.saveLeaderboardRecord(record.guild_id, record.channel_id, record.message_id);
     return { updated: true, message };
   }
@@ -696,11 +756,11 @@ class PlayerManager {
 
     for (const record of records) {
       try {
-        const guild = await this.client.guilds.fetch(record.guild_id).catch(() => null);
-        const content = this.buildLeaderboardContent(guild?.name || 'Server');
         const channel = await this.client.channels.fetch(record.channel_id);
+        const guild = channel.guild || await this.client.guilds.fetch(record.guild_id).catch(() => null);
+        const payload = await this.buildLeaderboardPayload(guild?.name || 'Server', guild);
         const message = await channel.messages.fetch(record.message_id);
-        await message.edit({ content });
+        await message.edit(payload);
         this.saveLeaderboardRecord(record.guild_id, record.channel_id, record.message_id);
         updated += 1;
       } catch (error) {
