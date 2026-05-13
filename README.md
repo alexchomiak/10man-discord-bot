@@ -66,16 +66,12 @@ Copy `.env.example` to `.env`:
 - `NOTIFICATION_CHANNEL_ID` (optional channel ID for daily queue notification message)
 - `NOTIFICATION_ROLE_ID` (optional role ID to mention and manage via subscribe buttons)
 - `NOTIFICATION_TIME_CST` (optional, default `18:00`; daily post time in America/Chicago timezone)
-<<<<<<< ours
-- `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification-state SQLite database file)
-=======
 - `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification/player-link SQLite database file)
 - `STEAM_WEB_API_KEY` (optional unless linking `steamcommunity.com/id/...` vanity URLs; used with Steam ResolveVanityURL)
 - `LEETIFY_API_KEY` (optional; public Leetify profile refreshes work without it, but if set it is sent as the documented `Authorization`/`_leetify_key` header value)
 - `LEETIFY_API_BASE` (optional, default `https://api-public.cs-prod.leetify.com`; override only if Leetify changes the public API host)
 - `LEETIFY_LEGACY_API_BASE` (optional, default `https://api.cs-prod.leetify.com`; fallback host for `/api/profile/id/<SteamID64>` when the public profile endpoint returns 404)
 - `RATING_REFRESH_INTERVAL_HOURS` (optional, default `24`; scheduled refresh interval for every linked player’s cached Premier rating)
->>>>>>> theirs
 - `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)
 - `BUILD_DATE` (optional, default `unknown`; set automatically in Docker CI to commit date)
 - `LOBBY_MUSIC_PATH` (optional, default `/app/data/lobby.mp3`; MP3 file for draft lobby music)
@@ -92,8 +88,6 @@ Copy `.env.example` to `.env`:
 Notification scheduler is restart-safe: on startup, if today's daily message already exists, the bot reuses it and schedules the next run instead of reposting immediately.
 When the daily message rolls over, previous-day message metadata and interested rows are removed from SQLite (no unbounded growth).
 
-<<<<<<< ours
-=======
 
 ## Player links and Premier ratings
 
@@ -112,7 +106,6 @@ Use `/leaderboard` to post the server leaderboard in the current channel. Only o
 
 Inspect a stored mapping with `/get-info alias:<name>`, which returns the DB fields plus cached Leetify source, ranks/rating/stats, and latest Premier game Discord-side for quick verification. Remove a mapping with `/unlink alias:<name>`.
 
->>>>>>> theirs
 ## Invite the Bot User to Your Server
 
 If you only installed the **application command integration**, Discord can show just the app without a bot user in member list.
@@ -160,11 +153,7 @@ docker run -d \
   cs2-team-draft-bot:latest
 ```
 
-<<<<<<< ours
-SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PATH`).
-=======
 SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PATH`). The Docker entrypoint fixes ownership of `/app/data` before dropping to the non-root `node` user, so bind mounts/named volumes should remain writable by SQLite.
->>>>>>> theirs
 
 Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. Put `final_countdown.mp3` and `fight.mp3` in the same directory as `lobby.mp3` to enable the post-draft and start-match music cues; all three tracks obey `LOBBY_MUSIC_VOLUME`, and automatically duck to `TTS_MUSIC_DUCK_VOLUME` while TTS is speaking. If `fight.mp3` is missing, the bot falls back to TTS saying `fight! fight! fight!`. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music` and `/test-tts` do not require a native Windows ffmpeg/Opus setup on your host.
 
