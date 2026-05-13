@@ -3,7 +3,7 @@ const SPEECH = Object.freeze({
   DEFAULT_PICK_NAME: 'the pick',
   FIGHT_FALLBACK: 'fight! fight! fight!',
   draftIntro: ({ captainAName, teamNameA, captainBName, teamNameB, draftChatName }) => (
-    `Welcome to the Player Draft. ${captainAName} will lead the team ${teamNameA} against ${captainBName} and the ${teamNameB}. Captains, interact with the Discord message in ${draftChatName} to make your picks!`
+    `Welcome to the Player Draft. ${captainAName} will lead the team ${teamNameA} against ${captainBName} and the ${teamNameB}. Captains, interact with the Discord message in ${draftChatName} to make your choices!`
   ),
   matchupReady: ({ teamNameA, teamNameB, draftChatName }) => (
     `${teamNameA} will match up against ${teamNameB}. May the best team win. To Start the match, click the Start button on the message in ${draftChatName}.`
