@@ -133,8 +133,14 @@ function createDraftOrder(totalPicks, firstCaptainId, secondCaptainId, draftMode
 }
 
 class DraftManager {
+<<<<<<< ours
   constructor(audioManager = null) {
     this.audioManager = audioManager;
+=======
+  constructor(audioManager = null, playerManager = null) {
+    this.audioManager = audioManager;
+    this.playerManager = playerManager;
+>>>>>>> theirs
     this.sessionsByGuild = new Map();
     this.sessionsById = new Map();
     this.mockVoiceByGuild = new Map();
@@ -199,6 +205,11 @@ class DraftManager {
     const requestedCaptain1 = interaction.options?.getUser('captain1');
     const requestedCaptain2 = interaction.options?.getUser('captain2');
     const draftMode = normalizeDraftMode(interaction.options?.getString('draft_type'));
+<<<<<<< ours
+=======
+    const refreshRatings = interaction.options?.getBoolean('refresh_ratings') ?? false;
+    let ratingsRefreshSummary = null;
+>>>>>>> theirs
     let draftPlayerCount = players.size;
 
     if ((requestedCaptain1 && !requestedCaptain2) || (!requestedCaptain1 && requestedCaptain2)) {
@@ -265,6 +276,20 @@ class DraftManager {
       captainB = requestedCaptain2.id;
     }
 
+<<<<<<< ours
+=======
+    if (refreshRatings && this.playerManager) {
+      await interaction.deferReply();
+      const refreshResult = await this.playerManager.refreshRatingsForMembers(players).catch((error) => {
+        console.error('Failed to refresh ratings before draft:', error);
+        return null;
+      });
+      if (refreshResult) {
+        ratingsRefreshSummary = `Refreshed Premier ratings for ${refreshResult.updated}/${refreshResult.total} linked players${refreshResult.failed ? ` (${refreshResult.failed} failed)` : ''}.`;
+      }
+    }
+
+>>>>>>> theirs
     const pool = playerIds.filter((id) => id !== captainA && id !== captainB);
     const [teamNameA, teamNameB] = shuffle(getTeamNamePool(config)).slice(0, 2);
     const teamSize = draftPlayerCount / 2;
@@ -300,6 +325,7 @@ class DraftManager {
     this.sessionsByGuild.set(guild.id, session);
     this.sessionsById.set(session.id, session);
 
+<<<<<<< ours
     const reply = await interaction.reply({
       embeds: [this.buildDraftEmbed(session, guild)],
       components: [this.buildPickMenu(session, guild)],
@@ -308,6 +334,23 @@ class DraftManager {
 
     session.messageId = reply.id;
 
+=======
+    const replyPayload = {
+      embeds: [this.buildDraftEmbed(session, guild)],
+      components: [this.buildPickMenu(session, guild)],
+      fetchReply: true
+    };
+    const reply = interaction.deferred
+      ? await interaction.editReply(replyPayload)
+      : await interaction.reply(replyPayload);
+
+    session.messageId = reply.id;
+
+    if (ratingsRefreshSummary) {
+      await interaction.followUp({ content: ratingsRefreshSummary, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+
+>>>>>>> theirs
     if (this.audioManager) {
       this.audioManager.join(sourceVoice)
         .then(() => playDraftIntro(
@@ -580,10 +623,21 @@ class DraftManager {
   }
 
   buildPickMenu(session, guild) {
+<<<<<<< ours
     const options = session.pool.map((userId) => ({
       label: guild.members.cache.get(userId)?.displayName?.slice(0, 100) || userId,
       value: userId
     }));
+=======
+    const options = session.pool.map((userId) => {
+      const member = guild.members.cache.get(userId);
+      const label = this.playerManager?.formatMemberLabel(member) || member?.displayName || userId;
+      return {
+        label: label.slice(0, 100),
+        value: userId
+      };
+    });
+>>>>>>> theirs
 
     return new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()

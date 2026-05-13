@@ -7,6 +7,16 @@ A Discord bot that runs a random-captain team draft from a voice channel, create
 - `/team-draft` slash command
 - `/team-draft players:<optional even number> captain1:<@user> captain2:<@user> draft_type:<snake|regular>` to set total drafted players, manually pick captains, and choose draft order (default `snake`; captains must be in same voice channel)
 - `/team-draft-mock players:<even number> [spawn_voice:true|false] [broadcast:true|false] [draft_type:snake|regular]` for solo testing with fake users; it simulates picks with voice narration timing, switches to `final_countdown.mp3`, and posts a **Start Mock Match** button that plays `fight.mp3`/TTS, optionally creates/moves you to mock voice, then disconnects audio
+<<<<<<< ours
+=======
+- `/link alias:<name> url:<steam profile>` to store an alias → Steam profile mapping and cache the player Premier rating
+- `/unlink alias:<name>` to remove a stored alias mapping
+- `/get-info alias:<name>` to inspect the stored DB record for an alias from Discord
+- `/refresh alias:<name>` to refresh one linked player’s Leetify Premier metadata
+- `/refresh-voice` to refresh linked players in your current voice channel before starting a match
+- `/leaderboard` to create or update the one maintained ratings leaderboard message for the server
+- `/refresh-leaderboard` to refresh the existing maintained leaderboard after linking or refreshing players
+>>>>>>> theirs
 - `/draft-status` to inspect active draft/mock resources
 - `/draft-cancel` to cancel active draft and cleanup resources
 - `/draft-cleanup` to force cleanup resources if something gets stuck
@@ -59,7 +69,16 @@ Copy `.env.example` to `.env`:
 - `NOTIFICATION_CHANNEL_ID` (optional channel ID for daily queue notification message)
 - `NOTIFICATION_ROLE_ID` (optional role ID to mention and manage via subscribe buttons)
 - `NOTIFICATION_TIME_CST` (optional, default `18:00`; daily post time in America/Chicago timezone)
+<<<<<<< ours
 - `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification-state SQLite database file)
+=======
+- `SQLITE_PATH` (optional, default `/app/data/bot.db`; persisted notification/player-link SQLite database file)
+- `STEAM_WEB_API_KEY` (optional unless linking `steamcommunity.com/id/...` vanity URLs; used with Steam ResolveVanityURL)
+- `LEETIFY_API_KEY` (optional; public Leetify profile refreshes work without it, but if set it is sent as the documented `Authorization`/`_leetify_key` header value)
+- `LEETIFY_API_BASE` (optional, default `https://api-public.cs-prod.leetify.com`; override only if Leetify changes the public API host)
+- `LEETIFY_LEGACY_API_BASE` (optional, default `https://api.cs-prod.leetify.com`; fallback host for `/api/profile/id/<SteamID64>` when the public profile endpoint returns 404)
+- `RATING_REFRESH_INTERVAL_HOURS` (optional, default `24`; scheduled refresh interval for every linked player’s cached Premier rating)
+>>>>>>> theirs
 - `BUILD_VERSION` (optional, default `dev`; set automatically in Docker CI to commit SHA)
 - `BUILD_DATE` (optional, default `unknown`; set automatically in Docker CI to commit date)
 - `LOBBY_MUSIC_PATH` (optional, default `/app/data/lobby.mp3`; MP3 file for draft lobby music)
@@ -76,6 +95,27 @@ Copy `.env.example` to `.env`:
 Notification scheduler is restart-safe: on startup, if today's daily message already exists, the bot reuses it and schedules the next run instead of reposting immediately.
 When the daily message rolls over, previous-day message metadata and interested rows are removed from SQLite (no unbounded growth).
 
+<<<<<<< ours
+=======
+
+## Player links and Premier ratings
+
+Use `/link alias:<name> url:<steam profile>` to store a local mapping in SQLite. The URL can be a `steamcommunity.com/profiles/<SteamID64>` URL or a `steamcommunity.com/id/<vanity>` URL. Vanity URLs require `STEAM_WEB_API_KEY` so the bot can call Steam `ResolveVanityURL`; direct SteamID64 profile URLs do not.
+
+Linking and refresh jobs call Leetify’s public `/v3/profile?steam64_id=<SteamID64>` endpoint first. If that returns 404, they fall back to `/api/profile/id/<SteamID64>` on `LEETIFY_LEGACY_API_BASE`; the fallback maps the first `games[]` item with `skillLevel` to the current Premier rating and stores that game separately. Both formats cache the player’s Premier rating plus normalized `ranks`, `rating`, and `stats` metadata when available. Linked players with a cached Premier rating render in draft dropdowns as `alias (11300)` style labels; unlinked players or players without a rating render normally.
+
+Rating refreshes happen in two ways:
+
+- Scheduled refresh: every `RATING_REFRESH_INTERVAL_HOURS` hours, the bot refreshes every linked player in the SQLite DB.
+- Manual alias refresh: `/refresh alias:<name>` refreshes one linked player and returns the updated DB fields.
+- Manual voice refresh: `/refresh-voice` refreshes linked players currently in your voice call, useful immediately before starting a match.
+- Draft refresh: `/team-draft refresh_ratings:true` refreshes linked players currently in the voice call before the draft message is posted. This defaults to false to avoid surprising Leetify rate-limit usage. Refreshes are concurrency-limited to 3 in-flight API calls.
+
+Use `/leaderboard` to post the server leaderboard in the current channel. Only one leaderboard is tracked per guild; rerunning the command updates the existing tracked message when possible. Use `/refresh-leaderboard` to force-refresh the existing message after linking or refreshing players. The leaderboard displays player names, Premier ratings, and Leetify ratings; it sorts by Premier rating first and cached Leetify rating second, and updates after each scheduled all-player rating refresh. Legacy Leetify payloads are scanned for Leetify-valued fields so players without Premier can still show a Leetify rating when available.
+
+Inspect a stored mapping with `/get-info alias:<name>`, which returns the DB fields plus cached Leetify source, ranks/rating/stats, and latest Premier game Discord-side for quick verification. Remove a mapping with `/unlink alias:<name>`.
+
+>>>>>>> theirs
 ## Invite the Bot User to Your Server
 
 If you only installed the **application command integration**, Discord can show just the app without a bot user in member list.
@@ -123,7 +163,11 @@ docker run -d \
   cs2-team-draft-bot:latest
 ```
 
+<<<<<<< ours
 SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PATH`).
+=======
+SQLite file location in container: `/app/data/bot.db` (or your custom `SQLITE_PATH`). The Docker entrypoint fixes ownership of `/app/data` before dropping to the non-root `node` user, so bind mounts/named volumes should remain writable by SQLite.
+>>>>>>> theirs
 
 Draft lobby music file location in container: `/app/data/lobby.mp3` (or your custom `LOBBY_MUSIC_PATH`). If the file is missing, the bot still joins voice and uses TTS pick announcements without music. Put `final_countdown.mp3` and `fight.mp3` in the same directory as `lobby.mp3` to enable the post-draft and start-match music cues; all three tracks obey `LOBBY_MUSIC_VOLUME`, and automatically duck to `TTS_MUSIC_DUCK_VOLUME` while TTS is speaking. If `fight.mp3` is missing, the bot falls back to TTS saying `fight! fight! fight!`. The Docker image includes the `opusscript` Opus encoder dependency needed for Discord voice playback, so `/test-lobby-music` and `/test-tts` do not require a native Windows ffmpeg/Opus setup on your host.
 

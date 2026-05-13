@@ -12,6 +12,10 @@ const {
 const { DraftManager } = require('./draftManager');
 const { NotificationManager } = require('./notificationManager');
 const { AudioManager } = require('./audioManager');
+<<<<<<< ours
+=======
+const { PlayerManager, summarizeError: summarizePlayerError } = require('./playerManager');
+>>>>>>> theirs
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -43,7 +47,16 @@ const config = {
   audioBufferMs: process.env.AUDIO_BUFFER_MS || '500',
   audioQueueMaxMs: process.env.AUDIO_QUEUE_MAX_MS || '5000',
   lobbyMusicVolume: process.env.LOBBY_MUSIC_VOLUME || '0.35',
+<<<<<<< ours
   ttsMusicDuckVolume: process.env.TTS_MUSIC_DUCK_VOLUME || '0.12'
+=======
+  ttsMusicDuckVolume: process.env.TTS_MUSIC_DUCK_VOLUME || '0.12',
+  steamWebApiKey: process.env.STEAM_WEB_API_KEY || null,
+  leetifyApiKey: process.env.LEETIFY_API_KEY || null,
+  leetifyApiBase: process.env.LEETIFY_API_BASE || 'https://api-public.cs-prod.leetify.com',
+  leetifyLegacyApiBase: process.env.LEETIFY_LEGACY_API_BASE || 'https://api.cs-prod.leetify.com',
+  ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24'
+>>>>>>> theirs
 };
 
 
@@ -98,8 +111,112 @@ function formatBuildDate(buildDate) {
   }).format(parsed);
 }
 
+<<<<<<< ours
 const audioManager = new AudioManager(config);
 const draftManager = new DraftManager(audioManager);
+=======
+function escapeInlineCode(value) {
+  return String(value ?? 'none').replace(/`/g, 'ˋ');
+}
+
+function parseStoredJson(value) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function formatNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Number.parseFloat(value.toFixed(4)).toString()
+    : String(value);
+}
+
+function formatObjectFields(title, value, limit = 30) {
+  const data = parseStoredJson(value);
+  if (!data || typeof data !== 'object') {
+    return null;
+  }
+
+  const entries = Object.entries(data)
+    .filter(([, fieldValue]) => fieldValue !== null && fieldValue !== undefined && !Array.isArray(fieldValue) && typeof fieldValue !== 'object')
+    .slice(0, limit);
+
+  if (entries.length === 0) {
+    return null;
+  }
+
+  return [`**${title}**`, ...entries.map(([key, fieldValue]) => `• ${key}: \`${escapeInlineCode(formatNumber(fieldValue))}\``)].join('\n');
+}
+
+function formatCompetitiveRanks(value) {
+  const ranks = parseStoredJson(value);
+  const competitive = Array.isArray(ranks?.competitive)
+    ? ranks.competitive.filter((rank) => Number.isInteger(rank?.rank) && rank.rank > 0)
+    : [];
+  if (competitive.length === 0) {
+    return null;
+  }
+
+  return [`**Competitive ranks**`, ...competitive.map((rank) => `• ${rank.map_name}: \`${rank.rank}\``)].join('\n');
+}
+
+function truncateDiscordMessage(content, maxLength = 1_900) {
+  return content.length > maxLength ? `${content.slice(0, maxLength - 14)}\n…truncated` : content;
+}
+
+function formatPlayerInfo(link) {
+  const sections = [
+    [
+      `Alias: \`${escapeInlineCode(link.alias)}\``,
+      `Normalized alias: \`${escapeInlineCode(link.alias_normalized)}\``,
+      `Leetify name: \`${escapeInlineCode(link.leetify_profile_name)}\``,
+      `Privacy: \`${escapeInlineCode(link.privacy_mode)}\``,
+      `SteamID64: \`${escapeInlineCode(link.steam_id64)}\``,
+      `Steam profile: ${link.steam_profile_url}`,
+      `Premier rating: ${link.premier_rating ? `**${link.premier_rating}**` : '`none cached`'}`,
+      `Rating source: \`${escapeInlineCode(link.rating_source)}\``,
+      `Leetify API source: \`${escapeInlineCode(link.leetify_api_source)}\``,
+      `Rating updated: \`${escapeInlineCode(link.rating_updated_at)}\``,
+      `Total matches: \`${escapeInlineCode(link.total_matches)}\``,
+      `Winrate: \`${escapeInlineCode(link.winrate === null || link.winrate === undefined ? null : `${Math.round(link.winrate * 1000) / 10}%`)}\``,
+      `First match: \`${escapeInlineCode(link.first_match_date)}\``,
+      `Created: \`${escapeInlineCode(link.created_at)}\``,
+      `Updated: \`${escapeInlineCode(link.updated_at)}\``
+    ].join('\n'),
+    formatObjectFields('Ranks', link.ranks_json),
+    formatObjectFields('Rating', link.rating_json),
+    formatObjectFields('Stats', link.stats_json),
+    formatObjectFields('Latest Premier game', link.latest_premier_game_json),
+    formatCompetitiveRanks(link.ranks_json)
+  ].filter(Boolean);
+
+  return truncateDiscordMessage(sections.join('\n\n'));
+}
+
+function formatRefreshSummary(result) {
+  return `Refreshed Premier ratings for ${result.updated}/${result.total} linked players${result.failed ? ` (${result.failed} failed)` : ''}.`;
+}
+
+async function getInvokerVoiceMembers(interaction) {
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  const voiceChannel = member.voice?.channel;
+  if (!voiceChannel) {
+    return null;
+  }
+
+  return voiceChannel.members.filter((voiceMember) => !voiceMember.user.bot);
+}
+
+const audioManager = new AudioManager(config);
+const playerManager = new PlayerManager(config);
+const draftManager = new DraftManager(audioManager, playerManager);
+>>>>>>> theirs
 
 const client = new Client({
   intents: [
@@ -140,6 +257,14 @@ const teamDraftCommand = new SlashCommandBuilder()
         { name: 'Snake', value: 'snake' },
         { name: 'Regular alternating', value: 'regular' }
       )
+<<<<<<< ours
+=======
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName('refresh_ratings')
+      .setDescription('Refresh linked Premier ratings before starting this draft (default false).')
+>>>>>>> theirs
   );
 
 const teamDraftMockCommand = new SlashCommandBuilder()
@@ -174,6 +299,86 @@ const teamDraftMockCommand = new SlashCommandBuilder()
       )
   );
 
+<<<<<<< ours
+=======
+
+const linkCommand = new SlashCommandBuilder()
+  .setName('link')
+  .setDescription('Link a player alias to a Steam profile and store their CS Premier rating.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false)
+  .addStringOption((option) =>
+    option
+      .setName('alias')
+      .setDescription('Alias/display name to use for draft rating labels.')
+      .setRequired(true)
+      .setMaxLength(100)
+  )
+  .addStringOption((option) =>
+    option
+      .setName('url')
+      .setDescription('Steam profile URL, e.g. steamcommunity.com/id/foo or /profiles/SteamID64.')
+      .setRequired(true)
+  );
+
+const unlinkCommand = new SlashCommandBuilder()
+  .setName('unlink')
+  .setDescription('Remove a linked player alias from the local rating database.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false)
+  .addStringOption((option) =>
+    option
+      .setName('alias')
+      .setDescription('Alias to unlink.')
+      .setRequired(true)
+      .setMaxLength(100)
+  );
+
+const getInfoCommand = new SlashCommandBuilder()
+  .setName('get-info')
+  .setDescription('Show the stored Steam/Premier DB record for a linked player alias.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false)
+  .addStringOption((option) =>
+    option
+      .setName('alias')
+      .setDescription('Alias to look up in the player link database.')
+      .setRequired(true)
+      .setMaxLength(100)
+  );
+
+const refreshCommand = new SlashCommandBuilder()
+  .setName('refresh')
+  .setDescription('Refresh Leetify Premier metadata for one linked player alias.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false)
+  .addStringOption((option) =>
+    option
+      .setName('alias')
+      .setDescription('Alias to refresh in the player link database.')
+      .setRequired(true)
+      .setMaxLength(100)
+  );
+
+const refreshVoiceCommand = new SlashCommandBuilder()
+  .setName('refresh-voice')
+  .setDescription('Refresh Leetify Premier metadata for linked players in your voice channel.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
+const leaderboardCommand = new SlashCommandBuilder()
+  .setName('leaderboard')
+  .setDescription('Create or update this server’s maintained CS2 ratings leaderboard.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
+const refreshLeaderboardCommand = new SlashCommandBuilder()
+  .setName('refresh-leaderboard')
+  .setDescription('Refresh this server’s existing maintained CS2 ratings leaderboard now.')
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
+>>>>>>> theirs
 const draftStatusCommand = new SlashCommandBuilder()
   .setName('draft-status')
   .setDescription('Show current draft/mock status for this server.')
@@ -233,7 +438,11 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
+<<<<<<< ours
     const commands = [teamDraftCommand, teamDraftMockCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
+=======
+    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, audioStatusCommand];
+>>>>>>> theirs
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -255,6 +464,10 @@ client.once(Events.ClientReady, async (readyClient) => {
     console.error('Failed to register slash commands:', error);
   }
 
+<<<<<<< ours
+=======
+  playerManager.start(readyClient);
+>>>>>>> theirs
   await notificationManager.start();
 });
 
@@ -274,6 +487,127 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+<<<<<<< ours
+=======
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'link') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const linked = await playerManager.link(
+          interaction.options.getString('alias', true),
+          interaction.options.getString('url', true)
+        );
+        await interaction.editReply({
+          content: linked.premier_rating
+            ? `Linked \`${linked.alias}\` to SteamID64 \`${linked.steam_id64}\` with Premier rating **${linked.premier_rating}**.`
+            : `Linked \`${linked.alias}\` to SteamID64 \`${linked.steam_id64}\`. No Premier rating was available yet.`
+        });
+      } catch (error) {
+        console.error('Failed to link player:', summarizePlayerError(error));
+        await interaction.editReply({ content: error.message || 'Failed to link player.' });
+      }
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'unlink') {
+      const alias = interaction.options.getString('alias', true);
+      const removed = playerManager.unlink(alias);
+      await interaction.reply({
+        content: removed ? `Unlinked \`${alias}\`.` : `No link found for \`${alias}\`.`,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'get-info') {
+      const alias = interaction.options.getString('alias', true);
+      const link = playerManager.getByAlias(alias);
+      await interaction.reply({
+        content: link
+          ? formatPlayerInfo(link)
+          : `No player link found for \`${escapeInlineCode(alias)}\`. Use /link first to create a DB record.`,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'refresh') {
+      const alias = interaction.options.getString('alias', true);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const link = await playerManager.refreshRatingForAlias(alias);
+        await interaction.editReply({
+          content: link
+            ? [`Refreshed \`${escapeInlineCode(link.alias)}\`.`, '', formatPlayerInfo(link)].join('\n')
+            : `No player link found for \`${escapeInlineCode(alias)}\`. Use /link first to create a DB record.`
+        });
+      } catch (error) {
+        console.error('Failed to refresh player:', summarizePlayerError(error));
+        await interaction.editReply({ content: error.message || 'Failed to refresh player metadata.' });
+      }
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'refresh-voice') {
+      const members = await getInvokerVoiceMembers(interaction);
+      if (!members) {
+        await interaction.reply({ content: 'Join a voice channel first.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const result = await playerManager.refreshRatingsForMembers(members);
+        await interaction.editReply({ content: formatRefreshSummary(result) });
+      } catch (error) {
+        console.error('Failed to refresh voice players:', summarizePlayerError(error));
+        await interaction.editReply({ content: error.message || 'Failed to refresh voice player metadata.' });
+      }
+      return;
+    }
+
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'leaderboard') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const result = await playerManager.createOrUpdateLeaderboard(
+          interaction.guildId,
+          interaction.channel,
+          interaction.guild?.name || 'Server'
+        );
+        await interaction.editReply({
+          content: result.created
+            ? `Created leaderboard: ${result.message.url}`
+            : `Updated existing leaderboard: ${result.message.url}`
+        });
+      } catch (error) {
+        console.error('Failed to create/update leaderboard:', summarizePlayerError(error));
+        await interaction.editReply({ content: error.message || 'Failed to create or update leaderboard.' });
+      }
+      return;
+    }
+
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'refresh-leaderboard') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const result = await playerManager.updateLeaderboard(
+          interaction.guildId,
+          interaction.guild?.name || 'Server'
+        );
+        await interaction.editReply({
+          content: result.updated
+            ? `Refreshed leaderboard: ${result.message.url}`
+            : result.reason
+        });
+      } catch (error) {
+        console.error('Failed to refresh leaderboard:', summarizePlayerError(error));
+        await interaction.editReply({ content: error.message || 'Failed to refresh leaderboard.' });
+      }
+      return;
+    }
+
+>>>>>>> theirs
     if (interaction.isChatInputCommand() && interaction.commandName === 'draft-status') {
       await draftManager.getDraftStatus(interaction);
       return;
