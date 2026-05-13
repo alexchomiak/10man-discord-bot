@@ -114,11 +114,9 @@ Inspect a stored mapping with `/get-info alias:<name>`, which returns the DB fie
 
 ### Rating nickname variables
 
-Members can opt into a rendered rating nickname by adding `%rating%` to their server nickname after they have run `/link`. The bot first uses the Discord member who created the link, then falls back to matching the nickname text before `%rating%` against a linked alias. For example, changing your nickname to `chomes -- %rating%` stores that template and immediately renders it as `chomes -- 17333` when your linked account (or the linked `chomes` alias) has a cached Premier rating of `17333`.
+Members can opt into a rendered rating nickname by adding `%rating%` to their server nickname after they have a matching `/link` alias. For example, changing your nickname to `chomes -- %rating%` stores that template and immediately renders it as `chomes -- 17333` when the linked `chomes` alias has a cached Premier rating of `17333`.
 
 The bot stores the original nickname template per guild/user in SQLite, along with a `watch_rating` flag. The rendered nickname is remembered separately so the bot can ignore its own follow-up `GuildMemberUpdate` event, while a user changing to a plain nickname removes the watch. Each scheduled rating refresh re-renders all rows with `watch_rating = 1`, so rating changes are reflected without losing the original `%rating%` template. Future variables can add their own watch column and renderer without changing the storage shape.
-
-Discord only allows this when the bot has **Manage Nicknames** and its highest role is above the member it is editing; Discord still blocks server owners and members with equal-or-higher roles. If no member-owned link or nickname alias matches, the bot stores the template but leaves the member's nickname untouched until a matching `/link` exists.
 
 ## Invite the Bot User to Your Server
 
