@@ -44,6 +44,7 @@ const COMMANDS = Object.freeze({
     options: Object.freeze({ ALIAS: { name: 'alias', description: 'Alias to refresh in the player link database.' } })
   },
   REFRESH_VOICE: { name: 'refresh-voice', description: 'Refresh Leetify Premier metadata for linked players in your voice channel.' },
+  REFRESH_ALL_PLAYERS: { name: 'refresh-all-players', description: 'Refresh Leetify Premier metadata for every linked player.' },
   LEADERBOARD: { name: 'leaderboard', description: 'Create or update this server’s maintained CS2 ratings leaderboard.' },
   REFRESH_LEADERBOARD: { name: 'refresh-leaderboard', description: 'Refresh this server’s existing maintained CS2 ratings leaderboard now.' },
   DRAFT_STATUS: { name: 'draft-status', description: 'Show current draft/mock status for this server.' },
