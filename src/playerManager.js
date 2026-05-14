@@ -20,6 +20,10 @@ class PlayerManagerError extends Error {
     this.code = options.code || 'PLAYER_ERROR';
     this.cause = options.cause;
     this.statusCode = options.statusCode || null;
+    this.apiUrl = options.apiUrl || null;
+    this.responseBody = options.responseBody || null;
+    this.retryAfter = options.retryAfter || null;
+    this.rateLimit = options.rateLimit || null;
   }
 }
 
@@ -38,10 +42,95 @@ function summarizeError(error) {
     code: error?.code,
     message: error?.message,
     statusCode: error?.statusCode,
+    apiUrl: error?.apiUrl,
+    retryAfter: error?.retryAfter,
+    rateLimit: error?.rateLimit,
+    responseBody: error?.responseBody,
+    stack: error?.stack,
     causeName: error?.cause?.name,
     causeCode: error?.cause?.code,
-    causeMessage: error?.cause?.message
+    causeMessage: error?.cause?.message,
+    causeStack: error?.cause?.stack
   };
+}
+
+function getHeader(response, name) {
+  return response?.headers?.[name] || response?.headers?.[name.toLowerCase()] || null;
+}
+
+function summarizeRateLimit(response) {
+  const entries = Object.entries(response?.headers || {})
+    .filter(([key]) => key.toLowerCase().includes('ratelimit'))
+    .map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : value]);
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+}
+
+function truncateResponseBody(text, maxLength = 1_000) {
+  const value = String(text || '').trim();
+  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value || null;
+}
+
+function redactApiUrl(url) {
+  const redacted = new URL(url.toString());
+  for (const key of redacted.searchParams.keys()) {
+    if (/key|token|secret|auth|password/i.test(key)) {
+      redacted.searchParams.set(key, '[redacted]');
+    }
+  }
+  return redacted.toString();
+}
+
+function describeRefreshFailure(link, error) {
+  const summary = summarizeError(error);
+  const parts = [
+    summary.code || summary.name,
+    summary.statusCode ? `HTTP ${summary.statusCode}` : null,
+    summary.message
+  ].filter(Boolean);
+
+  return {
+    alias: link?.alias || 'unknown alias',
+    steamId64: link?.steam_id64 || null,
+    error: parts.join(' - ') || 'Unknown error',
+    details: summary
+  };
+}
+
+function formatRefreshFailureForLog(failure) {
+  return `${failure.alias}${failure.steamId64 ? ` (${failure.steamId64})` : ''}: ${failure.error}`;
+}
+
+function describeNoRatingRefresh(link, result) {
+  return {
+    alias: link?.alias || result?.alias || 'unknown alias',
+    steamId64: link?.steam_id64 || null,
+    source: result?.source || null,
+    reason: 'API refresh succeeded but no Premier rating was found in the Leetify response.'
+  };
+}
+
+function formatNoRatingRefreshForLog(missingRating) {
+  return `${missingRating.alias}${missingRating.steamId64 ? ` (${missingRating.steamId64})` : ''}: ${missingRating.reason}${missingRating.source ? ` Source: ${missingRating.source}.` : ''}`;
+}
+
+function formatNoRatingRefreshSummary(missingRatings, limit = 3) {
+  if (!Array.isArray(missingRatings) || missingRatings.length === 0) {
+    return '';
+  }
+
+  const visible = missingRatings.slice(0, limit).map((missingRating) => `${missingRating.alias}${missingRating.steamId64 ? ` (${missingRating.steamId64})` : ''}`);
+  const hidden = missingRatings.length - visible.length;
+  return `${visible.join('; ')}${hidden > 0 ? `; +${hidden} more` : ''}`;
+}
+
+function formatRefreshFailuresSummary(failures, limit = 3) {
+  if (!Array.isArray(failures) || failures.length === 0) {
+    return '';
+  }
+
+  const visible = failures.slice(0, limit).map(formatRefreshFailureForLog);
+  const hidden = failures.length - visible.length;
+  return `${visible.join('; ')}${hidden > 0 ? `; +${hidden} more` : ''}`;
 }
 
 function memberAliases(member) {
@@ -450,10 +539,12 @@ class PlayerManager {
   async runScheduledRatingRefresh() {
     const refreshResult = await this.refreshAllRatings();
     const leaderboardResult = await this.updateAllLeaderboards();
+    const failureSummary = formatRefreshFailuresSummary(refreshResult.failures);
+    const noRatingSummary = formatNoRatingRefreshSummary(refreshResult.missingRatings);
     return {
       players: refreshResult.skipped
         ? `skipped (${refreshResult.reason})`
-        : `${refreshResult.updated}/${refreshResult.total} refreshed${refreshResult.failed ? `, ${refreshResult.failed} failed` : ''}`,
+        : `${refreshResult.refreshed}/${refreshResult.total} API refreshes succeeded, ${refreshResult.updated}/${refreshResult.total} had Premier ratings${refreshResult.noRating ? `, ${refreshResult.noRating} no rating${noRatingSummary ? ` (${noRatingSummary})` : ''}` : ''}${refreshResult.failed ? `, ${refreshResult.failed} failed${failureSummary ? ` (${failureSummary})` : ''}` : ''}`,
       leaderboards: leaderboardResult.skipped
         ? 'skipped'
         : `${leaderboardResult.updated}/${leaderboardResult.total} updated${leaderboardResult.failed ? `, ${leaderboardResult.failed} failed` : ''}`
@@ -777,9 +868,7 @@ class PlayerManager {
     try {
       const links = this.getAll();
       const results = await runLimited(links, DEFAULT_CONCURRENCY, async (link) => this.refreshLinkRating(link));
-      const updated = results.filter((result) => result.ok && result.value?.rating).length;
-      const failed = results.filter((result) => !result.ok).length;
-      return { total: links.length, updated, failed };
+      return this.buildRefreshResult('all linked players', links, results);
     } finally {
       this.refreshInProgress = false;
     }
@@ -797,10 +886,33 @@ class PlayerManager {
 
     const links = [...linksByAlias.values()];
     const results = await runLimited(links, DEFAULT_CONCURRENCY, async (link) => this.refreshLinkRating(link));
+    return this.buildRefreshResult('voice channel players', links, results);
+  }
+
+  buildRefreshResult(label, links, results) {
+    const failures = results
+      .map((result, index) => result.ok ? null : describeRefreshFailure(links[index], result.error))
+      .filter(Boolean);
+    const missingRatings = results
+      .map((result, index) => result.ok && !result.value?.rating ? describeNoRatingRefresh(links[index], result.value) : null)
+      .filter(Boolean);
+
+    for (const failure of failures) {
+      console.error(`[players] failed to refresh ${label}: ${formatRefreshFailureForLog(failure)}`, failure.details);
+    }
+
+    for (const missingRating of missingRatings) {
+      console.warn(`[players] refreshed ${label} but no Premier rating was found: ${formatNoRatingRefreshForLog(missingRating)}`);
+    }
+
     return {
       total: links.length,
+      refreshed: results.filter((result) => result.ok).length,
       updated: results.filter((result) => result.ok && result.value?.rating).length,
-      failed: results.filter((result) => !result.ok).length
+      failed: failures.length,
+      noRating: missingRatings.length,
+      failures,
+      missingRatings
     };
   }
 
@@ -831,7 +943,7 @@ class PlayerManager {
       now,
       link.alias_normalized
     );
-    return { alias: link.alias, rating: metadata.premierRating };
+    return { alias: link.alias, rating: metadata.premierRating, source: metadata.source || null };
   }
 
   async resolveVanityUrl(vanity) {
@@ -885,13 +997,14 @@ class PlayerManager {
   fetchJson(url, headers = {}) {
     const transport = url.protocol === 'https:' ? https : http;
     return new Promise((resolve, reject) => {
+      const safeUrl = redactApiUrl(url);
       const request = transport.request(url, { method: 'GET', headers, timeout: this.httpTimeoutMs }, (response) => {
         const chunks = [];
         let bytes = 0;
         response.on('data', (chunk) => {
           bytes += chunk.length;
           if (bytes > MAX_RESPONSE_BYTES) {
-            request.destroy(new PlayerManagerError('API response was too large.', { code: 'API_RESPONSE_TOO_LARGE' }));
+            request.destroy(new PlayerManagerError('API response was too large.', { code: 'API_RESPONSE_TOO_LARGE', apiUrl: safeUrl }));
             return;
           }
           chunks.push(chunk);
@@ -899,18 +1012,25 @@ class PlayerManager {
         response.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
           if (response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new PlayerManagerError(`API request failed with HTTP ${response.statusCode}.`, { code: 'API_HTTP_ERROR', statusCode: response.statusCode }));
+            reject(new PlayerManagerError(`API request failed with HTTP ${response.statusCode}.`, {
+              code: 'API_HTTP_ERROR',
+              statusCode: response.statusCode,
+              apiUrl: safeUrl,
+              responseBody: truncateResponseBody(text),
+              retryAfter: getHeader(response, 'retry-after'),
+              rateLimit: summarizeRateLimit(response)
+            }));
             return;
           }
           try {
             resolve(text ? JSON.parse(text) : null);
           } catch (error) {
-            reject(new PlayerManagerError('API response was not valid JSON.', { code: 'API_JSON_ERROR', cause: error }));
+            reject(new PlayerManagerError('API response was not valid JSON.', { code: 'API_JSON_ERROR', cause: error, apiUrl: safeUrl, responseBody: truncateResponseBody(text) }));
           }
         });
       });
-      request.on('timeout', () => request.destroy(new PlayerManagerError('API request timed out.', { code: 'API_TIMEOUT' })));
-      request.on('error', (error) => reject(error instanceof PlayerManagerError ? error : new PlayerManagerError('API request failed.', { code: 'API_REQUEST_FAILED', cause: error })));
+      request.on('timeout', () => request.destroy(new PlayerManagerError('API request timed out.', { code: 'API_TIMEOUT', apiUrl: safeUrl })));
+      request.on('error', (error) => reject(error instanceof PlayerManagerError ? error : new PlayerManagerError('API request failed.', { code: 'API_REQUEST_FAILED', cause: error, apiUrl: safeUrl })));
       request.end();
     });
   }

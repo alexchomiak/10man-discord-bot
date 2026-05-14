@@ -196,8 +196,39 @@ function formatPlayerInfo(link) {
   return truncateDiscordMessage(sections.join('\n\n'));
 }
 
+function formatRefreshFailure(failure) {
+  return `• ${escapeInlineCode(failure.alias)}${failure.steamId64 ? ` (${escapeInlineCode(failure.steamId64)})` : ''}: ${escapeInlineCode(failure.error)}`;
+}
+
+function formatMissingRating(missingRating) {
+  return `• ${escapeInlineCode(missingRating.alias)}${missingRating.steamId64 ? ` (${escapeInlineCode(missingRating.steamId64)})` : ''}: ${escapeInlineCode(missingRating.reason)}`;
+}
+
 function formatRefreshSummary(result) {
-  return `Refreshed Premier ratings for ${result.updated}/${result.total} linked players${result.failed ? ` (${result.failed} failed)` : ''}.`;
+  if (result.skipped) {
+    return `Player rating refresh skipped: ${result.reason}.`;
+  }
+
+  const refreshed = Number.isInteger(result.refreshed) ? result.refreshed : result.updated;
+  const lines = [
+    `Refresh completed: ${refreshed}/${result.total} API refreshes succeeded, ${result.updated}/${result.total} had Premier ratings${result.noRating ? `, ${result.noRating} returned no Premier rating` : ''}${result.failed ? `, ${result.failed} failed` : ''}.`
+  ];
+
+  if (Array.isArray(result.missingRatings) && result.missingRatings.length > 0) {
+    lines.push('', '**No Premier rating found**', ...result.missingRatings.slice(0, 10).map(formatMissingRating));
+    if (result.missingRatings.length > 10) {
+      lines.push(`…and ${result.missingRatings.length - 10} more without ratings. Check bot logs for the full list.`);
+    }
+  }
+
+  if (Array.isArray(result.failures) && result.failures.length > 0) {
+    lines.push('', '**Failed players**', ...result.failures.slice(0, 10).map(formatRefreshFailure));
+    if (result.failures.length > 10) {
+      lines.push(`…and ${result.failures.length - 10} more. Check bot logs for the full failure list.`);
+    }
+  }
+
+  return truncateDiscordMessage(lines.join('\n'));
 }
 
 async function getInvokerVoiceMembers(interaction) {
@@ -385,6 +416,12 @@ const refreshVoiceCommand = new SlashCommandBuilder()
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
+const refreshAllPlayersCommand = new SlashCommandBuilder()
+  .setName(COMMANDS.REFRESH_ALL_PLAYERS.name)
+  .setDescription(COMMANDS.REFRESH_ALL_PLAYERS.description)
+  .setContexts(InteractionContextType.Guild)
+  .setDMPermission(false);
+
 const leaderboardCommand = new SlashCommandBuilder()
   .setName(COMMANDS.LEADERBOARD.name)
   .setDescription(COMMANDS.LEADERBOARD.description)
@@ -501,7 +538,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, announceCommand, resetAnnounceTimerCommand, removeAnnouncementCommand, audioStatusCommand];
+    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, refreshAllPlayersCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, announceCommand, resetAnnounceTimerCommand, removeAnnouncementCommand, audioStatusCommand];
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -618,6 +655,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
       } catch (error) {
         console.error('Failed to refresh voice players:', summarizePlayerError(error));
         await interaction.editReply({ content: error.message || 'Failed to refresh voice player metadata.' });
+      }
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.REFRESH_ALL_PLAYERS.name) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      try {
+        const result = await playerManager.refreshAllRatings();
+        await interaction.editReply({ content: formatRefreshSummary(result) });
+      } catch (error) {
+        console.error('Failed to refresh all players:', summarizePlayerError(error));
+        await interaction.editReply({ content: error.message || 'Failed to refresh all player metadata.' });
       }
       return;
     }
