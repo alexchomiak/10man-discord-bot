@@ -21,7 +21,7 @@ A Discord bot that runs a random-captain team draft from a voice channel, create
 - `/build-version` to show the running build commit hash/version
 - `/test-lobby-music` to join your voice channel and test draft lobby music
 - `/test-tts message:<text>` to test voice text-to-speech in the current voice channel
-- `/announce alias:<@user> filename:<file.mp3>` to save a voice-join announcement MP3 for a user; announcements are skipped while a draft is active and rate-limited after voice leaves
+- `/announce alias:<@user> filename:<file.mp3>` to save a voice-join announcement MP3 for a user; announcements are skipped while a draft is active when handled by the main bot, or can be moved to a separate bot with `DISCORD_ANNOUNCEMENT_TOKEN` so they run independently of drafts while still being rate-limited after voice leaves
 - `/remove-announcement alias:<@user>` to delete a saved voice-join announcement so the user no longer triggers one
 - `/reset-announce-timer alias:<@user>` to clear a saved announcement cooldown for testing the next fresh voice join
 - `/audio-status` to show the current voice connection state, queued speech duration, and `@discordjs/voice` dependency report
@@ -61,6 +61,7 @@ A Discord bot that runs a random-captain team draft from a voice channel, create
 Copy `.env.example` to `.env`:
 
 - `DISCORD_TOKEN` (required)
+- `DISCORD_ANNOUNCEMENT_TOKEN` (optional; when set to a different Discord bot token, `/announce`, `/remove-announcement`, `/reset-announce-timer`, and voice-join announcement playback are registered and handled by that separate bot. If unset, the main bot keeps the current behavior and skips announcements while drafts are active.)
 - `DISCORD_GUILD_ID` (optional, recommended for fast slash command registration; supports comma-separated guild IDs)
 - `KEEP_GLOBAL_COMMANDS` (optional, default `false`; set `true` only if you intentionally want both global and guild commands)
 - `TEAM_CATEGORY_ID` (optional category ID for team channels)
@@ -132,6 +133,8 @@ In Discord Developer Portal → OAuth2 → URL Generator:
   - View Channels
 
 Then open the generated URL and add the bot to your server.
+
+If you set `DISCORD_ANNOUNCEMENT_TOKEN`, create/invite a second Discord application with the same `bot` and `applications.commands` scopes plus View Channels, Connect, and Speak permissions. The main application will register all non-announcement commands, while the announcement application will register only `/announce`, `/remove-announcement`, and `/reset-announce-timer`.
 
 ## Local Run
 
