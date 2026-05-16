@@ -54,6 +54,7 @@ class AnnouncementManager {
     this.dbPath = config.sqlitePath || '/app/data/bot.db';
     this.audioDirectory = config.announcementAudioDirectory || path.dirname(config.lobbyMusicPath || '/app/data/lobby.mp3');
     this.cooldownMs = parseDurationMs(config.announcementCooldownMs || process.env.ANNOUNCEMENT_COOLDOWN_MS, DEFAULT_COOLDOWN_MS);
+    this.skipDuringDraft = config.skipAnnouncementsDuringDraft !== false;
     this.db = null;
     this.inFlightByGuild = new Set();
   }
@@ -81,7 +82,7 @@ class AnnouncementManager {
   }
 
   isDraftActive(guildId) {
-    return Boolean(guildId && this.draftManager?.getSessionByGuild(guildId));
+    return this.skipDuringDraft && Boolean(guildId && this.draftManager?.getSessionByGuild(guildId));
   }
 
   resolveAudioPath(fileName) {

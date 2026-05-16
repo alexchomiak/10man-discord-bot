@@ -62,7 +62,8 @@ const config = {
   ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24',
   ratingRefreshCron: process.env.RATING_REFRESH_CRON || null,
   schedulerEventsChannelId: process.env.SCHEDULER_EVENTS_CHANNEL || null,
-  useDedicatedAnnouncementBot: Boolean(announcementToken)
+  useDedicatedAnnouncementBot: Boolean(announcementToken),
+  skipAnnouncementsDuringDraft: !announcementToken
 };
 
 
@@ -253,7 +254,7 @@ const draftManager = new DraftManager(audioManager, playerManager);
 const announcementManager = new AnnouncementManager(
   config,
   announcementAudioManager,
-  config.useDedicatedAnnouncementBot ? null : draftManager
+  draftManager
 );
 
 function createDiscordClient() {
