@@ -31,6 +31,7 @@ const DEFAULT_AUDIO_BUFFER_MS = 500;
 const DEFAULT_AUDIO_QUEUE_MAX_MS = 5_000;
 const DEFAULT_LOBBY_MUSIC_VOLUME = 0.35;
 const DEFAULT_TTS_MUSIC_DUCK_VOLUME = 0.12;
+const DEFAULT_EFFECT_VOLUME = 1;
 
 class AudioManagerError extends Error {
   constructor(message, options = {}) {
@@ -111,15 +112,20 @@ function centeredStereoSample(frame, offset) {
   return (frame.readInt16LE(offset) + frame.readInt16LE(offset + 2)) / 2;
 }
 
-function mixPcm(musicFrame, speechFrame, musicVolume = DEFAULT_LOBBY_MUSIC_VOLUME) {
+function mixPcmFrames(inputs) {
   const mixed = Buffer.alloc(FRAME_BYTES);
 
   for (let i = 0; i < FRAME_BYTES; i += 4) {
-    const musicSample = centeredStereoSample(musicFrame, i) * musicVolume;
-    const speechSample = centeredStereoSample(speechFrame, i) * 1.2;
-    const value = Math.max(-32768, Math.min(32767, Math.round(musicSample + speechSample)));
-    mixed.writeInt16LE(value, i);
-    mixed.writeInt16LE(value, i + 2);
+    const value = inputs.reduce((total, input) => {
+      if (!input?.frame || input.volume <= 0) {
+        return total;
+      }
+
+      return total + centeredStereoSample(input.frame, i) * input.volume;
+    }, 0);
+    const clamped = Math.max(-32768, Math.min(32767, Math.round(value)));
+    mixed.writeInt16LE(clamped, i);
+    mixed.writeInt16LE(clamped, i + 2);
   }
 
   return mixed;
@@ -129,10 +135,12 @@ class MixerStream extends Readable {
   constructor(options = {}) {
     super({ highWaterMark: FRAME_BYTES * 50 });
     this.musicQueue = [];
+    this.effectQueue = [];
     this.speechQueue = [];
     this.speechEnabled = false;
     this.musicVolume = clampVolume(options.musicVolume);
     this.duckedMusicVolume = clampVolume(options.duckedMusicVolume, DEFAULT_TTS_MUSIC_DUCK_VOLUME);
+    this.effectVolume = clampVolume(options.effectVolume, DEFAULT_EFFECT_VOLUME);
     this.musicPrebufferBytes = Math.max(FRAME_BYTES, Math.round((options.bufferMs || DEFAULT_AUDIO_BUFFER_MS) / 20) * FRAME_BYTES);
     this.maxMusicBytes = Math.max(this.musicPrebufferBytes, Math.round((options.maxQueueMs || DEFAULT_AUDIO_QUEUE_MAX_MS) / 20) * FRAME_BYTES);
     this.musicBuffered = false;
@@ -156,6 +164,16 @@ class MixerStream extends Readable {
     this.musicBuffered = false;
   }
 
+  addEffect(buffer) {
+    if (this.destroyed || buffer.length === 0) {
+      return Promise.resolve(false);
+    }
+
+    return new Promise((resolve) => {
+      this.effectQueue.push({ buffer, offset: 0, resolve });
+    });
+  }
+
   addSpeech(buffer) {
     if (this.destroyed || buffer.length === 0) {
       return Promise.resolve(false);
@@ -172,13 +190,18 @@ class MixerStream extends Readable {
 
   queueStats() {
     const musicBytes = this.musicQueue.reduce((total, chunk) => total + chunk.length, 0);
+    const effectBytes = this.effectQueue.reduce((total, chunk) => total + chunk.buffer.length - chunk.offset, 0);
     const speechBytes = this.speechQueue.reduce((total, chunk) => total + chunk.buffer.length - chunk.offset, 0);
     return {
       musicChunks: this.musicQueue.length,
       musicBytes,
+      effectChunks: this.effectQueue.length,
+      effectBytes,
+      effectQueuedMs: pcmDurationMs(effectBytes),
       musicBuffered: this.musicBuffered,
       musicVolume: this.musicVolume,
       duckedMusicVolume: this.duckedMusicVolume,
+      effectVolume: this.effectVolume,
       musicPrebufferMs: pcmDurationMs(this.musicPrebufferBytes),
       speechChunks: this.speechQueue.length,
       speechBytes,
@@ -226,6 +249,31 @@ class MixerStream extends Readable {
     return readBytes(this.musicQueue, FRAME_BYTES);
   }
 
+  readEffectFrames() {
+    const frames = [];
+
+    for (const current of [...this.effectQueue]) {
+      const frame = Buffer.alloc(FRAME_BYTES);
+      const available = current.buffer.length - current.offset;
+      const take = Math.min(FRAME_BYTES, available);
+      if (take > 0) {
+        current.buffer.copy(frame, 0, current.offset, current.offset + take);
+        current.offset += take;
+        frames.push(frame);
+      }
+
+      if (current.offset >= current.buffer.length) {
+        const index = this.effectQueue.indexOf(current);
+        if (index !== -1) {
+          this.effectQueue.splice(index, 1);
+        }
+        current.resolve(true);
+      }
+    }
+
+    return frames;
+  }
+
   readSpeechFrame() {
     if (!this.speechEnabled) {
       return { frame: Buffer.alloc(FRAME_BYTES), active: false };
@@ -252,6 +300,13 @@ class MixerStream extends Readable {
     return { frame: output, active: outputOffset > 0 };
   }
 
+  drainEffectQueue(result = false) {
+    while (this.effectQueue.length > 0) {
+      const current = this.effectQueue.shift();
+      current.resolve(result);
+    }
+  }
+
   drainSpeechQueue(result = false) {
     while (this.speechQueue.length > 0) {
       const current = this.speechQueue.shift();
@@ -265,9 +320,15 @@ class MixerStream extends Readable {
     }
 
     const musicFrame = this.readMusicFrame();
+    const effectFrames = this.readEffectFrames();
     const speech = this.readSpeechFrame();
     const musicVolume = speech.active ? Math.min(this.musicVolume, this.duckedMusicVolume) : this.musicVolume;
-    const canContinue = this.push(mixPcm(musicFrame, speech.frame, musicVolume));
+    const effectVolume = speech.active ? Math.min(this.effectVolume, this.duckedMusicVolume) : this.effectVolume;
+    const canContinue = this.push(mixPcmFrames([
+      { frame: musicFrame, volume: musicVolume },
+      ...effectFrames.map((frame) => ({ frame, volume: effectVolume })),
+      { frame: speech.frame, volume: 1.2 }
+    ]));
     if (!canContinue) {
       this.nextFrameAt = Date.now() + 20;
     }
@@ -275,6 +336,7 @@ class MixerStream extends Readable {
   }
 
   destroy(error) {
+    this.drainEffectQueue(false);
     this.drainSpeechQueue(false);
     if (this.timer) {
       clearTimeout(this.timer);
@@ -364,7 +426,8 @@ class AudioManager {
       bufferMs: this.audioBufferMs,
       maxQueueMs: this.audioQueueMaxMs,
       musicVolume: this.lobbyMusicVolume,
-      duckedMusicVolume: this.ttsMusicDuckVolume
+      duckedMusicVolume: this.ttsMusicDuckVolume,
+      effectVolume: DEFAULT_EFFECT_VOLUME
     });
     const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
     const session = {
@@ -560,7 +623,7 @@ class AudioManager {
     }
 
     const queue = session.mixer.queueStats();
-    return Boolean(session.musicProcess || queue.speechBytes > 0);
+    return Boolean(session.musicProcess || queue.effectBytes > 0 || queue.speechBytes > 0);
   }
 
   playTrackPath(guildId, trackPath, options = {}) {
@@ -579,14 +642,34 @@ class AudioManager {
 
   async playFilePathOnce(guildId, trackPath) {
     const session = this.sessions.get(guildId);
-    const played = this.playTrackPath(guildId, trackPath, { loop: false, replace: true });
-    if (!played) {
+    if (!session) {
+      this.warn('file playback requested without active voice session', { guildId, trackPath });
       return false;
     }
 
-    await session?.musicDonePromise?.catch(() => false);
-    await sleep(this.audioBufferMs);
-    return true;
+    if (!fs.existsSync(trackPath)) {
+      this.warn('file playback requested for missing file', { guildId, trackPath });
+      return false;
+    }
+
+    try {
+      const requestId = `file-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const mp3Buffer = await fs.promises.readFile(trackPath);
+      const pcm = await this.decodeMp3ToPcm(mp3Buffer, requestId);
+      const effectDone = session.mixer.addEffect(pcm);
+      this.info('file effect queued', {
+        guildId,
+        requestId,
+        trackPath,
+        pcmBytes: pcm.length,
+        pcmDurationMs: pcmDurationMs(pcm.length),
+        queueAfter: session.mixer.queueStats()
+      });
+      return await effectDone;
+    } catch (error) {
+      this.error('file effect playback failed', { guildId, trackPath, error: summarizeError(error) });
+      return false;
+    }
   }
 
   async playFileOnce(guildId, fileName) {
@@ -750,7 +833,7 @@ class AudioManager {
         return;
       }
 
-      this.info('TTS ffmpeg decode starting', { requestId, mp3Bytes: mp3Buffer.length, ffmpegPath });
+      this.info('MP3 ffmpeg decode starting', { requestId, mp3Bytes: mp3Buffer.length, ffmpegPath });
       const proc = spawn(ffmpegPath, [
         '-hide_banner',
         '-loglevel', 'error',
@@ -765,17 +848,17 @@ class AudioManager {
       const errors = [];
       proc.stdout.on('data', (chunk) => chunks.push(chunk));
       proc.stderr.on('data', (chunk) => errors.push(chunk.toString()));
-      proc.on('error', (error) => reject(toAudioError('ffmpeg failed to start for TTS.', 'TTS_FFMPEG_START_ERROR', error)));
+      proc.on('error', (error) => reject(toAudioError('ffmpeg failed to start for MP3 decode.', 'TTS_FFMPEG_START_ERROR', error)));
       proc.on('close', (code) => {
         if (code === 0) {
           const buffer = Buffer.concat(chunks);
-          this.debug('TTS ffmpeg decode complete', { requestId, pcmBytes: buffer.length, chunks: chunks.length });
+          this.debug('MP3 ffmpeg decode complete', { requestId, pcmBytes: buffer.length, chunks: chunks.length });
           resolve(buffer);
         } else {
           reject(toAudioError(`ffmpeg exited with code ${code}: ${errors.join('').trim()}`, 'TTS_FFMPEG_EXIT'));
         }
       });
-      proc.stdin.on('error', (error) => reject(toAudioError('Failed to write TTS audio into ffmpeg.', 'TTS_FFMPEG_STDIN_ERROR', error)));
+      proc.stdin.on('error', (error) => reject(toAudioError('Failed to write MP3 audio into ffmpeg.', 'TTS_FFMPEG_STDIN_ERROR', error)));
       proc.stdin.end(mp3Buffer);
     });
   }
