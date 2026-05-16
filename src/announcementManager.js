@@ -5,7 +5,7 @@ const { ChannelType, MessageFlags } = require('discord.js');
 const { COMMANDS } = require('./commands.ts');
 const { DISCORD_MESSAGES } = require('./messages.ts');
 
-const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000;
+const DEFAULT_COOLDOWN_MS = 5 * 1000;
 const MP3_FILE_RE = /^[\w .()\[\]-]+\.mp3$/i;
 
 function parseDurationMs(value, defaultValue) {
@@ -54,8 +54,9 @@ class AnnouncementManager {
     this.dbPath = config.sqlitePath || '/app/data/bot.db';
     this.audioDirectory = config.announcementAudioDirectory || path.dirname(config.lobbyMusicPath || '/app/data/lobby.mp3');
     this.cooldownMs = parseDurationMs(config.announcementCooldownMs || process.env.ANNOUNCEMENT_COOLDOWN_MS, DEFAULT_COOLDOWN_MS);
+    this.skipDuringDraft = config.skipAnnouncementsDuringDraft !== false;
+    this.activePlaybackByGuild = new Map();
     this.db = null;
-    this.inFlightByGuild = new Set();
   }
 
   initDb() {
@@ -81,7 +82,7 @@ class AnnouncementManager {
   }
 
   isDraftActive(guildId) {
-    return Boolean(guildId && this.draftManager?.getSessionByGuild(guildId));
+    return this.skipDuringDraft && Boolean(guildId && this.draftManager?.getSessionByGuild(guildId));
   }
 
   resolveAudioPath(fileName) {
@@ -251,11 +252,6 @@ class AnnouncementManager {
       return;
     }
 
-    // First eligible join wins: do not queue announcements or interrupt active audio.
-    if (this.inFlightByGuild.has(guildId) || this.audioManager?.hasActivePlayback(guildId)) {
-      return;
-    }
-
     const mapping = this.getMapping(guildId, member.id);
     if (!mapping) {
       return;
@@ -272,14 +268,14 @@ class AnnouncementManager {
       return;
     }
 
-    this.inFlightByGuild.add(guildId);
+    this.activePlaybackByGuild.set(guildId, (this.activePlaybackByGuild.get(guildId) || 0) + 1);
     try {
       if (this.isDraftActive(guildId)) {
         return;
       }
 
       await this.audioManager.join(voiceChannel, { startMusic: false });
-      if (this.isDraftActive(guildId) || this.audioManager.hasActivePlayback(guildId)) {
+      if (this.isDraftActive(guildId)) {
         return;
       }
 
@@ -287,8 +283,14 @@ class AnnouncementManager {
     } catch (error) {
       console.error('[announcements] failed to play announcement:', summarizeError(error));
     } finally {
-      this.inFlightByGuild.delete(guildId);
-      if (!this.isDraftActive(guildId)) {
+      const remaining = (this.activePlaybackByGuild.get(guildId) || 1) - 1;
+      if (remaining > 0) {
+        this.activePlaybackByGuild.set(guildId, remaining);
+      } else {
+        this.activePlaybackByGuild.delete(guildId);
+      }
+
+      if (remaining <= 0 && !this.isDraftActive(guildId) && !this.audioManager.hasActivePlayback(guildId)) {
         this.audioManager.stop(guildId);
       }
     }

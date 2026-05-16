@@ -19,8 +19,12 @@ const { COMMANDS, DRAFT_TYPE_CHOICES } = require('./commands.ts');
 const { DISCORD_MESSAGES } = require('./messages.ts');
 
 const token = process.env.DISCORD_TOKEN;
+const announcementToken = process.env.DISCORD_ANNOUNCEMENT_TOKEN || process.env.ANNOUNCEMENT_DISCORD_TOKEN || null;
 if (!token) {
   throw new Error('Missing DISCORD_TOKEN in environment.');
+}
+if (announcementToken && announcementToken === token) {
+  throw new Error('DISCORD_ANNOUNCEMENT_TOKEN must be a different bot token than DISCORD_TOKEN.');
 }
 
 const config = {
@@ -47,7 +51,7 @@ const config = {
   ttsHost: process.env.GOOGLE_TTS_HOST || 'https://translate.google.com',
   audioBufferMs: process.env.AUDIO_BUFFER_MS || '500',
   audioQueueMaxMs: process.env.AUDIO_QUEUE_MAX_MS || '5000',
-  announcementCooldownMs: process.env.ANNOUNCEMENT_COOLDOWN_MS || String(10 * 60 * 1000),
+  announcementCooldownMs: process.env.ANNOUNCEMENT_COOLDOWN_MS || String(5 * 1000),
   announcementAudioDirectory: process.env.ANNOUNCEMENT_AUDIO_DIRECTORY || null,
   lobbyMusicVolume: process.env.LOBBY_MUSIC_VOLUME || '0.35',
   ttsMusicDuckVolume: process.env.TTS_MUSIC_DUCK_VOLUME || '0.12',
@@ -57,7 +61,9 @@ const config = {
   leetifyLegacyApiBase: process.env.LEETIFY_LEGACY_API_BASE || 'https://api.cs-prod.leetify.com',
   ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24',
   ratingRefreshCron: process.env.RATING_REFRESH_CRON || null,
-  schedulerEventsChannelId: process.env.SCHEDULER_EVENTS_CHANNEL || null
+  schedulerEventsChannelId: process.env.SCHEDULER_EVENTS_CHANNEL || null,
+  useDedicatedAnnouncementBot: Boolean(announcementToken),
+  skipAnnouncementsDuringDraft: !announcementToken
 };
 
 
@@ -242,18 +248,28 @@ async function getInvokerVoiceMembers(interaction) {
 }
 
 const audioManager = new AudioManager(config);
+const announcementAudioManager = config.useDedicatedAnnouncementBot ? new AudioManager(config) : audioManager;
 const playerManager = new PlayerManager(config);
 const draftManager = new DraftManager(audioManager, playerManager);
-const announcementManager = new AnnouncementManager(config, audioManager, draftManager);
+const announcementManager = new AnnouncementManager(
+  config,
+  announcementAudioManager,
+  draftManager
+);
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMembers
-  ],
-  partials: [Partials.GuildMember]
-});
+function createDiscordClient() {
+  return new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildVoiceStates,
+      GatewayIntentBits.GuildMembers
+    ],
+    partials: [Partials.GuildMember]
+  });
+}
+
+const client = createDiscordClient();
+const announcementClient = config.useDedicatedAnnouncementBot ? createDiscordClient() : client;
 const notificationManager = new NotificationManager(client, config);
 const schedulerManager = new SchedulerManager(client, config);
 
@@ -534,30 +550,63 @@ const audioStatusCommand = new SlashCommandBuilder()
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false);
 
+const coreCommands = [
+  teamDraftCommand,
+  teamDraftMockCommand,
+  linkCommand,
+  unlinkCommand,
+  getInfoCommand,
+  refreshCommand,
+  refreshVoiceCommand,
+  refreshAllPlayersCommand,
+  leaderboardCommand,
+  refreshLeaderboardCommand,
+  draftStatusCommand,
+  draftCancelCommand,
+  draftCleanupCommand,
+  returnToVoiceCommand,
+  buildVersionCommand,
+  testLobbyMusicCommand,
+  testTtsCommand,
+  audioStatusCommand
+];
+const announcementCommands = [
+  announceCommand,
+  resetAnnounceTimerCommand,
+  removeAnnouncementCommand
+];
+
+async function registerCommands(readyClient, commands, label) {
+  if (config.guildIds.length > 0) {
+    if (!config.keepGlobalCommands) {
+      await readyClient.application.commands.set([]);
+      console.log(`Cleared global commands for ${label} to avoid duplicate global+guild command entries.`);
+    }
+
+    for (const guildId of config.guildIds) {
+      const guild = await readyClient.guilds.fetch(guildId);
+      await guild.commands.set(commands);
+      console.log(`Registered ${label} commands in guild ${guild.name} (${guild.id})`);
+    }
+    return;
+  }
+
+  await readyClient.application.commands.set(commands);
+  console.log(`Registered ${label} commands globally (can take up to 1 hour to appear).`);
+  console.log('Tip: set DISCORD_GUILD_ID to your server ID for near-instant command updates.');
+}
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, refreshAllPlayersCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, announceCommand, resetAnnounceTimerCommand, removeAnnouncementCommand, audioStatusCommand];
-
-    if (config.guildIds.length > 0) {
-      if (!config.keepGlobalCommands) {
-        await readyClient.application.commands.set([]);
-        console.log('Cleared global commands to avoid duplicate global+guild command entries.');
-      }
-
-      for (const guildId of config.guildIds) {
-        const guild = await readyClient.guilds.fetch(guildId);
-        await guild.commands.set(commands);
-        console.log(`Registered draft commands in guild ${guild.name} (${guild.id})`);
-      }
-    } else {
-      await readyClient.application.commands.set(commands);
-      console.log('Registered draft commands globally (can take up to 1 hour to appear).');
-      console.log('Tip: set DISCORD_GUILD_ID to your server ID for near-instant command updates.');
-    }
+    await registerCommands(
+      readyClient,
+      config.useDedicatedAnnouncementBot ? coreCommands : [...coreCommands, ...announcementCommands],
+      'core'
+    );
   } catch (error) {
-    console.error('Failed to register slash commands:', error);
+    console.error('Failed to register core slash commands:', error);
   }
 
   playerManager.start(readyClient);
@@ -565,6 +614,54 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log('[scheduler] notification initialization:', notificationInit);
   await schedulerManager.start();
 });
+
+
+function isAnnouncementCommand(interaction) {
+  return interaction.isChatInputCommand() && [
+    COMMANDS.ANNOUNCE.name,
+    COMMANDS.RESET_ANNOUNCE_TIMER.name,
+    COMMANDS.REMOVE_ANNOUNCEMENT.name
+  ].includes(interaction.commandName);
+}
+
+async function handleAnnouncementInteraction(interaction) {
+  if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.ANNOUNCE.name) {
+    await announcementManager.handleAnnounceCommand(interaction);
+    return true;
+  }
+
+  if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.RESET_ANNOUNCE_TIMER.name) {
+    await announcementManager.handleResetAnnounceTimerCommand(interaction);
+    return true;
+  }
+
+  if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.REMOVE_ANNOUNCEMENT.name) {
+    await announcementManager.handleRemoveAnnouncementCommand(interaction);
+    return true;
+  }
+
+  return false;
+}
+
+async function replyWithInteractionError(interaction) {
+  if (interaction.deferred || interaction.replied) {
+    await interaction.followUp({ content: 'Something went wrong handling that interaction.', flags: MessageFlags.Ephemeral }).catch(() => {});
+  } else {
+    await interaction.reply({ content: 'Something went wrong handling that interaction.', flags: MessageFlags.Ephemeral }).catch(() => {});
+  }
+}
+
+if (config.useDedicatedAnnouncementBot) {
+  announcementClient.once(Events.ClientReady, async (readyClient) => {
+    console.log(`Logged in announcement bot as ${readyClient.user.tag}`);
+
+    try {
+      await registerCommands(readyClient, announcementCommands, 'announcement');
+    } catch (error) {
+      console.error('Failed to register announcement slash commands:', error);
+    }
+  });
+}
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
@@ -796,18 +893,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.ANNOUNCE.name) {
-      await announcementManager.handleAnnounceCommand(interaction);
+    if (!config.useDedicatedAnnouncementBot && await handleAnnouncementInteraction(interaction)) {
       return;
     }
 
-    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.RESET_ANNOUNCE_TIMER.name) {
-      await announcementManager.handleResetAnnounceTimerCommand(interaction);
-      return;
-    }
-
-    if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.REMOVE_ANNOUNCEMENT.name) {
-      await announcementManager.handleRemoveAnnouncementCommand(interaction);
+    if (config.useDedicatedAnnouncementBot && isAnnouncementCommand(interaction)) {
+      await interaction.reply({
+        content: 'Announcement commands are handled by the dedicated announcement bot.',
+        flags: MessageFlags.Ephemeral
+      });
       return;
     }
 
@@ -860,26 +954,57 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   } catch (error) {
     console.error('Interaction error:', error);
-    if (interaction.deferred || interaction.replied) {
-      await interaction.followUp({ content: 'Something went wrong handling that interaction.', flags: MessageFlags.Ephemeral }).catch(() => {});
-    } else {
-      await interaction.reply({ content: 'Something went wrong handling that interaction.', flags: MessageFlags.Ephemeral }).catch(() => {});
-    }
+    await replyWithInteractionError(interaction);
   }
 });
 
+
+if (config.useDedicatedAnnouncementBot) {
+  announcementClient.on(Events.InteractionCreate, async (interaction) => {
+    try {
+      const handled = await handleAnnouncementInteraction(interaction);
+      if (!handled && interaction.isRepliable()) {
+        await interaction.reply({ content: 'This bot only handles announcement commands.', flags: MessageFlags.Ephemeral });
+      }
+    } catch (error) {
+      console.error('Announcement interaction error:', error);
+      await replyWithInteractionError(interaction);
+    }
+  });
+}
 
 client.on(Events.Raw, (packet) => {
   logVoiceGatewayPacket(packet, client.user?.id);
 });
 
+if (config.useDedicatedAnnouncementBot) {
+  announcementClient.on(Events.Raw, (packet) => {
+    logVoiceGatewayPacket(packet, announcementClient.user?.id);
+  });
+}
+
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   try {
     await draftManager.handleVoiceStateUpdate(oldState, newState);
-    await announcementManager.handleVoiceStateUpdate(oldState, newState);
+    if (!config.useDedicatedAnnouncementBot) {
+      await announcementManager.handleVoiceStateUpdate(oldState, newState);
+    }
   } catch (error) {
     console.error('Voice cleanup error:', error);
   }
 });
 
+if (config.useDedicatedAnnouncementBot) {
+  announcementClient.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+    try {
+      await announcementManager.handleVoiceStateUpdate(oldState, newState);
+    } catch (error) {
+      console.error('Announcement voice update error:', error);
+    }
+  });
+}
+
 client.login(token);
+if (config.useDedicatedAnnouncementBot) {
+  announcementClient.login(announcementToken);
+}
