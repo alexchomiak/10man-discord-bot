@@ -234,6 +234,44 @@ docker run -d \
 - Team channels are intentionally hidden cross-team.
 - Mock drafts can optionally create a temporary private voice test channel and move you there (`spawn_voice`, default `true`).
 
+## Streaming selfbot (Mode B)
+
+This image ships **two independent, co-existing apps** in one container: the CS2 real-bot (`src/index.js`) and the TV streaming selfbot (`src/streambot/index.js`). Switch or run-both via the `MODE` env var (see `run.sh`):
+
+- `MODE=bot` (or unset) — run the CS2 real-bot only. Legacy behavior, unchanged.
+- `MODE=streambot` — run the TV streaming selfbot only. Requires `SELF_BOT_TOKEN` (a Discord **user** token, not a bot token) and a `libzmq`-capable `ffmpeg` on the container's `$PATH`. See `streambot.env.example` for the full env list.
+- `MODE=all` — run both concurrently (both tokens must be set).
+
+The two are fully disjoint in code: the selfbot does not import from `src/index.js` or `src/audioManager.js`, and the bot does not import from `src/streambot/`. They share only the Node runtime and the install of the two new npm deps (`discord.js-selfbot-v13@3.7.1` + `@dank074/discord-video-stream@6.0.0`).
+
+The selfbot streams real video (H.264/H.265/VP8/VP9/AV1) into a Discord voice channel via the selfbot user-token path — the same `StreamBot` (ysdragon) approach. This is ToS-adjacent; use a dedicated/throwaway Discord account, never a token used elsewhere, and do not run both apps on the same Discord account.
+
+### Selfbot commands (in-channel, prefix `$` by default)
+- `$stream <url>` — start streaming a URL. The URL can be:
+  - a **ShareTV slug** or `/s/<slug>` link (resolved via `SHARETV_BASE/api/public/share/:slug`, prefers `hls_url`)
+  - a **direct** media URL (`.m3u8` / `.ts` / `.mp4` / `.mkv`)
+  - any **yt-dlp**-support URL (YouTube, Twitch, Vimeo, Facebook, news sites, …). `yt-dlp` must be on the container `PATH` (or set `YTDLP_PATH`).
+- `$stream stop` / `$stop` — stop and leave voice.
+- `$stream status` / `$status` — current stream summary.
+- `$ping` — liveness echo.
+
+### Inbound webhook (for IPTV-Share / ShareTV to POST a trigger)
+- `POST /webhook/stream` on `:8081` (per `STREAMBOT_WEBHOOK_PORT`), with body (structured or legacy Discord-webhook shape — both accepted) and HMAC header:
+  ```
+  x-webhook-secret: $(printf '%s' '<raw body>' | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $2}')
+  ```
+- `GET /health` → `{"ok":true,"service":"streambot","streaming":<bool>}`
+- `GET /webhook/help` → schema doc.
+
+**The outbound side of the webhook is implemented in the `iptv-share` repo.** A prompt describing that change is in `docs/iptv-share-prompt-for-outbound-webhook.md` in this repo.
+
+### GPU decode (optional)
+Set `HARDWARE_ACCEL=true` and bind a GPU render node at deploy time. The video lib defaults to `/dev/dri/renderD128`; override with your render node if different:
+```
+docker run ... --device /dev/dri/renderD128 ...
+```
+`FFMPEG_PATH` must point to an ffmpeg that has `vaapi` support (`ffmpeg -hwaccels` should list `vaapi`).
+
 ## Troubleshooting
 
 - If you see `Error: Used disallowed intents`, enable **Server Members Intent** in your bot settings in the Discord Developer Portal.
