@@ -1,6 +1,9 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { M } = require('./messages');
 const { TAG } = require('./config');
 
@@ -136,10 +139,12 @@ async function resolveShareTv(raw, cfg) {
       return {
         kind: 'sharetv',
         streamUrl: ytdlp.streamUrl,
+        localFile: !!ytdlp.localFile,
+        localDir: ytdlp.localDir || null,
         title,
         channel,
         available: true,
-        note: 'platform share resolved via yt-dlp'
+        note: ytdlp.note || (ytdlp.localFile ? 'platform VOD downloaded + merged' : 'platform share resolved via yt-dlp')
       };
     }
     return {
@@ -186,45 +191,36 @@ function lastNonEmptyLine(text) {
   return lines.length ? lines[lines.length - 1] : null;
 }
 
-function runYtdlp(cfg, url) {
-  return new Promise((resolve) => {
-    const bin = String(cfg.ytdlpPath || 'yt-dlp').trim() || 'yt-dlp';
-    const format = String(cfg.ytdlpFormat || 'bv*+ba/b').trim() || 'bv*+ba/b';
-    const timeoutMs = Number.isFinite(cfg.ytdlpTimeoutMs) && cfg.ytdlpTimeoutMs > 0 ? cfg.ytdlpTimeoutMs : 20000;
-    const args = ['-g', '--no-playlist', '--format', format, '--socket-timeout', '15', url];
+function urlLines(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => /^https?:\/\//.test(l));
+}
 
+function spawnYtdlp(cfg, args, timeoutMs) {
+  const bin = String(cfg.ytdlpPath || 'yt-dlp').trim() || 'yt-dlp';
+  return new Promise((resolve) => {
     let proc;
     try {
       proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (err) {
       return resolve({ ok: false, code: -1, stdout: '', stderr: (err && err.message) || 'spawn failed', spawnErr: err });
     }
-
     let stdout = '';
     let stderr = '';
     let timedOut = false;
     const timer = setTimeout(() => {
       if (proc.exitCode === null) {
         timedOut = true;
-        try {
-          proc.kill('SIGKILL');
-        } catch {
-          /* already dead */
-        }
+        try { proc.kill('SIGKILL'); } catch { }
       }
     }, timeoutMs);
 
-    proc.stdout.on('data', (d) => {
-      stdout += d.toString();
-    });
-    proc.stderr.on('data', (d) => {
-      stderr += d.toString();
-    });
-
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
     let spawnErr = null;
-    proc.on('error', (err) => {
-      spawnErr = err;
-    });
+    proc.on('error', (err) => { spawnErr = err; });
     proc.on('close', (code) => {
       clearTimeout(timer);
       if (spawnErr) return resolve({ ok: false, code: code == null ? -1 : code, stdout, stderr, spawnErr, timedOut });
@@ -233,36 +229,128 @@ function runYtdlp(cfg, url) {
   });
 }
 
-async function resolveYtdlp(raw, cfg) {
+// Probe: yt-dlp -g returns the playable URL(s). Exactly one URL = a single
+// combined stream (live / combined A+V) -> stream it directly. More than one
+// URL = DASH (separate best-video + best-audio, e.g. YouTube VODs) -> must be
+// downloaded + merged to a single file, then streamed by path.
+async function ytdlpProbe(cfg, url) {
+  const format = String(cfg.ytdlpFormat || 'bv*+ba/b').trim() || 'bv*+ba/b';
+  const timeoutMs = Number.isFinite(cfg.ytdlpTimeoutMs) && cfg.ytdlpTimeoutMs > 0 ? cfg.ytdlpTimeoutMs : 20000;
+  return spawnYtdlp(cfg, ['-g', '--no-playlist', '--format', format, url], timeoutMs);
+}
+
+// Download + merge DASH to a single local media file. Returns { ok, path, dir }.
+async function ytdlpDownload(cfg, url) {
   const bin = String(cfg.ytdlpPath || 'yt-dlp').trim() || 'yt-dlp';
-  log(`resolving via yt-dlp (${bin})`);
-  const res = await runYtdlp(cfg, raw);
+  const format = String(cfg.ytdlpDownloadFormat || 'bv*[height<=720]+ba/b[height<=720]/b').trim();
+  const timeoutMs = Number.isFinite(cfg.ytdlpDownloadTimeoutMs) && cfg.ytdlpDownloadTimeoutMs > 0 ? cfg.ytdlpDownloadTimeoutMs : 300000;
+
+  let dir;
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'streambot-ytdlp-'));
+  } catch {
+    return { ok: false, note: 'could not create a temp dir for the download' };
+  }
+  const outTemplate = path.join(dir, 'video'); // yt-dlp appends the container extension
+
+  log(`downloading (DASH) to ${dir} via ${bin}`);
+  const res = await spawnYtdlp(
+    cfg,
+    ['--no-playlist', '-o', outTemplate, '--format', format, url],
+    timeoutMs
+  );
 
   if (res.spawnErr) {
-    if (res.spawnErr.code === 'ENOENT') return { kind: 'ytdlp', available: false, note: M.YTDLP_BINARY_MISSING };
-    return { kind: 'ytdlp', available: false, note: M.YTDLP_RESOLVE_FAILED(res.spawnErr.message) };
+    rmDir(dir);
+    if (res.spawnErr.code === 'ENOENT') return { ok: false, note: M.YTDLP_BINARY_MISSING };
+    return { ok: false, note: (res.spawnErr.message) || 'yt-dlp spawn failed' };
   }
   if (res.timedOut) {
-    return { kind: 'ytdlp', available: false, note: M.YTDLP_RESOLVE_FAILED(`timed out after ${Number.isFinite(cfg.ytdlpTimeoutMs) ? cfg.ytdlpTimeoutMs : 20000}ms`) };
+    rmDir(dir);
+    return { ok: false, note: M.YTDLP_RESOLVE_FAILED(`timed out after ${timeoutMs}ms downloading`) };
   }
   if (!res.ok) {
+    rmDir(dir);
     const detail = lastNonEmptyLine(res.stderr) || `exit code ${res.code}`;
+    return { ok: false, note: M.YTDLP_RESOLVE_FAILED(detail) };
+  }
+
+  let file = null;
+  let entries;
+  try {
+    entries = fs.readdirSync(dir).filter((n) => n !== 'video.ytdl');
+  } catch {
+    entries = [];
+  }
+  // Prefer the merged output (e.g. video.mp4.webm); otherwise any non-partial file.
+  const candidate =
+    entries.find((n) => n.startsWith('video.') && !n.endsWith('.ytdl')) ||
+    entries.find((n) => !n.endsWith('.ytdl'));
+  if (candidate) file = path.join(dir, candidate);
+
+  if (!file || !fs.existsSync(file)) {
+    rmDir(dir);
+    return { ok: false, note: 'yt-dlp exited 0 but produced no media file' };
+  }
+
+  const sizeBytes = fs.statSync(file).size;
+  log(`download complete: ${sizeBytes} bytes -> ${file}`);
+
+  const maxMb = Number.isFinite(cfg.maxStreamSizeMb) ? cfg.maxStreamSizeMb : 0;
+  if (maxMb > 0 && sizeBytes > maxMb * 1024 * 1024) {
+    rmDir(dir);
+    return { ok: false, note: M.STREAM_TOO_LARGE(maxMb) };
+  }
+
+  return { ok: true, path: file, dir };
+}
+
+function rmDir(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { }
+}
+
+async function resolveYtdlp(raw, cfg) {
+  log(`resolving via yt-dlp`);
+  const probe = await ytdlpProbe(cfg, raw);
+
+  if (probe.spawnErr) {
+    if (probe.spawnErr.code === 'ENOENT') return { kind: 'ytdlp', available: false, note: M.YTDLP_BINARY_MISSING };
+    return { kind: 'ytdlp', available: false, note: M.YTDLP_RESOLVE_FAILED(probe.spawnErr.message) };
+  }
+  if (probe.timedOut) {
+    return { kind: 'ytdlp', available: false, note: M.YTDLP_RESOLVE_FAILED(`timed out after ${cfg.ytdlpTimeoutMs || 20000}ms`) };
+  }
+  if (!probe.ok) {
+    const detail = lastNonEmptyLine(probe.stderr) || `exit code ${probe.code}`;
     return { kind: 'ytdlp', available: false, note: M.YTDLP_RESOLVE_FAILED(detail) };
   }
 
-  const line = lastNonEmptyLine(res.stdout);
-  if (!line) return { kind: 'ytdlp', available: false, note: M.YTDLP_RESOLVE_FAILED('yt-dlp returned no URL') };
-
-  let streamUrl = line;
-  if (streamUrl.includes(',')) {
-    const urls = streamUrl.match(/https?:\/\/[^\s,]+/g);
-    if (urls && urls.length) streamUrl = urls[urls.length - 1];
+  const urls = urlLines(probe.stdout);
+  if (urls.length === 1) {
+    // Single combined stream (live / A+V) -> stream the URL directly.
+    const streamUrl = urls[0];
+    return { kind: 'ytdlp', streamUrl, title: null, channel: null, available: true, localFile: false, localDir: null };
   }
-  if (!/^https?:\/\//i.test(streamUrl)) {
-    return { kind: 'ytdlp', available: false, note: M.YTDLP_RESOLVE_FAILED('no http(s) URL in yt-dlp output') };
+  if (urls.length > 1) {
+    // DASH: separate video + audio. Download + merge to a local file, then
+    // stream by local path (matches the reference implementation).
+    const dl = await ytdlpDownload(cfg, raw);
+    if (dl.ok) {
+      return {
+        kind: 'ytdlp',
+        streamUrl: dl.path,
+        localFile: true,
+        localDir: dl.dir,
+        title: null,
+        channel: null,
+        available: true,
+        note: 'DASH source downloaded + merged to a local file'
+      };
+    }
+    return { kind: 'ytdlp', available: false, note: dl.note || M.YTDLP_RESOLVE_FAILED() };
   }
 
-  return { kind: 'ytdlp', streamUrl, title: null, channel: null, available: true };
+  return { kind: 'ytdlp', available: false, note: M.YTDLP_RESOLVE_FAILED('yt-dlp returned no URL') };
 }
 
 async function resolveSource(input, config) {
@@ -289,5 +377,9 @@ module.exports = {
   resolveShareTv,
   resolveDirect,
   resolveYtdlp,
-  runYtdlp
+  // primitives (used by tests and advanced consumers):
+  spawnYtdlp,
+  ytdlpProbe,
+  ytdlpDownload,
+  rmDir
 };

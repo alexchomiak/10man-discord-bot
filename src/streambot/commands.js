@@ -100,6 +100,15 @@ class CommandRegistry {
       return;
     }
 
+    // Validate targeting BEFORE resolveSource: a missing channel must not
+    // trigger a potentially long yt-dlp download.
+    const channelId = this.resolveVoiceChannelId(message);
+    if (!channelId) {
+      await this.reply(message, M.STREAM_NEED_CHANNEL);
+      return;
+    }
+    const guildId = this.resolveGuildId(message);
+
     const config = (this.streamManager && this.streamManager.config) || {};
     let resolved;
     try {
@@ -116,13 +125,6 @@ class CommandRegistry {
       return;
     }
 
-    const channelId = this.resolveVoiceChannelId(message);
-    if (!channelId) {
-      await this.reply(message, M.STREAM_NEED_CHANNEL);
-      return;
-    }
-    const guildId = this.resolveGuildId(message);
-
     const label =
       resolved.kind === 'sharetv' && resolved.channel
         ? resolved.channel
@@ -133,7 +135,8 @@ class CommandRegistry {
       guildId,
       channelId,
       streamUrl: resolved.streamUrl,
-      title: resolved.title || null
+      title: resolved.title || null,
+      localDir: resolved.localDir || null
     });
     if (!result.ok) {
       await this.reply(message, result.message || M.STREAM_START_FAILED);

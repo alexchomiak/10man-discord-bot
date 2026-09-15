@@ -54,6 +54,19 @@ function onMessage(message) {
   }
 }
 
+// Gateway-event trace for diagnosing the "bot joins deafened, no video" hang:
+// selfbot tokens sometimes lack the go-live stream opcodes, so the library's
+// createStream() awaits forever. Off by default (set SBOT_DEBUG=1 to enable).
+const DEBUG_T = new Set(['VOICE_STATE_UPDATE', 'VOICE_SERVER_UPDATE', 'STREAM_CREATE', 'STREAM_SERVER_UPDATE']);
+client.on('raw', (d) => {
+  if (process.env.SBOT_DEBUG !== '1' && process.env.SBOT_DEBUG !== 'true') return;
+  if (!d || typeof d !== 'object') return;
+  const t = d.t != null ? String(d.t) : null;
+  if ((d.op != null && t && DEBUG_T.has(t)) || t === 'STREAM_CREATE' || (d.op != null && d.d && typeof d.d.stream_key === 'string')) {
+    console.log(`[streambot:debug] ${d.op != null ? d.op : 'raw'} t=${t || (d.d && typeof d.d.stream_key === 'string' ? 'stream_key' : '?')}`);
+  }
+});
+
 client.on('ready', onReady);
 client.on('messageCreate', onMessage);
 client.on('error', (err) => {

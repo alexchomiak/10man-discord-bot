@@ -33,18 +33,34 @@ ENV NODE_ENV=production
 #   - NVIDIA GPU: keep software encode; hardware paths need the NVIDIA
 #                 container toolkit (docker run --gpus all) + matching
 #                 driver/runtime libraries, which are deployment-specific.
+# Core: everything the bot needs on any arch.
+# libva-intel-driver is the Intel iGPU VAAPI runtime — it is x86/AMD64-only
+# (no arm64 candidate), so make it best-effort: builds that need it (Intel
+# GPU host) get it; ARM builds (e.g. Apple Silicon test builds) skip it and
+# still run, using software decode/encode by default.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu ffmpeg libva2 libva-intel-driver curl \
+  && apt-get install -y --no-install-recommends ca-certificates gosu ffmpeg libva2 curl \
+  && { apt-get install -y --no-install-recommends libva-intel-driver \
+       || echo "skip: libva-intel-driver unavailable on this architecture (non-x86/Intel)"; } \
   && rm -rf /var/lib/apt/lists/*
 
 # yt-dlp is an EXTERNAL binary (not an npm package) used by the selfbot's
 # resolver (src/streambot/sources.js) to turn platform page URLs
 # (twitch.tv, youtube.com, vimeo.com, …) into direct media URLs that ffmpeg
-# can play. Standalone binary from the yt-dlp releases — no Python needed.
-# Override with YTDLP_PATH if you prefer a different install.
-# Pinned to a known-good release; bump deliberately.
+# can play. We use the SELF-CONTAINED release assets (yt-dlp_linux /
+# yt-dlp_linux_aarch64 / yt-dlp_macos) — the plain `yt-dlp` asset is a Python
+# script and would require python3, which this image does not ship.
+# TARGETARCH is set by Docker buildx (amd64 | arm64 | arm).
+# Override the install with YTDLP_PATH if you prefer your own.
 ARG YTDLP_VERSION=2026.08.19
-RUN curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp" \
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+        amd64)  ASSET=yt-dlp_linux ;; \
+        arm64)  ASSET=yt-dlp_linux_aarch64 ;; \
+        arm*)   ASSET=yt-dlp_linux_armv7l ;; \
+        *)      echo "yt-dlp: unsupported TARGETARCH '$TARGETARCH'" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/${ASSET}" \
       -o /usr/local/bin/yt-dlp \
   && chmod +x /usr/local/bin/yt-dlp \
   && yt-dlp --version

@@ -151,6 +151,17 @@ function createWebhookServer({ config, streamManager, sources }) {
         });
       }
 
+      const channelId = firstString(payload.channel_id) || config.streamChannelId || '';
+      const guildId = firstString(payload.guild_id) || config.guildId || '';
+      // Validate targeting BEFORE resolveSource: a request with no channel
+      // must not spawn yt-dlp (which can download for minutes).
+      if (!channelId) {
+        return send(res, 400, { error: 'no target voice channel; pass channel_id or set STREAM_CHANNEL_ID' });
+      }
+      if (!guildId) {
+        return send(res, 400, { error: 'no target guild; pass guild_id or set SBOT_GUILD_ID' });
+      }
+
       const resolved = await sources.resolveSource(input, config);
       if (!resolved || resolved.available === false) {
         return send(res, 502, {
@@ -160,17 +171,8 @@ function createWebhookServer({ config, streamManager, sources }) {
         });
       }
 
-      const channelId = firstString(payload.channel_id) || config.streamChannelId || '';
-      const guildId = firstString(payload.guild_id) || config.guildId || '';
-      if (!channelId) {
-        return send(res, 400, { error: 'no target voice channel; pass channel_id or set STREAM_CHANNEL_ID' });
-      }
-      if (!guildId) {
-        return send(res, 400, { error: 'no target guild; pass guild_id or set SBOT_GUILD_ID' });
-      }
-
       const title = firstString(payload.title) || resolved.title || '';
-      const result = await streamManager.start({ guildId, channelId, streamUrl: resolved.streamUrl, title });
+      const result = await streamManager.start({ guildId, channelId, streamUrl: resolved.streamUrl, title, localDir: resolved.localDir || null });
       if (result && result.ok) {
         return send(res, 200, {
           ok: true,
