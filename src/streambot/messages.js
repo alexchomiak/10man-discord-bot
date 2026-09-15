@@ -23,6 +23,7 @@ const M = Object.freeze({
   STREAM_PLAY_STREAM_HANG: 'Stream did not start (selfbot token may not have gateway STREAM_CREATE permission). Run with SBOT_DEBUG=1 for gateway event logs.',
   STREAM_TOO_LARGE: (mb) => 'Downloaded file exceeds the configured maximum size (STREAMBOT_MAX_STREAM_SIZE_MB=' + mb + '). Lower it or pick a smaller source.',
 
+  SHARETV_BASE_UNSET: 'This looks like an IPTV-Share link, but SHARETV_BASE is not configured. Set SHARETV_BASE to your iptv-share base URL (e.g. http://host.docker.internal:8080 from inside Docker on Mac/Win, or the host IP in a Linux cluster). The bot cannot reach the host\'s localhost — inside a container, use host.docker.internal or a routable address.',
   SHARETV_NOT_FOUND: 'Could not find that ShareTV share (404 from the ShareTV API).',
   SHARETV_OFFLINE: 'Could not read that ShareTV share — the base looks wrong or is offline.',
   SHARETV_LOCKED: 'Share is password-locked (use an unlocked share or the bot endpoint).',

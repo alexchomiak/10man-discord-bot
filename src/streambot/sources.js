@@ -80,6 +80,22 @@ const PLATFORM_PAGE_HOSTS = [
   'instagram.com', 'tiktok.com', 'tmuxapp.com'
 ];
 
+// True for anything that has the shape of an IPTV-Share /s/<slug> link or a
+// bare slug. Such inputs are NEVER yt-dlp-page candidates: a share page is not
+// playable media, so handing it to yt-dlp only produces a misleading
+// "could not resolve that URL" error.
+function looksLikeShareTv(raw) {
+  if (typeof raw !== 'string') return false;
+  const s = raw.trim();
+  if (/^[A-Za-z0-9_-]+$/.test(s)) return true;
+  if (/^https?:\/\//i.test(s)) {
+    let p;
+    try { p = new URL(s).pathname; } catch { return false; }
+    return /^\/s\/[A-Za-z0-9_-]+([/?#]|$)/.test(p);
+  }
+  return false;
+}
+
 function isPlatformPage(raw) {
   let host;
   try {
@@ -361,6 +377,14 @@ async function resolveSource(input, config) {
   const sharetv = await resolveShareTv(raw, cfg);
   if (sharetv) return sharetv;
 
+  // Guard: /s/<slug> links (and bare slugs) are share pages, never playable
+  // media for yt-dlp. Reaching here means the slug could not be detected
+  // (SHARETV_BASE unset, or host mismatch) — bail with a helpful note instead
+  // of a misleading "yt-dlp could not resolve that URL".
+  if (looksLikeShareTv(raw)) {
+    return { kind: 'sharetv', available: false, note: M.SHARETV_BASE_UNSET };
+  }
+
   const direct = resolveDirect(raw);
   if (direct) return direct;
 
@@ -377,6 +401,7 @@ module.exports = {
   resolveShareTv,
   resolveDirect,
   resolveYtdlp,
+  looksLikeShareTv,
   // primitives (used by tests and advanced consumers):
   spawnYtdlp,
   ytdlpProbe,

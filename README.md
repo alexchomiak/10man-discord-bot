@@ -274,6 +274,7 @@ docker run ... --device /dev/dri/renderD128 ...
 
 ## Troubleshooting
 
+- **Bot says `yt-dlp could not resolve that URL` on an iptv-share link** — set `SHARETV_BASE` to a base URL that is *reachable from the bot* (not your browser/host). Inside Docker use `http://host.docker.internal:8080` (Mac/Win) or the compose service name / host LAN IP (Linux). A bare slug (`$stream dlp-test`) works the same way once `SHARETV_BASE` is set.
 - If you see `Error: Used disallowed intents`, enable **Server Members Intent** in your bot settings in the Discord Developer Portal.
 - If `/team-draft` says it must be used in a server, re-invite/update the bot commands and run it in a guild text channel (not a DM/app home).
 - If mock voice says it is not in server context, the command is being executed outside a guild context (or stale command registration). Re-register commands and run from a server text channel.

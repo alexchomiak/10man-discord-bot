@@ -369,6 +369,63 @@ test('yt-dlp failure (ENOENT) -> clean reject note', async () => {
 });
 
 // ============================================================================
+// 6b) SHARETV_BASE unset: /s/<slug> links must get a friendly "set SHARETV_BASE"
+//     note and must NEVER fall through to yt-dlp (which would produce a
+//     misleading "could not resolve that URL" error).
+// ============================================================================
+test('guard: /s/<slug> URL with SHARETV_BASE unset -> friendly note, yt-dlp NOT invoked', async () => {
+  const before = readFakeLog().length;
+  const res = await resolveSource('http://example.com/s/foo', {
+    shareTvBase: null,
+    shareTvAllowHosts: [],
+    ytdlpPath: FAKE_BIN
+  });
+  assert.strictEqual(res.kind, 'sharetv');
+  assert.strictEqual(res.available, false);
+  assert.match(res.note, /SHARETV_BASE/);
+  assert.strictEqual(readFakeLog().length, before, 'yt-dlp must not be invoked for an unconfigured share link');
+});
+
+test('guard: bare slug with SHARETV_BASE unset -> friendly note, yt-dlp NOT invoked', async () => {
+  const before = readFakeLog().length;
+  const res = await resolveSource('dlp-test', {
+    shareTvBase: null,
+    shareTvAllowHosts: [],
+    ytdlpPath: FAKE_BIN
+  });
+  assert.strictEqual(res.kind, 'sharetv');
+  assert.strictEqual(res.available, false);
+  assert.match(res.note, /SHARETV_BASE/);
+  assert.strictEqual(readFakeLog().length, before, 'yt-dlp must not be invoked for an unconfigured bare slug');
+});
+
+test('guard: /s/<slug> on host NOT matching SHARETV_BASE -> no yt-dlp fallthrough', async () => {
+  const before = readFakeLog().length;
+  const res = await resolveSource('https://example.com/s/foo', {
+    shareTvBase: 'http://other-base:8080',
+    shareTvAllowHosts: [],
+    ytdlpPath: FAKE_BIN
+  });
+  assert.strictEqual(res.kind, 'sharetv');
+  assert.strictEqual(res.available, false);
+  assert.match(res.note, /SHARETV_BASE/);
+  assert.strictEqual(readFakeLog().length, before, 'yt-dlp must not see a host-mismatched share link');
+});
+
+test('guard positive control: /s/<slug> matching SHARETV_BASE still resolves (no false positive)', async () => {
+  await withShare(SHARE_ORDINARY, async () => {
+    const res = await resolveSource('http://example.com/s/dlp-test', {
+      shareTvBase: 'http://example.com',
+      shareTvAllowHosts: [],
+      ytdlpPath: FAKE_BIN
+    });
+    assert.strictEqual(res.kind, 'sharetv');
+    assert.strictEqual(res.available, true);
+    assert.strictEqual(res.streamUrl, SIGNED_HLS);
+  });
+});
+
+// ============================================================================
 // 7) DASH — the real YouTube-VOD bug. YouTube VODs serve DASH: `yt-dlp -g`
 //    prints best-video + best-audio on separate lines. The OLD code grabbed the
 //    last line (audio-only) and streamed no picture. Correct behavior: probe via
