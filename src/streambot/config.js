@@ -87,10 +87,10 @@ function loadConfig() {
 
   const hardwareAccel = process.env.HARDWARE_ACCEL?.trim().toLowerCase() === 'true';
   const configuredEncoder = (process.env.STREAMBOT_VIDEO_ENCODER || '').trim().toLowerCase();
-  const workerId = (process.env.STREAMBOT_ID || 'primary').trim() || 'primary';
-  if (!/^[A-Za-z0-9_-]{1,32}$/.test(workerId)) throw new Error(`${TAG} invalid STREAMBOT_ID '${workerId}'.`);
   const defaultWorkerId = (process.env.STREAMBOT_DEFAULT_ID || 'primary').trim() || 'primary';
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(defaultWorkerId)) throw new Error(`${TAG} invalid STREAMBOT_DEFAULT_ID '${defaultWorkerId}'.`);
+  const workerId = (process.env.STREAMBOT_ID || defaultWorkerId).trim() || defaultWorkerId;
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(workerId)) throw new Error(`${TAG} invalid STREAMBOT_ID '${workerId}'.`);
   const workerSuffix = workerId.toUpperCase().replace(/-/g, '_');
   const chatCommandsValue = process.env[`SBOT_CHAT_COMMANDS_${workerSuffix}`] ?? process.env.SBOT_CHAT_COMMANDS;
 
@@ -98,7 +98,7 @@ function loadConfig() {
     token,
     workerId,
     defaultWorkerId,
-    chatCommands: parseBoolean(chatCommandsValue, workerId === 'primary'),
+    chatCommands: parseBoolean(chatCommandsValue, workerId.toLowerCase() === defaultWorkerId.toLowerCase()),
     brokerUrl: (process.env.STREAM_BROKER_URL || (process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET ? 'ws://127.0.0.1:8090' : '')).trim(),
     brokerSecret: (process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET || '').trim(),
     guildId: (process.env.SBOT_GUILD_ID || '').trim() || null,
@@ -205,7 +205,7 @@ function loadConfig() {
     webhookPort: parsePositiveInt(process.env.STREAMBOT_WEBHOOK_PORT, 8081),
     // default 0.0.0.0 so a separate iptv-share container can reach it across the cluster; on a single host prefer 127.0.0.1
     webhookHost: (process.env.STREAMBOT_WEBHOOK_HOST || '0.0.0.0').trim() || '0.0.0.0',
-    webhookEnabled: workerId === 'primary',
+    webhookEnabled: workerId.toLowerCase() === defaultWorkerId.toLowerCase(),
     // Optional OUTBOUND alert webhook (see alerts.js): the bot account is
     // restricted and can no longer send channel messages, so success/error
     // feedback is logged locally and POSTed to a regular Discord server

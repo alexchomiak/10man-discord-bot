@@ -120,7 +120,8 @@ function onReady() {
   const name = user && user.username ? user.username : 'self';
   const id = user && user.id ? user.id : 'unknown';
   log(`Logged in as ${name} (${id})`);
-  brokerClient.start();
+  if (brokerClient.enabled) brokerClient.start();
+  else log(`[streambot:${config.workerId}] broker disabled: STREAM_BROKER_SECRET or STREAM_BROKER_URL is missing`);
 }
 
 function onMessage(message) {
@@ -161,6 +162,18 @@ client.on('error', (err) => {
 });
 client.on('warn', (msg) => {
   log('client warn:', safe(msg));
+});
+client.on('shardDisconnect', (event, shardId) => {
+  log(`Discord gateway disconnected (shard ${shardId}, code ${event?.code ?? 'unknown'})`);
+});
+client.on('shardReconnecting', shardId => {
+  log(`Discord gateway reconnecting (shard ${shardId})`);
+});
+client.on('shardResume', (shardId, replayedEvents) => {
+  log(`Discord gateway resumed (shard ${shardId}, replayed ${replayedEvents} events)`);
+});
+client.on('invalidated', () => {
+  log('Discord session invalidated; a fresh login is required');
 });
 
 function closeWebhook() {

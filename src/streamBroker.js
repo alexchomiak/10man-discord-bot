@@ -111,7 +111,11 @@ class StreamBroker {
   async request(operation, payload = {}, requestedWorkerId) {
     const workerId = this.resolveWorkerId(requestedWorkerId);
     const worker = this.workers.get(workerId);
-    if (!worker || worker.socket.readyState !== WebSocket.OPEN) throw new Error(`Streambot '${workerId}' is offline.`);
+    if (!worker || worker.socket.readyState !== WebSocket.OPEN) {
+      const connected = [...this.workers.keys()];
+      const detail = connected.length ? ` Connected workers: ${connected.join(', ')}.` : ' No workers are connected to the broker.';
+      throw new Error(`Streambot '${workerId}' is offline.${detail}`);
+    }
     const requestId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

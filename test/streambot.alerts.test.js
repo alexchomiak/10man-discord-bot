@@ -289,11 +289,13 @@ test('config: primary keeps chat commands by default while secondary workers def
   const previous = {
     token: process.env.SELF_BOT_TOKEN,
     id: process.env.STREAMBOT_ID,
+    defaultId: process.env.STREAMBOT_DEFAULT_ID,
     chat: process.env.SBOT_CHAT_COMMANDS,
     scoped: process.env.SBOT_CHAT_COMMANDS_YOUTUBE
   };
   try {
     process.env.SELF_BOT_TOKEN = 'test';
+    delete process.env.STREAMBOT_DEFAULT_ID;
     delete process.env.SBOT_CHAT_COMMANDS;
     process.env.STREAMBOT_ID = 'primary';
     assert.strictEqual(loadConfig().chatCommands, true);
@@ -307,9 +309,40 @@ test('config: primary keeps chat commands by default while secondary workers def
     for (const [key, value] of Object.entries(previous)) {
       const envName = key === 'token' ? 'SELF_BOT_TOKEN'
         : key === 'id' ? 'STREAMBOT_ID'
+          : key === 'defaultId' ? 'STREAMBOT_DEFAULT_ID'
           : key === 'scoped' ? 'SBOT_CHAT_COMMANDS_YOUTUBE'
             : 'SBOT_CHAT_COMMANDS';
       if (value === undefined) delete process.env[envName]; else process.env[envName] = value;
+    }
+  }
+});
+
+test('config: a custom default worker ID owns chat commands and the webhook', () => {
+  const previous = {
+    token: process.env.SELF_BOT_TOKEN,
+    id: process.env.STREAMBOT_ID,
+    defaultId: process.env.STREAMBOT_DEFAULT_ID,
+    chat: process.env.SBOT_CHAT_COMMANDS,
+    scoped: process.env.SBOT_CHAT_COMMANDS_ONE
+  };
+  try {
+    process.env.SELF_BOT_TOKEN = 'test';
+    delete process.env.STREAMBOT_ID;
+    process.env.STREAMBOT_DEFAULT_ID = 'one';
+    delete process.env.SBOT_CHAT_COMMANDS;
+    delete process.env.SBOT_CHAT_COMMANDS_ONE;
+    const config = loadConfig();
+    assert.strictEqual(config.workerId, 'one');
+    assert.strictEqual(config.defaultWorkerId, 'one');
+    assert.strictEqual(config.chatCommands, true);
+    assert.strictEqual(config.webhookEnabled, true);
+  } finally {
+    const names = {
+      token: 'SELF_BOT_TOKEN', id: 'STREAMBOT_ID', defaultId: 'STREAMBOT_DEFAULT_ID',
+      chat: 'SBOT_CHAT_COMMANDS', scoped: 'SBOT_CHAT_COMMANDS_ONE'
+    };
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[names[key]]; else process.env[names[key]] = value;
     }
   }
 });

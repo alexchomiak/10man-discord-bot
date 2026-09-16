@@ -254,7 +254,7 @@ SBOT_CHAT_COMMANDS_PRIMARY=true
 SBOT_CHAT_COMMANDS_YOUTUBE=false
 ```
 
-An omitted `bot` option targets `STREAMBOT_DEFAULT_ID` (`primary` by default). Every `/stream` subcommand exposes an autocompleted optional `bot` option. `/player [bot]` opens pause, resume, and ±5s/±30s/±1m controls. `/set-stream-name name:<name> [bot]` changes the selected worker account's global Discord display name. `STREAM_ALLOWED_USER_IDS` restricts these app-bot controls. See `streambot.env.example` for the full worker configuration.
+An omitted `bot` option targets `STREAMBOT_DEFAULT_ID` (`primary` by default). Every `/stream` subcommand exposes an autocompleted optional `bot` option. `/player [bot]` opens pause, resume, and ±5s/±30s/±1m controls. `/set-stream-name name:<name> [bot]` changes the selected worker account's global Discord display name. `STREAM_ALLOWED_USER_IDS` restricts these app-bot controls; when unset, all server members may use them. It is independent from the `$`-only `SBOT_ALLOWED_USER_IDS`. See `streambot.env.example` for the full worker configuration.
 
 The selfbot streams real video (H.264/H.265/VP8/VP9/AV1) into a Discord voice channel via the selfbot user-token path — the same `StreamBot` (ysdragon) approach. This is ToS-adjacent; use a dedicated/throwaway Discord account, never a token used elsewhere, and do not run both apps on the same Discord account.
 

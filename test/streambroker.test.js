@@ -71,6 +71,22 @@ test('Discord stream commands expose every operation and player scrub buttons', 
   assert(rows.flatMap(row => row.components).every(component => component.custom_id.includes('primary')));
 });
 
+test('broker offline errors identify connected worker IDs', async t => {
+  const broker = new StreamBroker({ host: '127.0.0.1', port: 0, secret: 'test-secret', defaultWorkerId: 'one', log: () => {} });
+  const server = broker.start();
+  await once(server, 'listening');
+  const manager = { status: () => null };
+  const primary = new StreamBrokerClient({
+    url: `ws://127.0.0.1:${broker.port}`,
+    secret: 'test-secret', workerId: 'primary',
+    control: { execute: async () => ({ ok: true }) }, streamManager: manager, log: () => {}
+  });
+  t.after(async () => { primary.close(); await broker.close(); });
+  primary.start();
+  await until(() => broker.listWorkers().length === 1);
+  await assert.rejects(() => broker.request('status'), /Streambot 'one' is offline\. Connected workers: primary\./);
+});
+
 test('stream control changes the account global display name, not a guild nickname', async () => {
   const changed = [];
   const manager = { status: () => null };

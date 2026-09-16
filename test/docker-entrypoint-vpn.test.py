@@ -25,6 +25,7 @@ echo curl >> "$ROOT/calls"
 if [ "$CASE" = download ]; then exit 22; fi
 exit 0
 ''')
+    executable(bindir / 'getent', '#!/bin/sh\n[ "$CASE" != dns ]\n')
     executable(bindir / 'unzip', '#!/bin/sh\necho "client"\n')
     executable(bindir / 'ip', '''#!/bin/sh
 echo "ip $*" >> "$ROOT/calls"
@@ -54,7 +55,7 @@ if os.environ['CASE'] != 'timeout': (root / 'ready').touch()
 while True: time.sleep(.05)
 ''')
     env = dict(os.environ, PATH=str(bindir)+':'+os.environ['PATH'], ROOT=str(root), PIA_USERNAME='test-user', PIA_PASSWORD='secret.*[$]value', PIA_REGION='us_chicago')
-    for case in ['missing-user', 'missing-password', 'missing-region', 'empty-user', 'empty-password', 'empty-region', 'download', 'invalid-region', 'auth', 'timeout', 'success', 'signal']:
+    for case in ['missing-user', 'missing-password', 'missing-region', 'empty-user', 'empty-password', 'empty-region', 'download', 'invalid-region', 'auth', 'timeout', 'dns', 'success', 'signal']:
         for path in ['ready', 'stopped', 'calls']:
             (root/path).unlink(missing_ok=True)
         current = dict(env, CASE=case)
@@ -77,7 +78,13 @@ while True: time.sleep(.05)
             assert 'PIA VPN disabled' in output and not (root/'calls').exists(), output
         elif case in ['success', 'signal']:
             assert 'PIA VPN up: tun0 active' in output and (root/'stopped').exists(), output
-        else: assert 'WARNING: PIA VPN failed to start' in output, output
+        else:
+            assert 'WARNING: PIA VPN failed to start' in output, output
+            assert 'PIA VPN startup failed:' in output, output
+            if case == 'download': assert 'failed to download' in output, output
+            if case == 'invalid-region': assert 'PIA_REGION must be' in output, output
+            if case in ['auth', 'timeout']: assert 'did not establish a tun0 default route' in output, output
+            if case == 'dns': assert 'DNS could not resolve discord.com' in output, output
         if case in ['auth', 'timeout', 'success', 'signal']:
             assert not (root/'pia/auth.conf').exists()
             assert 'route restore' in (root/'calls').read_text()

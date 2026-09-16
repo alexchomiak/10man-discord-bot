@@ -77,7 +77,7 @@ const config = {
   streamBrokerSecret: process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET || '',
   defaultStreambotId: process.env.STREAMBOT_DEFAULT_ID || 'primary',
   streamAllowedUserIds: parseDiscordIdList(
-    process.env.STREAM_ALLOWED_USER_IDS || process.env.SBOT_ALLOWED_USER_IDS,
+    process.env.STREAM_ALLOWED_USER_IDS,
     'STREAM_ALLOWED_USER_IDS'
   )
 };
@@ -253,6 +253,9 @@ const streamBroker = new StreamBroker({
   defaultWorkerId: config.defaultStreambotId
 });
 streamBroker.start();
+if (!streamBroker.enabled) {
+  console.warn('[stream-broker] disabled: STREAM_BROKER_SECRET is not set');
+}
 
 const teamDraftCommand = new SlashCommandBuilder()
   .setName(COMMANDS.TEAM_DRAFT.name)

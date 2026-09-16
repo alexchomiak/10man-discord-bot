@@ -53,7 +53,9 @@ GCM ciphers for compatibility with the downloaded profile and OpenVPN 2.6.
 
 Any setup/authentication/route timeout fails open: stop and reap OpenVPN, remove
 its interface, restore saved default routes, remove temporary reply rules and
-auth/PID files, print the redacted log tail and
+auth/PID files, print the redacted log tail and a stage-specific reason (missing
+TUN device, missing `NET_ADMIN`, invalid region, download failure, or tunnel
+timeout), then print
 `WARNING: PIA VPN failed to start; continuing on normal networking`, then exec
 the original entrypoint. A failed client cannot later reconnect behind the app.
 SIGTERM/SIGINT and normal app exit also clean up OpenVPN.
@@ -88,8 +90,12 @@ the qBittorrent container's tunnel, and it need not receive the same exit IP.
 It is intentionally fail-open, with no kill switch. DNS configuration is left
 unchanged (Docker's resolver may resolve outside PIA); this implementation routes
 IPv4 and does not promise IPv6 protection on IPv6-enabled Docker networks.
-Connected Docker subnets retain their routes; remote LAN destinations may require
-host-specific routes. Validate ShareTV reachability and port 8081 on deployment.
+Connected Docker subnets retain their routes. All RFC1918 destinations
+(`10.0.0.0/8`, `172.16.0.0/12`, and `192.168.0.0/16`) use the original routing
+table so private Unraid/Docker DNS and LAN services remain reachable. After the
+tunnel route appears, startup also requires `discord.com` to resolve; failure
+tears down the tunnel and follows the documented fail-open path. Validate
+ShareTV reachability and port 8081 on deployment.
 
 ## Deployment verification
 

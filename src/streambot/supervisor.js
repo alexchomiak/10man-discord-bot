@@ -4,7 +4,8 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 
 const rawIds = String(process.env.STREAMBOT_IDS || '').split(',').map(value => value.trim()).filter(Boolean);
-const ids = rawIds.length ? rawIds : [String(process.env.STREAMBOT_ID || 'primary').trim() || 'primary'];
+const defaultWorkerId = String(process.env.STREAMBOT_DEFAULT_ID || 'primary').trim() || 'primary';
+const ids = rawIds.length ? rawIds : [String(process.env.STREAMBOT_ID || defaultWorkerId).trim() || defaultWorkerId];
 const normalized = new Set();
 const tokens = new Set();
 const workers = [];
@@ -24,7 +25,7 @@ for (const id of ids) {
   tokens.add(token);
   const scopedChat = process.env[`SBOT_CHAT_COMMANDS_${key}`];
   const inheritedChat = process.env.SBOT_CHAT_COMMANDS;
-  const chatCommands = scopedChat ?? inheritedChat ?? (id === 'primary' ? 'true' : 'false');
+  const chatCommands = scopedChat ?? inheritedChat ?? (id.toLowerCase() === defaultWorkerId.toLowerCase() ? 'true' : 'false');
   const child = spawn(process.execPath, [path.join(__dirname, 'index.js')], {
     stdio: 'inherit',
     env: { ...process.env, STREAMBOT_ID: id, SELF_BOT_TOKEN: token, SBOT_CHAT_COMMANDS: chatCommands }
