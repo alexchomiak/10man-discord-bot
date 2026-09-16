@@ -12,6 +12,7 @@ pia_dns_rule=false
 resolver_saved=false
 vpn_error='unknown startup failure'
 pia_dns_server="${PIA_DNS_SERVER:-10.0.0.243}"
+pia_tun_mtu="${PIA_TUN_MTU:-1280}"
 original_umask=$(umask)
 umask 077
 
@@ -93,6 +94,13 @@ prepare_vpn() {
     10.0.0.241|10.0.0.242|10.0.0.243|10.0.0.244) ;;
     *) vpn_error='PIA_DNS_SERVER must be one of the official PIA DNS addresses: 10.0.0.241, 10.0.0.242, 10.0.0.243, or 10.0.0.244'; return 1 ;;
   esac
+  case "$pia_tun_mtu" in
+    ''|*[!0-9]*) vpn_error='PIA_TUN_MTU must be an integer from 1200 through 1500'; return 1 ;;
+  esac
+  if [ "$pia_tun_mtu" -lt 1200 ] || [ "$pia_tun_mtu" -gt 1500 ]; then
+    vpn_error='PIA_TUN_MTU must be an integer from 1200 through 1500'
+    return 1
+  fi
   [ "$(id -u)" = 0 ] || { vpn_error='VPN entrypoint is not running as root'; return 1; }
   [ -c /dev/net/tun ] || { vpn_error='/dev/net/tun is unavailable; add --device /dev/net/tun:/dev/net/tun to the container'; return 1; }
   mkdir -p /app/pia && chmod 700 /app/pia || { vpn_error='cannot create the private /app/pia runtime directory'; return 1; }
@@ -138,6 +146,7 @@ prepare_vpn() {
   # Ignore PIA's pushed def1 route and install a literal default via tun0.
   /usr/sbin/openvpn --writepid /run/pia-vpn.pid \
     --config /app/pia/region.ovpn --dev tun0 \
+    --tun-mtu "$pia_tun_mtu" --mssfix "$pia_tun_mtu" \
     --data-ciphers AES-256-GCM:AES-128-GCM:AES-128-CBC --data-ciphers-fallback AES-128-CBC \
     --auth-user-pass /app/pia/auth.conf --auth-nocache --auth-retry none \
     --pull-filter ignore redirect-gateway --redirect-gateway \
@@ -201,7 +210,7 @@ if [ "$vpn_up" != true ]; then
   exec /usr/local/bin/docker-entrypoint.sh "$@"
 fi
 
-echo 'PIA VPN up: tun0 active'
+echo "PIA VPN up: tun0 active (region $PIA_REGION, MTU $pia_tun_mtu)"
 umask "$original_umask"
 # An exec here would discard the cleanup traps. Only the enabled/success path
 # remains a supervisor; the original entrypoint still drops privileges as usual.

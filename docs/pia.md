@@ -103,6 +103,11 @@ resolver. `PIA_DNS_SERVER` may select one of PIA's official private DNS addresse
 lookup tears down the tunnel and follows the documented fail-open path. Validate
 ShareTV reachability and port 8081 on deployment.
 
+For real-time Discord video, the wrapper defaults `PIA_TUN_MTU` to `1280`,
+PIA's small-packet strategy for unreliable or fragmented VPN paths. Values from
+1200 through 1500 are accepted. This changes tunnel packetization only; it does
+not lower the configured video resolution, frame rate, or bitrate.
+
 ## Deployment verification
 
 1. Without PIA variables, start using the current env file. Check normal app

@@ -45,6 +45,8 @@ esac
     executable(bindir / 'openvpn', '''#!/usr/bin/env python3
 import os, pathlib, signal, time, sys
 root = pathlib.Path(os.environ['ROOT'])
+assert '--tun-mtu' in sys.argv and sys.argv[sys.argv.index('--tun-mtu') + 1] == os.environ.get('PIA_TUN_MTU', '1280')
+assert '--mssfix' in sys.argv and sys.argv[sys.argv.index('--mssfix') + 1] == os.environ.get('PIA_TUN_MTU', '1280')
 assert (root / 'pia/auth.conf').stat().st_mode & 0o777 == 0o600
 assert (root / 'pia/auth.conf').read_text() == os.environ['PIA_USERNAME'] + '\\n' + os.environ['PIA_PASSWORD'] + '\\n'
 (root / 'vpn.pid').write_text(str(os.getpid()))
@@ -60,7 +62,7 @@ if os.environ['CASE'] != 'timeout': (root / 'ready').touch()
 while True: time.sleep(.05)
 ''')
     env = dict(os.environ, PATH=str(bindir)+':'+os.environ['PATH'], ROOT=str(root), PIA_USERNAME='test-user', PIA_PASSWORD='secret.*[$]value', PIA_REGION='us_chicago')
-    for case in ['missing-user', 'missing-password', 'missing-region', 'empty-user', 'empty-password', 'empty-region', 'download', 'invalid-region', 'invalid-dns', 'auth', 'timeout', 'dns', 'success', 'signal']:
+    for case in ['missing-user', 'missing-password', 'missing-region', 'empty-user', 'empty-password', 'empty-region', 'download', 'invalid-region', 'invalid-dns', 'invalid-mtu', 'auth', 'timeout', 'dns', 'success', 'signal']:
         resolv.write_text('nameserver 127.0.0.11\n')
         for path in ['ready', 'stopped', 'calls']:
             (root/path).unlink(missing_ok=True)
@@ -71,6 +73,7 @@ while True: time.sleep(.05)
             current[{'empty-user':'PIA_USERNAME','empty-password':'PIA_PASSWORD','empty-region':'PIA_REGION'}[case]] = ''
         if case == 'invalid-region': current['PIA_REGION'] = '../escape'
         if case == 'invalid-dns': current['PIA_DNS_SERVER'] = '8.8.8.8'
+        if case == 'invalid-mtu': current['PIA_TUN_MTU'] = '900'
         p = subprocess.Popen([str(root/'wrapper'), 'space argument', '*.literal'], env=current, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if case == 'signal':
             deadline = time.monotonic()+5
@@ -91,6 +94,7 @@ while True: time.sleep(.05)
             if case == 'download': assert 'failed to download' in output, output
             if case == 'invalid-region': assert 'PIA_REGION must be' in output, output
             if case == 'invalid-dns': assert 'PIA_DNS_SERVER must be' in output, output
+            if case == 'invalid-mtu': assert 'PIA_TUN_MTU must be' in output, output
             if case in ['auth', 'timeout']: assert 'did not establish a tun0 default route' in output, output
             if case == 'dns': assert 'could not resolve discord.com through tun0' in output, output
         if case in ['auth', 'timeout', 'success', 'signal']:
