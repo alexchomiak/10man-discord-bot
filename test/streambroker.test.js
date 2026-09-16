@@ -3,8 +3,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { once } = require('node:events');
+const { WebSocket } = require('ws');
 const { StreamBroker } = require('../src/streamBroker');
 const { StreamBrokerClient } = require('../src/streambot/brokerClient');
+const { StreamControl } = require('../src/streambot/control');
 const { streamCommand, playerCommand, setStreamNameCommand, playerComponents, setStreambotNickname } = require('../src/streamInteractions');
 
 async function until(check) {
@@ -86,6 +88,40 @@ test('broker offline errors identify connected worker IDs', async t => {
   primary.start();
   await until(() => broker.listWorkers().length === 1);
   await assert.rejects(() => broker.request('status'), /Streambot 'one' is offline\. Connected workers: primary\./);
+});
+
+test('control: join results are JSON-safe when manager returns live timer objects', async () => {
+  const circular = {};
+  circular.timer = circular;
+  const manager = {
+    status: () => ({ alive: true }),
+    ensureChannel: async () => ({ ok: true, reused: true, fillerStarted: false, voiceLink: circular }),
+    start: async () => ({ ok: true, queued: false, chained: true, bufferInserted: false, session: circular, pipeline: circular })
+  };
+  const control = new StreamControl({ streamManager: manager, config: { guildId: 'g', streamChannelId: 'c' } });
+  const joined = await control.execute('join');
+  assert.doesNotThrow(() => JSON.stringify(joined));
+  assert.deepStrictEqual(joined.detail, { reused: true, fillerStarted: false });
+});
+
+test('broker client: a circular command result gets a serializable failure response', async () => {
+  const sent = [];
+  const logs = [];
+  const circular = {};
+  circular.self = circular;
+  const manager = { status: () => null };
+  const client = new StreamBrokerClient({
+    workerId: 'one', streamManager: manager,
+    control: { execute: async () => ({ ok: true, detail: circular }) },
+    log: line => logs.push(line)
+  });
+  client.socket = { readyState: WebSocket.OPEN, send: payload => sent.push(JSON.parse(payload)) };
+  await client._message(Buffer.from(JSON.stringify({ type: 'command', requestId: 'r1', operation: 'join', payload: {} })));
+  assert.strictEqual(sent[0].type, 'result');
+  assert.strictEqual(sent[0].requestId, 'r1');
+  assert.strictEqual(sent[0].result.ok, false);
+  assert.match(logs[0], /serialization failed/);
+  assert.strictEqual(client.results.has('r1'), false);
 });
 
 test('/set-stream-name changes the connected worker nickname through the CS app bot', async () => {

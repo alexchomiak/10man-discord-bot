@@ -205,16 +205,24 @@ function fixture(t, config = {}, moduleOptions = {}) {
   let writers = 0;
   let maxWriters = 0;
   let closeCount = 0;
-  mgr._remuxFactory = output => ({
+  mgr._feederFactory = streamer => ({
+    start: async () => {
+      const play = {};
+      fv.plays.push(play);
+      if (moduleOptions.hang) return new Promise(() => {});
+      if (moduleOptions.failStart) throw new Error('persistent feeder failed');
+      play.connection = await streamer.createStream();
+      return play.connection;
+    },
     append: async (input, signal) => {
       writers++; maxWriters = Math.max(maxWriters, writers);
       const cancel = () => input.destroy();
       signal.addEventListener('abort', cancel, {once:true});
-      try { for await (const chunk of input) { if (!signal.aborted) output.write(chunk); } }
+      try { for await (const chunk of input) { if (!signal.aborted) fv.collected.push(chunk.toString()); } }
       catch (error) { if (!signal.aborted) throw error; }
       finally { writers--; signal.removeEventListener('abort', cancel); }
     },
-    interrupt: () => output.destroy(),
+    interrupt: () => {},
     close: async () => { closeCount++; }
   });
   t.after(() => mgr.stop());
@@ -248,11 +256,10 @@ test('one go-live call and strict shared-output order across N queued pieces', a
   assert.equal(fv.collected.join(''),'ABC');
   assert.equal(f.maxWriters,1);
   assert.equal(fv.plays.length,1);
-  assert.equal(fv.plays[0].options.type,'go-live');
   assert.equal(fv.streamer.createStreamCalls,1);
   assert.equal(fv.calls.stopStream,0);
   assert.deepEqual(fv.calls.signalVideo, []);
-  assert(!first.pipeline.output.destroyed,'idle keeps the persistent stream open');
+  assert(!first.pipeline.closed,'idle keeps the persistent stream open');
   await mgr.stop();
   assert.equal(fv.calls.stopStream,1);
   assert.deepEqual(fv.calls.signalVideo,[]);
@@ -307,7 +314,7 @@ test('placeholder duration ends only the piece and starts grace; session stays a
   assert(fv.pieces[0].options.customInputOptions.includes('12'));
   fv.pieces[0].end(); await until(()=>mgr.voiceLink.graceTimer);
   assert.equal(fv.calls.stopStream,0); assert.equal(fv.calls.leaveVoice,0);
-  assert(!mgr.voiceLink.pipeline.output.destroyed);
+  assert(!mgr.voiceLink.pipeline.closed);
 });
 
 test('grace expiration closes persistent session and leaves once', async t => {
@@ -358,8 +365,8 @@ test('encoder error alerts and advances queue without another go-live', async t 
   assert.equal(mgr.session.title,'b');
 });
 
-test('unexpected persistent playback end reports failure, never clean content EOF', async t => {
-  const {mgr,fv,start,alerts}=fixture(t);await start('a');fv.plays[0].resolve();
+test('persistent track startup failure reports failure, never clean content EOF', async t => {
+  const {mgr,start,alerts}=fixture(t,{}, {failStart:true});await start('a');
   await until(()=>mgr.voiceLink===null);
   assert(alerts.some(a=>a.event==='stream-error'));assert(!alerts.some(a=>a.event==='stream-ended'));
 });
@@ -385,11 +392,10 @@ test('queue limit rejects overflow without interrupting playback', async t => {
   assert.equal(mgr.session.title,'a');assert.equal(fv.calls.stopStream,0);
 });
 
-test('startup burst applies once per pipeline and honors zero', async t => {
+test('one persistent track session is used regardless of legacy startup burst setting', async t => {
   for (const burst of [0,4]) {
     const {fv,start,mgr}=fixture(t,{startBurstSec:burst});
     await start('a');await start('b');
-    assert.equal(fv.plays[0].options.readrateInitialBurst,burst || undefined);
     assert.equal(fv.plays.length,1);await mgr.stop();
   }
 });
@@ -738,7 +744,7 @@ test('$pause stops feeding without tearing down and does NOT advance a queued pi
   assert.equal(fv.calls.stopStream, 0, 'pause must NOT call stopStream');
   assert.equal(fv.streamer.calls.leaveVoice, 0, 'pause must NOT leave the channel');
   assert.deepEqual(fv.calls.signalVideo, []);
-  assert(!mgr.voiceLink.pipeline.output.destroyed, 'the shared muxer output stays OPEN');
+  assert(!mgr.voiceLink.pipeline.closed, 'the shared WebRTC tracks stay open');
   await mgr.stop();
 });
 
@@ -838,7 +844,5 @@ test('registry: scrub/pause/resume/catchup are registered and reply (no channel 
   assert.ok(alerts.some(x => x.event === 'cmd' && /not.*live|catch/i.test(x.detail)), 'catchup on a VOD must reply not-live via the alert sink');
   await mgr.stop();
 });
-
-
 
 

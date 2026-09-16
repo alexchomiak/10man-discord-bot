@@ -166,6 +166,7 @@ test('streamManager: teardown() still succeeds when the demuxer close throws', a
 // The muxer's packet timeline is testable without loading native codecs.
 const { PersistentNut } = require('../src/streambot/persistentNut');
 const { PassThrough } = require('node:stream');
+const { PersistentTrackFeeder } = require('../src/streambot/persistentTrackFeeder');
 function fakeAv(writes, options = {}) {
   let opens=0, muxOpens=0, closed=0;
   const streams=[
@@ -238,4 +239,32 @@ test('persistent demux: disables opening-packet discard only on registered input
   assert.equal(seen[0].skipStreamInfo,true);assert.equal(seen[0].options.fflags,'0');
   assert.equal(seen[1].skipStreamInfo,undefined);assert.equal(seen[1].options.fflags,'nobuffer');
   await a.close();await b.close();
+});
+
+test('persistent track feeder creates one go-live connection across sequential content', async () => {
+  let creates = 0; let videoFrames = 0; let audioFrames = 0; let frees = 0;
+  const connection = {
+    setPacketizer(codec) { assert.equal(codec, 'H264'); },
+    mediaConnection: { setSpeaking(value) { assert.equal(value, true); }, setVideoAttributes() {} },
+    sendVideoFrame() { videoFrames++; }, sendAudioFrame() { audioFrames++; }
+  };
+  const packet = (pts, duration, den) => ({
+    data: Buffer.from([1]), pts: BigInt(pts), duration: BigInt(duration),
+    timeBase: { num: 1, den }, free() { frees++; }
+  });
+  const videoModule = { demux: async () => {
+    const video = new PassThrough({ objectMode: true });
+    const audio = new PassThrough({ objectMode: true });
+    queueMicrotask(() => { video.end(packet(0, 1, 30)); audio.end(packet(0, 960, 48000)); });
+    return { video: { stream: video }, audio: { stream: audio } };
+  } };
+  const feeder = new PersistentTrackFeeder({
+    streamer: { createStream: async () => { creates++; return connection; } }, videoModule
+  });
+  await feeder.start();
+  await feeder.append(new PassThrough(), new AbortController().signal);
+  await feeder.append(new PassThrough(), new AbortController().signal);
+  assert.equal(creates, 1, 'content changes must not recreate the Discord stream');
+  assert.equal(videoFrames, 2); assert.equal(audioFrames, 2); assert.equal(frees, 4);
+  await feeder.close();
 });

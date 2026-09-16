@@ -4,7 +4,7 @@ const { M } = require('./messages');
 const { TAG, redactToken } = require('./config');
 const fs = require('fs');
 const { PassThrough } = require('stream');
-const { PersistentNut } = require('./persistentNut');
+const { PersistentTrackFeeder } = require('./persistentTrackFeeder');
 // NOTE: module reference (not a destructure) so test harnesses can patch the
 // exported functions (demuxGuard.ensureTrackerInstalled) and have the manager
 // observe the patch.
@@ -103,7 +103,10 @@ class StreamManager {
     // Test seam for the grace window (node:test has no fake timers).
     this._timerFactory = null;
     this._operations = Promise.resolve();
-    this._remuxFactory = output => new PersistentNut({ output, frameRate: this.config.streamFrameRate || 30 });
+    this._feederFactory = (streamer, videoModule) => new PersistentTrackFeeder({
+      streamer, videoModule, width: this.config.streamWidth || 1920,
+      height: this.config.streamHeight || 1080, frameRate: this.config.streamFrameRate || 30
+    });
   }
 
   _getStreamer(videoModule) {
@@ -619,39 +622,22 @@ class StreamManager {
 
   _ensurePipeline(link, videoModule) {
     if (link.pipeline) return link.pipeline;
-    const bufferMb = Number.isFinite(this.config.pipelineBufferMb) ? this.config.pipelineBufferMb : 8;
-    const output = new PassThrough({ highWaterMark: Math.max(1, Math.round(bufferMb * 1024 * 1024)) });
-    demuxGuard.registerPersistentInput(output);
     const control = new AbortController();
+    const feeder = this._feederFactory(link.streamer, videoModule);
     const pipeline = {
-      streamer: link.streamer, webRtc: null, output, control,
-      remux: this._remuxFactory(output), enqueue: [], activeWriter: null,
+      streamer: link.streamer, webRtc: null, feeder, control,
+      enqueue: [], activeWriter: null,
       writerTask: null, closed: false, playPromise: null, watchdog: null
     };
     link.pipeline = pipeline;
     let resolveReady;
     pipeline.ready = new Promise(resolve => { resolveReady = resolve; });
     pipeline.resolveReady = resolveReady;
-    // playStream(type: 'go-live') owns the screen-share state through
-    // createStream(). Do not set self_video: that is Discord's separate
-    // camera indicator and would expose an empty camera tile alongside it.
-    const options = { type: 'go-live', width: this.config.streamWidth || 1920,
-      height: this.config.streamHeight || 1080, frameRate: this.config.streamFrameRate || 30 };
-    const burst = this._startBurstSec();
-    if (burst > 0) options.readrateInitialBurst = burst;
-    // Mark the exact moment an explicitly configured startup burst ends.
-    if (burst > 0) {
-      this._verbose(`startup packet burst enabled for ${burst}s (normal pacing resumes afterward)`);
-      pipeline.burstEndTimer = setTimeout(() => {
-        pipeline.burstEndTimer = null;
-        if (pipeline.closed) return;
-        this._verbose(`startup packet burst ended after ${burst}s; normal A/V pacing resumed`);
-      }, Math.max(0, Math.round(burst * 1000)));
-      pipeline.burstEndTimer.unref?.();
-    }
+    // Create one Discord Go Live/WebRTC connection for the entire voice link.
+    // Individual FFmpeg producers are attached beneath it by the feeder.
     pipeline.playPromise = Promise.resolve().then(() => {
       if (pipeline.closed) return;
-      return videoModule.playStream(output, link.streamer, options, control.signal);
+      return feeder.start();
     });
     const fail = error => {
       if (pipeline.closed) return;
@@ -659,10 +645,7 @@ class StreamManager {
       pipeline.resolveReady(false);
       void this._serialize(() => this._leaveVoiceLink(link));
     };
-    pipeline.playPromise.then(() => {
-      if (!pipeline.closed) fail(new Error('Persistent playback ended unexpectedly'));
-    }, fail);
-    output.on('error', fail);
+    pipeline.playPromise.catch(fail);
     const deadline = Date.now() + (this.config.playStreamStartTimeoutMs || 30000);
     pipeline.watchdog = setInterval(() => {
       const sc = link.streamer.voiceConnection?.streamConnection;
@@ -755,14 +738,14 @@ class StreamManager {
               getOutputBytes: () => result.output?.takeByteCounts?.(),
               getBufferState: () => ({
                 producerBytes: result.output?.readableLength || 0,
-                pipelineBytes: p.output?.readableLength || 0,
-                pipelineCapacityBytes: p.output?.readableHighWaterMark || 0
+                pipelineBytes: 0,
+                pipelineCapacityBytes: 0
               }),
               getVoiceConnection: () => link.streamer.voiceConnection?.streamConnection,
               log: (level, message) => log(level, message) });
             piece.telemetry.start();
           } catch {}
-          appendTask = p.remux.append(result.output, piece.control.signal);
+          appendTask = p.feeder.append(result.output, piece.control.signal);
           await Promise.all([appendTask, completion]);
           if (!piece.control.signal.aborted && !piece.isFiller) this._notifyEnded(piece, clean);
         } catch (error) {
@@ -808,10 +791,10 @@ class StreamManager {
         // Before its abort listener exists (demux/handshake), explicitly stop.
         if (link.streamer.voiceConnection?.streamConnection) link.streamer.stopStream();
         this._cancelPiece(p.activeWriter);
-        p.remux.interrupt();
+        p.feeder.interrupt();
         try { await p.writerTask; }
         finally {
-          try { await p.remux.close(); }
+          try { await p.feeder.close(); }
           finally { await demuxGuard.closeAllDemuxers(); }
         }
       }

@@ -64,7 +64,24 @@ class StreamBrokerClient {
   }
 
   _send(message) {
-    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message));
+    if (this.socket?.readyState !== WebSocket.OPEN) return false;
+    try {
+      this.socket.send(JSON.stringify(message));
+      return true;
+    } catch (error) {
+      this.log(`[streambot:${this.workerId}] broker response serialization failed: ${error.message}`);
+      // A bad command result must still settle the app bot's request instead
+      // of becoming an unhandled rejection and timing the interaction out.
+      if (message?.type === 'result' && message.requestId) {
+        try {
+          this.socket.send(JSON.stringify({
+            type: 'result', requestId: message.requestId,
+            result: { ok: false, message: 'Stream worker returned an invalid response.', status: null }
+          }));
+        } catch { /* the socket closed while sending the fallback */ }
+      }
+      return false;
+    }
   }
 
   async _message(raw) {
@@ -80,9 +97,10 @@ class StreamBrokerClient {
       result = { ok: false, message: error?.message || 'Stream command failed.', status: this.streamManager.status() };
     }
     const response = { type: 'result', requestId: message.requestId, result };
-    this.results.set(message.requestId, response);
-    if (this.results.size > 100) this.results.delete(this.results.keys().next().value);
-    this._send(response);
+    if (this._send(response)) {
+      this.results.set(message.requestId, response);
+      if (this.results.size > 100) this.results.delete(this.results.keys().next().value);
+    }
     this._send({ type: 'status', status: this.streamManager.status() });
   }
 

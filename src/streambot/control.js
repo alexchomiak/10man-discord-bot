@@ -13,6 +13,18 @@ class StreamControl {
     return { ok, message, status: this.streamManager.status(), ...extra };
   }
 
+  // Broker responses cross a JSON boundary. StreamManager results also carry
+  // live implementation objects (voice links, FFmpeg processes, streams and
+  // timers), so only copy the primitive command facts the app bot needs.
+  _detail(result, fields) {
+    const detail = {};
+    for (const field of fields) {
+      const value = result?.[field];
+      if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) detail[field] = value;
+    }
+    return detail;
+  }
+
   async execute(operation, payload = {}) {
     const guildId = payload.guildId || this.config.guildId;
     const channelId = payload.channelId || this.config.streamChannelId;
@@ -25,7 +37,9 @@ class StreamControl {
       case 'join': {
         if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);
         const r = await this.streamManager.ensureChannel(guildId, channelId);
-        return this._result(r?.ok === true, r?.ok ? (r.fillerStarted ? M.JOINED_FILLER(channelId) : M.JOINED(channelId)) : (r?.message || M.STREAM_JOIN_FAILED), { detail: r });
+        return this._result(r?.ok === true, r?.ok ? (r.fillerStarted ? M.JOINED_FILLER(channelId) : M.JOINED(channelId)) : (r?.message || M.STREAM_JOIN_FAILED), {
+          detail: this._detail(r, ['reused', 'fillerStarted'])
+        });
       }
       case 'stop':
         await this.streamManager.stop();
@@ -33,27 +47,27 @@ class StreamControl {
       case 'skip': {
         const r = await this.streamManager.skip();
         const message = !r?.ok ? M.STREAM_START_FAILED : r.noOp ? M.SKIP_NONE : r.fellBackToFiller ? M.SKIP_FILLER : M.SKIP_NEXT(r.skippedTo);
-        return this._result(r?.ok === true, message, { detail: r });
+        return this._result(r?.ok === true, message, { detail: this._detail(r, ['noOp', 'skippedTo', 'fellBackToFiller', 'queued']) });
       }
       case 'pause': {
         const r = await this.streamManager.pause();
-        return this._result(r?.ok === true, !r?.ok ? M.STREAM_START_FAILED : r.noOp ? M.PAUSE_NEED_CONTENT : M.PAUSED, { detail: r });
+        return this._result(r?.ok === true, !r?.ok ? M.STREAM_START_FAILED : r.noOp ? M.PAUSE_NEED_CONTENT : M.PAUSED, { detail: this._detail(r, ['noOp', 'positionSec']) });
       }
       case 'resume': {
         const r = await this.streamManager.resume();
-        return this._result(r?.ok === true, !r?.ok ? M.STREAM_START_FAILED : r.noOp ? M.RESUME_NEED_CONTENT : M.RESUMED, { detail: r });
+        return this._result(r?.ok === true, !r?.ok ? M.STREAM_START_FAILED : r.noOp ? M.RESUME_NEED_CONTENT : M.RESUMED, { detail: this._detail(r, ['noOp', 'positionSec']) });
       }
       case 'catchup': {
         const r = await this.streamManager.catchup();
         const message = !r?.ok ? M.STREAM_START_FAILED : r.noOp ? M.CATCHUP_NEED_CONTENT : r.applied === false ? M.CATCHUP_NOT_LIVE : M.CAUGHTUP;
-        return this._result(r?.ok === true, message, { detail: r });
+        return this._result(r?.ok === true, message, { detail: this._detail(r, ['noOp', 'applied', 'newPosSec']) });
       }
       case 'scrub': {
         const deltaSec = Number(payload.deltaSec);
         if (!Number.isFinite(deltaSec) || deltaSec === 0) return this._result(false, M.SCRUB_USAGE);
         const r = await this.streamManager.scrub(deltaSec);
         const message = !r?.ok ? M.STREAM_START_FAILED : r.noOp ? (r.reason === 'live' ? M.SCRUB_LIVE : M.SCRUB_NEED_CONTENT) : M.SCRUB_APPLIED(r.newPosSec);
-        return this._result(r?.ok === true, message, { detail: r });
+        return this._result(r?.ok === true, message, { detail: this._detail(r, ['noOp', 'reason', 'newPosSec']) });
       }
       case 'play': {
         if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);
@@ -75,7 +89,10 @@ class StreamControl {
           totalDurationSec: resolved.totalDurationSec ?? null
         });
         const message = !r?.ok ? (r?.message || M.STREAM_START_FAILED) : r.queued ? M.STREAM_QUEUED(label) : r.chained ? M.CHAINED(label) : M.SOURCE_PASSTHROUGH(resolved.kind, label);
-        return this._result(r?.ok === true, message, { detail: r, source: { kind: resolved.kind, label } });
+        return this._result(r?.ok === true, message, {
+          detail: this._detail(r, ['queued', 'chained', 'bufferInserted']),
+          source: { kind: resolved.kind, label }
+        });
       }
       default: return this._result(false, `Unknown stream operation: ${operation}`);
     }

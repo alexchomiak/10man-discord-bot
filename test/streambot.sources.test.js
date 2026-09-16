@@ -1029,7 +1029,7 @@ test('streamManager: consecutive start() calls reuse one shared Streamer', async
       streamFrameRate: 30, hardwareAccel: false,
       playStreamStartTimeoutMs: 200
     });
-    mgr._remuxFactory = output => ({ append: async () => {}, interrupt: () => output.destroy(), close: async () => {} });
+    mgr._feederFactory = () => ({ start: async () => ({}), append: async () => {}, interrupt: () => {}, close: async () => {} });
   mgr._prepareSingle = (vm, piece) => vm.prepareStream(piece.streamUrl, mgr.setupStreamOptions(vm, piece.startOffsetSec, piece.durationSec, piece.inputFormat), piece.control.signal);
   mgr._videoModule = mkModule(Streamer);
     return mgr;
@@ -1199,7 +1199,10 @@ function makeStreamManager({ channelSend, playStreamSettlers, title }) {
     streamFrameRate: 30, hardwareAccel: false, playStreamStartTimeoutMs: 50,
     alertSink: sink
   });
-  mgr._remuxFactory = output => ({ append: async () => {}, interrupt: () => output.destroy(), close: async () => {} });
+  mgr._feederFactory = () => ({
+    start: async () => { plays.push(() => {}); return {}; },
+    append: async () => {}, interrupt: () => {}, close: async () => {}
+  });
   mgr._prepareSingle = (vm, piece) => vm.prepareStream(piece.streamUrl, mgr.setupStreamOptions(vm, piece.startOffsetSec, piece.durationSec, piece.inputFormat), piece.control.signal);
   mgr._videoModule = makeVideoModule(plays);
   const startArgs = { guildId: 'g1', channelId: 'c1', streamUrl: 'https://example.com/finish.mp4' };
