@@ -261,8 +261,12 @@ test('persistent track feeder creates one go-live connection across sequential c
   const feeder = new PersistentTrackFeeder({
     streamer: { createStream: async () => { creates++; return connection; } }, videoModule
   });
-  await feeder.start();
-  await feeder.append(new PassThrough(), new AbortController().signal);
+  // This is the production startup shape: pipeline startup and the first
+  // append race one another. They must share one createStream() handshake.
+  await Promise.all([
+    feeder.start(),
+    feeder.append(new PassThrough(), new AbortController().signal)
+  ]);
   await feeder.append(new PassThrough(), new AbortController().signal);
   assert.equal(creates, 1, 'content changes must not recreate the Discord stream');
   assert.equal(videoFrames, 2); assert.equal(audioFrames, 2); assert.equal(frees, 4);

@@ -350,6 +350,40 @@ test('channel switch tears down old session before joining another', async t => 
   assert.equal(fv.plays.length,2);assert.equal(mgr.voiceLink.channelId,'c2');
 });
 
+test('external Discord voice move reopens Go Live and preserves active content plus queue', async t => {
+  const {mgr,fv,start}=fixture(t,{streamBufferSec:0});
+  await start('a');
+  await start('b');
+  const oldPipeline=mgr.voiceLink.pipeline;
+  mgr.session.startedAt=Date.now()-12_000;
+
+  const result=await mgr.handleVoiceStateUpdate({
+    t:'VOICE_STATE_UPDATE',
+    d:{user_id:'u1',guild_id:'g1',channel_id:'c2'}
+  });
+
+  assert(result.ok && result.moved);
+  assert(oldPipeline.closed,'the stream bound to the old call must be closed');
+  assert.equal(mgr.voiceLink.channelId,'c2');
+  assert.equal(fv.calls.joinVoice,2);
+  assert.equal(fv.streamer.createStreamCalls,2,'Go Live must reopen in the destination call');
+  assert.equal(fv.calls.leaveVoice,1);
+  assert.equal(fv.calls.stopStream,1);
+  assert.equal(mgr.session.title,'a');
+  assert(mgr.session.startOffsetSec>=11,'seekable content resumes near its previous position');
+  assert.deepEqual(mgr.voiceLink.pipeline.enqueue.map(piece=>piece.title),['b']);
+});
+
+test('unrelated and duplicate self voice-state updates do not reopen Go Live', async t => {
+  const {mgr,fv,start}=fixture(t,{streamBufferSec:0});
+  await start('a');
+  await mgr.handleVoiceStateUpdate({t:'VOICE_STATE_UPDATE',d:{user_id:'other',guild_id:'g1',channel_id:'c2'}});
+  await mgr.handleVoiceStateUpdate({t:'VOICE_STATE_UPDATE',d:{user_id:'u1',guild_id:'g1',channel_id:'c1'}});
+  await mgr.handleVoiceStateUpdate({t:'VOICE_STATE_UPDATE',d:{user_id:'u1',guild_id:'g1',channel_id:null}});
+  assert.equal(fv.calls.joinVoice,1);
+  assert.equal(fv.streamer.createStreamCalls,1);
+});
+
 test('$stop discards queued content, awaits writer cleanup and is idempotent', async t => {
   const {mgr,fv,start}=fixture(t);await start('a');await start('b');
   await Promise.all([mgr.stop(),mgr.leaveChannel()]);
@@ -369,6 +403,25 @@ test('persistent track startup failure reports failure, never clean content EOF'
   const {mgr,start,alerts}=fixture(t,{}, {failStart:true});await start('a');
   await until(()=>mgr.voiceLink===null);
   assert(alerts.some(a=>a.event==='stream-error'));assert(!alerts.some(a=>a.event==='stream-ended'));
+});
+
+test('play acknowledges the exact createStream connection instead of stale library state', async t => {
+  const staleInternalConnection = () => {
+    const streamer = makeStreamerInstance();
+    streamer.createStream = async () => {
+      streamer.createStreamCalls += 1;
+      // Reproduce the deployed regression: media uses the successfully
+      // returned connection, while the mutable internal pointer references a
+      // different/non-ready connection.
+      streamer.voiceConnection.streamConnection = { webRtcConn: { ready: false } };
+      return { ready: true };
+    };
+    return streamer;
+  };
+  const {start,fv}=fixture(t,{playStreamStartTimeoutMs:35},{streamerFactory:staleInternalConnection});
+  const result=await start('a');
+  assert.equal(result.ok,true);
+  assert.equal(fv.streamer.createStreamCalls,1);
 });
 
 test('gateway watchdog fails once and cleans up a pending handshake', async t => {
@@ -844,5 +897,3 @@ test('registry: scrub/pause/resume/catchup are registered and reply (no channel 
   assert.ok(alerts.some(x => x.event === 'cmd' && /not.*live|catch/i.test(x.detail)), 'catchup on a VOD must reply not-live via the alert sink');
   await mgr.stop();
 });
-
-

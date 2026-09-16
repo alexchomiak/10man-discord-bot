@@ -150,6 +150,13 @@ function onMessage(message) {
 // SBOT_DEBUG=1 enable it.
 const DEBUG_T = new Set(['VOICE_STATE_UPDATE', 'VOICE_SERVER_UPDATE', 'STREAM_CREATE', 'STREAM_SERVER_UPDATE']);
 client.on('raw', (d) => {
+  // Keep recovery entirely off the media path and off ordinary gateway
+  // traffic. Only this worker's own voice-state changes reach the manager.
+  if (d?.t === 'VOICE_STATE_UPDATE' && d.d?.user_id === client.user?.id) {
+    void streamManager.handleVoiceStateUpdate(d).catch((err) => {
+      log('voice move recovery error:', safe(err && err.message));
+    });
+  }
   if (!config.verbose) return;
   if (process.env.SBOT_DEBUG !== '1' && process.env.SBOT_DEBUG !== 'true') return;
   if (!d || typeof d !== 'object') return;

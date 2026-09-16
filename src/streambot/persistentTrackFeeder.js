@@ -57,6 +57,8 @@ class PersistentTrackFeeder {
     this.height = height;
     this.frameRate = frameRate;
     this.connection = null;
+    this.startPromise = null;
+    this.startAbort = null;
     this.closed = false;
     this.active = null;
   }
@@ -64,18 +66,37 @@ class PersistentTrackFeeder {
   async start() {
     if (this.connection) return this.connection;
     if (this.closed) throw new Error('Persistent track feeder is closed');
-    const connection = await this.streamer.createStream();
-    if (this.closed) {
-      this.streamer.stopStream?.();
-      throw new Error('Persistent track feeder closed during startup');
-    }
-    connection.setPacketizer('H264');
-    connection.mediaConnection.setSpeaking(true);
-    connection.mediaConnection.setVideoAttributes(true, {
-      width: Math.round(this.width), height: Math.round(this.height), fps: Math.round(this.frameRate)
+    if (this.startPromise) return this.startPromise;
+
+    // Pipeline initialization and the first append happen concurrently. Both
+    // call start(), so latch the handshake or they create competing Discord
+    // streams and readiness can be observed on the wrong connection.
+    const abort = new AbortController();
+    this.startAbort = abort;
+    const cancelled = new Promise((_, reject) => {
+      abort.signal.addEventListener('abort', () => reject(new Error('Persistent track feeder closed during startup')), { once: true });
     });
-    this.connection = connection;
-    return connection;
+    const created = Promise.resolve().then(() => this.streamer.createStream()).then(connection => {
+      if (this.closed || abort.signal.aborted) {
+        this.streamer.stopStream?.();
+        throw new Error('Persistent track feeder closed during startup');
+      }
+      connection.setPacketizer('H264');
+      connection.mediaConnection.setSpeaking(true);
+      connection.mediaConnection.setVideoAttributes(true, {
+        width: Math.round(this.width), height: Math.round(this.height), fps: Math.round(this.frameRate)
+      });
+      this.connection = connection;
+      return connection;
+    });
+    const starting = Promise.race([created, cancelled]);
+    this.startPromise = starting;
+    try {
+      return await starting;
+    } finally {
+      if (this.startPromise === starting) this.startPromise = null;
+      if (this.startAbort === abort) this.startAbort = null;
+    }
   }
 
   async append(input, signal) {
@@ -116,6 +137,7 @@ class PersistentTrackFeeder {
 
   interrupt() {
     this.closed = true;
+    this.startAbort?.abort();
     const active = this.active;
     active?.input.destroy();
     active?.videoSource.destroy();

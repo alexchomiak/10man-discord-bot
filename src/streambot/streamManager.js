@@ -635,9 +635,23 @@ class StreamManager {
     pipeline.resolveReady = resolveReady;
     // Create one Discord Go Live/WebRTC connection for the entire voice link.
     // Individual FFmpeg producers are attached beneath it by the feeder.
-    pipeline.playPromise = Promise.resolve().then(() => {
-      if (pipeline.closed) return;
-      return feeder.start();
+    const startTimeoutMs = this.config.playStreamStartTimeoutMs || 30000;
+    pipeline.playPromise = this._raceWithTimeout(
+      Promise.resolve().then(() => {
+        if (pipeline.closed) throw new Error('Persistent pipeline closed during startup');
+        return feeder.start();
+      }),
+      startTimeoutMs,
+      M.STREAM_PLAY_STREAM_HANG
+    ).then(connection => {
+      if (!pipeline.closed) {
+        // createStream() resolves with the exact connected WebRTC wrapper.
+        // Treat that as authoritative instead of polling the library's
+        // mutable voiceConnection.streamConnection reference.
+        pipeline.webRtc = connection;
+        pipeline.resolveReady(true);
+      }
+      return connection;
     });
     const fail = error => {
       if (pipeline.closed) return;
@@ -646,18 +660,6 @@ class StreamManager {
       void this._serialize(() => this._leaveVoiceLink(link));
     };
     pipeline.playPromise.catch(fail);
-    const deadline = Date.now() + (this.config.playStreamStartTimeoutMs || 30000);
-    pipeline.watchdog = setInterval(() => {
-      const sc = link.streamer.voiceConnection?.streamConnection;
-      if (sc?.webRtcConn?.ready) {
-        pipeline.webRtc = sc.webRtcConn;
-        clearInterval(pipeline.watchdog);
-        pipeline.resolveReady(true);
-      } else if (Date.now() >= deadline) {
-        clearInterval(pipeline.watchdog);
-        fail(new Error(M.STREAM_PLAY_STREAM_HANG));
-      }
-    }, 20);
     return pipeline;
   }
 
@@ -699,6 +701,9 @@ class StreamManager {
       // grace). $resume clears the flag, re-enqueues the held session, pumps.
       while (!p.closed && !link.paused && p.enqueue.length) {
         const piece = p.enqueue.shift();
+        // Queue time is not playback time. This also makes recovery after an
+        // external channel move resume from the position viewers last saw.
+        piece.startedAt = Date.now();
         p.activeWriter = piece;
         this.session = piece; // compatibility: status/volume target active content
         let appendTask;
@@ -1028,6 +1033,78 @@ class StreamManager {
       startOffsetSec: off,
       isLive: isLive !== undefined ? isLive : piece.isLive,
       totalDurationSec: totalDurationSec !== undefined ? totalDurationSec : piece.totalDurationSec
+    });
+  }
+
+  _copyQueuedPiece(link, piece) {
+    if (piece.isFiller) {
+      return this._piece(link, {
+        streamUrl: piece.streamUrl,
+        inputFormat: piece.inputFormat,
+        durationSec: piece.durationSec,
+        isFiller: true,
+        title: piece.title
+      });
+    }
+    return this._reopenSession(link, piece, {
+      offsetSec: Number.isFinite(piece.startOffsetSec) ? piece.startOffsetSec : 0
+    });
+  }
+
+  // Discord can move this account to another call without a join command.
+  // discord-video-stream keeps its old channelId in that case, so its voice
+  // and Go Live sockets are no longer usable. Rebuild only on the matching
+  // self VOICE_STATE_UPDATE; there is no polling or media-path overhead.
+  async handleVoiceStateUpdate(packet) {
+    if (packet?.t !== 'VOICE_STATE_UPDATE') return { ok: true, ignored: true };
+    const state = packet.d;
+    if (!state || state.user_id !== this.client.user?.id || !state.channel_id) {
+      return { ok: true, ignored: true };
+    }
+
+    return this._serialize(async () => {
+      const oldLink = this.voiceLink;
+      const guildId = state.guild_id || oldLink?.guildId;
+      const channelId = state.channel_id;
+      if (!oldLink || oldLink.closing || oldLink.guildId !== guildId || oldLink.channelId === channelId) {
+        return { ok: true, ignored: true };
+      }
+
+      const oldPipeline = oldLink.pipeline;
+      const active = oldPipeline?.activeWriter || null;
+      const activePosition = active && !active.isFiller && !active.isLive ? this.positionOf(active) : 0;
+      const queued = oldPipeline ? [...oldPipeline.enqueue] : [];
+      const wasPaused = !!oldLink.paused;
+      const pausedSession = oldLink.pausedSession || null;
+      const pausedPosition = Number.isFinite(oldLink.pausedPositionSec)
+        ? oldLink.pausedPositionSec
+        : (pausedSession && !pausedSession.isLive ? this.positionOf(pausedSession) : 0);
+
+      log('info', `voice: moved externally ${oldLink.channelId} -> ${channelId}; reopening Go Live session`);
+      const videoModule = await this.preparePlayback(await this._video());
+      const joined = await this._ensureVoiceLink(guildId, channelId, videoModule);
+      if (!joined.ok) return joined;
+      const newLink = joined.voiceLink;
+
+      // A voice-only join has no Go Live session to restore.
+      if (!oldPipeline) return { ok: true, moved: true, voiceLink: newLink };
+
+      const pipeline = this._ensurePipeline(newLink, videoModule);
+      if (wasPaused) {
+        newLink.paused = true;
+        newLink.pausedAt = oldLink.pausedAt || Date.now();
+        newLink.pausedPositionSec = pausedPosition;
+        newLink.pausedSession = pausedSession ? this._copyQueuedPiece(newLink, pausedSession) : null;
+      } else if (active) {
+        pipeline.enqueue.push(active.isFiller
+          ? this._copyQueuedPiece(newLink, active)
+          : this._reopenSession(newLink, active, { offsetSec: active.isLive ? 0 : activePosition }));
+      } else if (queued.length === 0) {
+        pipeline.enqueue.push(this._placeholder(newLink));
+      }
+      for (const piece of queued) pipeline.enqueue.push(this._copyQueuedPiece(newLink, piece));
+      if (!wasPaused) this._pump(newLink, videoModule);
+      return { ok: true, moved: true, voiceLink: newLink, pipeline };
     });
   }
 
