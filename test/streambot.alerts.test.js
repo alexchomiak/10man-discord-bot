@@ -223,32 +223,9 @@ test('commands: unqualified chat commands target the default worker and :id targ
   assert.strictEqual(youtubeAlerts[0].detail, M.PONG);
 });
 
-test('commands: $set-stream-name obeys worker routing and changes the global display name', async () => {
-  const changed = [];
-  const alerts = [];
-  const registry = new CommandRegistry({
-    client: { user: { setGlobalName: async name => changed.push(name) } },
-    streamManager: {
-      config: {
-        workerId: 'youtube',
-        defaultWorkerId: 'primary',
-        allowedUserIds: ['111'],
-        alertSink: { notify: async (event, detail) => alerts.push({ event, detail }) }
-      }
-    }
-  });
-
-  await registry.dispatch({ author: { id: '111' } }, 'set-stream-name Ignored Default');
-  await registry.dispatch({ author: { id: '999' } }, 'set-stream-name:youtube Not Allowed');
-  await registry.dispatch({ author: { id: '111' } }, 'set-stream-name:youtube YouTube Player');
-  assert.deepStrictEqual(changed, ['YouTube Player']);
-  assert.strictEqual(alerts.length, 1);
-  assert.match(alerts[0].detail, /YouTube Player/);
-
-  await registry.dispatch({ author: { id: '111' } }, `set-stream-name:youtube ${'x'.repeat(33)}`);
-  assert.deepStrictEqual(changed, ['YouTube Player']);
-  assert.strictEqual(alerts.length, 2);
-  assert.match(alerts[1].detail, /1–32/);
+test('commands: $set-stream-name is not registered on stream workers', () => {
+  const registry = new CommandRegistry({ client: {}, streamManager: { config: {} } });
+  assert.strictEqual(registry.has('set-stream-name'), false);
 });
 
 test('config: SBOT_ALLOWED_USER_IDS parses CSV, trims whitespace and removes duplicates', () => {

@@ -26,11 +26,16 @@ for (const id of ids) {
   const scopedChat = process.env[`SBOT_CHAT_COMMANDS_${key}`];
   const inheritedChat = process.env.SBOT_CHAT_COMMANDS;
   const chatCommands = scopedChat ?? inheritedChat ?? (id.toLowerCase() === defaultWorkerId.toLowerCase() ? 'true' : 'false');
+  console.log(`[streambot-supervisor] launching '${id}' (token env SELF_BOT_TOKEN_${key}, chat commands ${String(chatCommands).toLowerCase() === 'true' ? 'enabled' : 'disabled'})`);
   const child = spawn(process.execPath, [path.join(__dirname, 'index.js')], {
     stdio: 'inherit',
     env: { ...process.env, STREAMBOT_ID: id, SELF_BOT_TOKEN: token, SBOT_CHAT_COMMANDS: chatCommands }
   });
   workers.push({ id, child });
+  child.on('error', error => {
+    console.error(`[streambot-supervisor] failed to launch '${id}': ${error.message}`);
+    shutdown('SIGTERM', 1);
+  });
   child.on('exit', (code, signal) => {
     if (stopping) return;
     console.error(`[streambot-supervisor] ${id} exited code=${code} signal=${signal || 'none'}`);
@@ -62,4 +67,4 @@ function shutdown(signal, exitCode) {
 process.on('SIGINT', () => shutdown('SIGINT', 130));
 process.on('SIGTERM', () => shutdown('SIGTERM', 143));
 
-console.log(`[streambot-supervisor] started workers: ${ids.join(', ')}`);
+console.log(`[streambot-supervisor] launched ${workers.length} worker process(es): ${ids.join(', ')}`);

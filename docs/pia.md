@@ -87,14 +87,20 @@ SIGTERM/SIGINT and normal app exit also clean up OpenVPN.
 
 This is a separate OpenVPN connection using the same PIA account, not reuse of
 the qBittorrent container's tunnel, and it need not receive the same exit IP.
-It is intentionally fail-open, with no kill switch. DNS configuration is left
-unchanged (Docker's resolver may resolve outside PIA); this implementation routes
+It is intentionally fail-open, with no kill switch. This implementation routes
 IPv4 and does not promise IPv6 protection on IPv6-enabled Docker networks.
-Connected Docker subnets retain their routes. All RFC1918 destinations
+Connected Docker subnets retain their routes. RFC1918 destinations
 (`10.0.0.0/8`, `172.16.0.0/12`, and `192.168.0.0/16`) use the original routing
-table so private Unraid/Docker DNS and LAN services remain reachable. After the
-tunnel route appears, startup also requires `discord.com` to resolve; failure
-tears down the tunnel and follows the documented fail-open path. Validate
+table so private Unraid/Docker and LAN services remain reachable.
+
+Once `tun0` is ready, the wrapper saves Docker's `/etc/resolv.conf`, installs
+PIA's private streaming DNS (`10.0.0.243` by default), and adds a higher-priority
+host rule that sends that address through the VPN-bearing main table instead of
+the general `10.0.0.0/8` LAN rule. It verifies both the DNS route and a
+`discord.com` lookup before starting the app. Cleanup restores Docker's original
+resolver. `PIA_DNS_SERVER` may select one of PIA's official private DNS addresses:
+`10.0.0.241`, `10.0.0.242`, `10.0.0.243`, or `10.0.0.244`. A failed route or
+lookup tears down the tunnel and follows the documented fail-open path. Validate
 ShareTV reachability and port 8081 on deployment.
 
 ## Deployment verification
@@ -103,8 +109,11 @@ ShareTV reachability and port 8081 on deployment.
    startup and compare `docker exec 10man-streambot curl -s https://api.ipify.org`
    to the host's normal egress IP.
 2. With valid PIA variables and the two flags, look for the VPN-up line, run
-   `docker exec 10man-streambot ip route`, and repeat the IP check. Verify the
-   returned IP's ownership/region; do not assume a fixed PIA ASN.
+   `docker exec 10man-streambot ip route`,
+   `docker exec 10man-streambot ip route get 10.0.0.243`, and
+   `docker exec 10man-streambot cat /etc/resolv.conf`. The DNS route must use
+   `tun0`, and the resolver must name `10.0.0.243`. Repeat the IP check and verify
+   the returned IP's ownership/region; do not assume a fixed PIA ASN.
 3. During live voice, inspect `docker exec 10man-streambot ss -unap` for a connected
    UDP peer and run `docker exec 10man-streambot ip route get <voice-ip>`; expect
    `dev tun0`. `ss -unlp` can locate a socket but often does not show its peer.

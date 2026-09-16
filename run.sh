@@ -45,19 +45,29 @@ case "$MODE" in
     if [ -n "${SELF_BOT_TOKEN:-}" ] || [ -n "${STREAMBOT_IDS:-}" ]; then
       log "  - streambot:   node src/streambot/supervisor.js"
       # Both foreground, one process each. The container's main process is
-      # this script; when either dies the shell (with set -e) will wait.
-      # Use `wait` on both; trap to kill the sibling on exit.
+      # this script. Monitor both so an early stream-supervisor failure is not
+      # hidden while the long-running CS bot remains healthy.
       (
-        set -m
         node src/index.js &
         PID_BOT=$!
         node src/streambot/supervisor.js &
         PID_SBOT=$!
         trap 'kill $PID_BOT $PID_SBOT 2>/dev/null' INT TERM EXIT
-        # Exit with the first non-zero exit code, or 0 if both clean.
+        while kill -0 "$PID_BOT" 2>/dev/null && kill -0 "$PID_SBOT" 2>/dev/null; do
+          sleep 1
+        done
         RC=0
-        wait $PID_BOT || RC=$?
-        wait $PID_SBOT || RC=$?
+        if ! kill -0 "$PID_BOT" 2>/dev/null; then
+          wait "$PID_BOT" || RC=$?
+          log "CS bot exited (status $RC); stopping stream supervisor"
+          kill "$PID_SBOT" 2>/dev/null || :
+          wait "$PID_SBOT" 2>/dev/null || :
+        else
+          wait "$PID_SBOT" || RC=$?
+          log "stream supervisor exited (status $RC); stopping CS bot"
+          kill "$PID_BOT" 2>/dev/null || :
+          wait "$PID_BOT" 2>/dev/null || :
+        fi
         exit $RC
       )
       exit $?

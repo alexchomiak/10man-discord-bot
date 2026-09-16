@@ -24,7 +24,6 @@ class CommandRegistry {
     this.register('pause', this.cmdPause.bind(this));
     this.register('resume', this.cmdResume.bind(this));
     this.register('catchup', this.cmdCatchup.bind(this));
-    this.register('set-stream-name', this.cmdSetStreamName.bind(this));
   }
 
   register(name, handler) {
@@ -121,20 +120,6 @@ class CommandRegistry {
 
   async cmdPing(message) {
     await this.reply(message, M.PONG);
-  }
-
-  async cmdSetStreamName(message, args) {
-    const name = args.join(' ').trim();
-    if (name.length < 1 || name.length > 32) {
-      await this.reply(message, 'Usage: set-stream-name <1–32 character display name>');
-      return;
-    }
-    if (!this.client?.user || typeof this.client.user.setGlobalName !== 'function') {
-      await this.reply(message, 'This streambot cannot update its global display name.');
-      return;
-    }
-    await this.client.user.setGlobalName(name);
-    await this.reply(message, `Display name changed to ${name}.`);
   }
 
   // $join: open (or stay in) the voice channel WITHOUT starting a video, so

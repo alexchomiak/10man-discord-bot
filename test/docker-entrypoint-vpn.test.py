@@ -8,7 +8,8 @@ with tempfile.TemporaryDirectory(prefix='pia-wrapper-') as directory:
     def executable(path, text):
         path.write_text(text)
         path.chmod(0o755)
-    wrapper = source.replace('/usr/local/bin/docker-entrypoint.sh', str(bindir / 'original')).replace('/usr/sbin/openvpn', str(bindir / 'openvpn')).replace('/app/pia', str(root / 'pia')).replace('/run/pia-vpn.pid', str(root / 'vpn.pid')).replace('/dev/net/tun', '/dev/null')
+    resolv = root / 'resolv.conf'
+    wrapper = source.replace('/usr/local/bin/docker-entrypoint.sh', str(bindir / 'original')).replace('/usr/sbin/openvpn', str(bindir / 'openvpn')).replace('/app/pia', str(root / 'pia')).replace('/run/pia-vpn.pid', str(root / 'vpn.pid')).replace('/etc/resolv.conf', str(resolv)).replace('/dev/net/tun', '/dev/null')
     executable(root / 'wrapper', wrapper)
     executable(bindir / 'original', '''#!/bin/sh
 printf 'APP:%s:%s\\n' "$1" "$2"
@@ -25,7 +26,10 @@ echo curl >> "$ROOT/calls"
 if [ "$CASE" = download ]; then exit 22; fi
 exit 0
 ''')
-    executable(bindir / 'getent', '#!/bin/sh\n[ "$CASE" != dns ]\n')
+    executable(bindir / 'getent', '''#!/bin/sh
+grep -q '^nameserver 10.0.0.243$' "$ROOT/resolv.conf" || exit 1
+[ "$CASE" != dns ]
+''')
     executable(bindir / 'unzip', '#!/bin/sh\necho "client"\n')
     executable(bindir / 'ip', '''#!/bin/sh
 echo "ip $*" >> "$ROOT/calls"
@@ -35,6 +39,7 @@ case "$*" in
   '-4 route show table main') echo 'default via 172.17.0.1 dev eth0' ;;
   '-4 route show default')
     if [ -f "$ROOT/ready" ]; then echo 'default via 10.0.0.1 dev tun0'; fi ;;
+  '-4 route get 10.0.0.243') echo '10.0.0.243 dev tun0 src 10.1.2.3' ;;
 esac
 ''')
     executable(bindir / 'openvpn', '''#!/usr/bin/env python3
@@ -55,7 +60,8 @@ if os.environ['CASE'] != 'timeout': (root / 'ready').touch()
 while True: time.sleep(.05)
 ''')
     env = dict(os.environ, PATH=str(bindir)+':'+os.environ['PATH'], ROOT=str(root), PIA_USERNAME='test-user', PIA_PASSWORD='secret.*[$]value', PIA_REGION='us_chicago')
-    for case in ['missing-user', 'missing-password', 'missing-region', 'empty-user', 'empty-password', 'empty-region', 'download', 'invalid-region', 'auth', 'timeout', 'dns', 'success', 'signal']:
+    for case in ['missing-user', 'missing-password', 'missing-region', 'empty-user', 'empty-password', 'empty-region', 'download', 'invalid-region', 'invalid-dns', 'auth', 'timeout', 'dns', 'success', 'signal']:
+        resolv.write_text('nameserver 127.0.0.11\n')
         for path in ['ready', 'stopped', 'calls']:
             (root/path).unlink(missing_ok=True)
         current = dict(env, CASE=case)
@@ -64,6 +70,7 @@ while True: time.sleep(.05)
         if case.startswith('empty-'):
             current[{'empty-user':'PIA_USERNAME','empty-password':'PIA_PASSWORD','empty-region':'PIA_REGION'}[case]] = ''
         if case == 'invalid-region': current['PIA_REGION'] = '../escape'
+        if case == 'invalid-dns': current['PIA_DNS_SERVER'] = '8.8.8.8'
         p = subprocess.Popen([str(root/'wrapper'), 'space argument', '*.literal'], env=current, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if case == 'signal':
             deadline = time.monotonic()+5
@@ -83,9 +90,14 @@ while True: time.sleep(.05)
             assert 'PIA VPN startup failed:' in output, output
             if case == 'download': assert 'failed to download' in output, output
             if case == 'invalid-region': assert 'PIA_REGION must be' in output, output
+            if case == 'invalid-dns': assert 'PIA_DNS_SERVER must be' in output, output
             if case in ['auth', 'timeout']: assert 'did not establish a tun0 default route' in output, output
-            if case == 'dns': assert 'DNS could not resolve discord.com' in output, output
+            if case == 'dns': assert 'could not resolve discord.com through tun0' in output, output
         if case in ['auth', 'timeout', 'success', 'signal']:
             assert not (root/'pia/auth.conf').exists()
             assert 'route restore' in (root/'calls').read_text()
+        if case in ['dns', 'success', 'signal']:
+            calls = (root/'calls').read_text()
+            assert 'priority 8000 to 10.0.0.243/32 table main' in calls
+            assert resolv.read_text() == 'nameserver 127.0.0.11\n'
         print('PASS '+case)

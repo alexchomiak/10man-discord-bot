@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
+const DISCORD_USER_ID = /^\d{17,20}$/;
 
 function secretMatches(expected, actual) {
   const a = Buffer.from(String(expected || ''));
@@ -68,7 +69,9 @@ class StreamBroker {
         if (this.workers.has(id)) { socket.close(1008, 'duplicate worker id'); return; }
         clearTimeout(registerTimer);
         socket.workerId = id;
-        this.workers.set(id, { id, socket, status: message.status || null, capabilities: message.capabilities || [], connectedAt: Date.now() });
+        const userId = String(message.userId || '');
+        if (!DISCORD_USER_ID.test(userId)) { socket.close(1008, 'invalid Discord user id'); return; }
+        this.workers.set(id, { id, userId, socket, status: message.status || null, capabilities: message.capabilities || [], connectedAt: Date.now() });
         this.log(`[stream-broker] worker connected: ${id}`);
         return;
       }
@@ -101,7 +104,15 @@ class StreamBroker {
   }
 
   listWorkers() {
-    return [...this.workers.values()].map(({ id, status, capabilities, connectedAt }) => ({ id, status, capabilities, connectedAt }));
+    return [...this.workers.values()].map(({ id, userId, status, capabilities, connectedAt }) => ({ id, userId, status, capabilities, connectedAt }));
+  }
+
+  getWorker(requested) {
+    const workerId = this.resolveWorkerId(requested);
+    const worker = this.workers.get(workerId);
+    if (!worker || worker.socket.readyState !== WebSocket.OPEN) return null;
+    const { id, userId, status, capabilities, connectedAt } = worker;
+    return { id, userId, status, capabilities, connectedAt };
   }
 
   resolveWorkerId(requested) {

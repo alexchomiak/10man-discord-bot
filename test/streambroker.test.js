@@ -5,8 +5,7 @@ const assert = require('node:assert');
 const { once } = require('node:events');
 const { StreamBroker } = require('../src/streamBroker');
 const { StreamBrokerClient } = require('../src/streambot/brokerClient');
-const { streamCommand, playerCommand, setStreamNameCommand, playerComponents } = require('../src/streamInteractions');
-const { StreamControl } = require('../src/streambot/control');
+const { streamCommand, playerCommand, setStreamNameCommand, playerComponents, setStreambotNickname } = require('../src/streamInteractions');
 
 async function until(check) {
   for (let i = 0; i < 100; i += 1) {
@@ -21,7 +20,7 @@ test('broker: default and explicit worker routing, command correlation and statu
   const server = broker.start();
   await once(server, 'listening');
   const calls = [];
-  const manager = { status: () => ({ title: 'Video', paused: false, queued: 1 }) };
+  const manager = { client: { user: { id: '111111111111111111' } }, status: () => ({ title: 'Video', paused: false, queued: 1 }) };
   const control = { execute: async (operation, payload) => {
     calls.push({ operation, payload });
     return { ok: true, message: `${operation} ok`, status: manager.status() };
@@ -54,6 +53,8 @@ test('broker: default and explicit worker routing, command correlation and statu
   assert.deepStrictEqual(secondaryCalls, [{ operation: 'pause', payload: {} }]);
   assert.strictEqual(broker.resolveWorkerId(null), 'primary');
   assert.deepStrictEqual(broker.listWorkers().map(item => item.id).sort(), ['primary', 'youtube']);
+  assert.strictEqual(broker.getWorker('primary').userId, '111111111111111111');
+  assert(!broker.getWorker('primary').capabilities.includes('setDisplayName'));
 });
 
 test('Discord stream commands expose every operation and player scrub buttons', () => {
@@ -75,7 +76,7 @@ test('broker offline errors identify connected worker IDs', async t => {
   const broker = new StreamBroker({ host: '127.0.0.1', port: 0, secret: 'test-secret', defaultWorkerId: 'one', log: () => {} });
   const server = broker.start();
   await once(server, 'listening');
-  const manager = { status: () => null };
+  const manager = { client: { user: { id: '222222222222222222' } }, status: () => null };
   const primary = new StreamBrokerClient({
     url: `ws://127.0.0.1:${broker.port}`,
     secret: 'test-secret', workerId: 'primary',
@@ -87,20 +88,30 @@ test('broker offline errors identify connected worker IDs', async t => {
   await assert.rejects(() => broker.request('status'), /Streambot 'one' is offline\. Connected workers: primary\./);
 });
 
-test('stream control changes the account global display name, not a guild nickname', async () => {
-  const changed = [];
-  const manager = { status: () => null };
-  const control = new StreamControl({
-    streamManager: manager,
-    config: {},
-    client: { user: { setGlobalName: async name => { changed.push(name); } } }
-  });
-  const result = await control.execute('setDisplayName', { name: 'Movie Night' });
-  assert.strictEqual(result.ok, true);
-  assert.deepStrictEqual(changed, ['Movie Night']);
-  assert.match(result.message, /Movie Night/);
-
-  const invalid = await control.execute('setDisplayName', { name: 'x'.repeat(33) });
-  assert.strictEqual(invalid.ok, false);
-  assert.deepStrictEqual(changed, ['Movie Night']);
+test('/set-stream-name changes the connected worker nickname through the CS app bot', async () => {
+  const changes = [];
+  const interaction = {
+    user: { id: '333333333333333333' },
+    guild: {
+      name: 'Movie Club',
+      members: {
+        fetch: async id => ({
+          manageable: true,
+          setNickname: async (name, reason) => changes.push({ id, name, reason })
+        })
+      }
+    }
+  };
+  const broker = { getWorker: id => id === 'one' ? { id, userId: '444444444444444444' } : null };
+  const message = await setStreambotNickname(interaction, broker, 'one', 'Movie Night');
+  assert.match(message, /Movie Night.*Movie Club/);
+  assert.deepStrictEqual(changes, [{
+    id: '444444444444444444',
+    name: 'Movie Night',
+    reason: 'Stream name set by 333333333333333333'
+  }]);
+  await assert.rejects(
+    () => setStreambotNickname(interaction, broker, 'offline', 'Movie Night'),
+    /offline or has not registered/
+  );
 });

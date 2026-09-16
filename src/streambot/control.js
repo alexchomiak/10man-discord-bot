@@ -7,7 +7,6 @@ class StreamControl {
   constructor({ streamManager, config, client }) {
     this.streamManager = streamManager;
     this.config = config || {};
-    this.client = client;
   }
 
   _result(ok, message, extra = {}) {
@@ -19,17 +18,6 @@ class StreamControl {
     const channelId = payload.channelId || this.config.streamChannelId;
     switch (operation) {
       case 'ping': return this._result(true, M.PONG);
-      case 'setDisplayName': {
-        const name = String(payload.name || '').trim();
-        if (name.length < 1 || name.length > 32) {
-          return this._result(false, 'Display name must be between 1 and 32 characters.');
-        }
-        if (!this.client?.user || typeof this.client.user.setGlobalName !== 'function') {
-          return this._result(false, 'This streambot cannot update its global display name.');
-        }
-        await this.client.user.setGlobalName(name);
-        return this._result(true, `Display name changed to ${name}.`, { displayName: name });
-      }
       case 'status': {
         const status = this.streamManager.status();
         return { ok: true, message: status ? M.STREAM_STATUS(status) : M.STREAM_NOTHING, status };

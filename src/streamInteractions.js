@@ -48,12 +48,12 @@ const playerCommand = addWorkerOption(new SlashCommandBuilder()
 
 const setStreamNameCommand = addWorkerOption(new SlashCommandBuilder()
   .setName(SET_STREAM_NAME_COMMAND)
-  .setDescription("Change a streambot account's global Discord display name.")
+  .setDescription("Change a streambot's nickname in this server.")
   .setContexts(InteractionContextType.Guild)
   .setDMPermission(false)
   .addStringOption(option => option
     .setName('name')
-    .setDescription('New global display name (1–32 characters).')
+    .setDescription('New server nickname (1–32 characters).')
     .setMinLength(1)
     .setMaxLength(32)
     .setRequired(true)));
@@ -124,6 +124,22 @@ async function targetVoice(interaction) {
   return member.voice?.channelId || null;
 }
 
+async function setStreambotNickname(interaction, broker, workerId, name) {
+  if (name.length < 1 || name.length > 32) {
+    throw new Error('Nickname must be between 1 and 32 characters.');
+  }
+  const worker = broker.getWorker(workerId);
+  if (!worker?.userId) {
+    throw new Error(`Streambot '${workerId}' is offline or has not registered its Discord user ID.`);
+  }
+  const member = await interaction.guild.members.fetch(worker.userId);
+  if (member.manageable === false) {
+    throw new Error(`I cannot change '${workerId}' in this server. Give the CS bot Manage Nicknames and place its role above the streambot's highest role.`);
+  }
+  await member.setNickname(name, `Stream name set by ${interaction.user.id}`);
+  return `Nickname changed to ${name} in ${interaction.guild.name}.`;
+}
+
 async function handleCommand(interaction, broker, allowedUserIds) {
   if (![STREAM_COMMAND, PLAYER_COMMAND, SET_STREAM_NAME_COMMAND].includes(interaction.commandName)) return false;
   if (!allowed(interaction, allowedUserIds)) {
@@ -140,11 +156,13 @@ async function handleCommand(interaction, broker, allowedUserIds) {
       return true;
     }
     if (interaction.commandName === SET_STREAM_NAME_COMMAND) {
-      const result = await broker.request('setDisplayName', {
-        name: interaction.options.getString('name', true),
-        requestedBy: interaction.user.id
-      }, workerId);
-      await interaction.editReply({ content: `[${workerId}] ${result.message || (result.ok ? 'Done.' : 'Command failed.')}` });
+      const message = await setStreambotNickname(
+        interaction,
+        broker,
+        workerId,
+        interaction.options.getString('name', true).trim()
+      );
+      await interaction.editReply({ content: `[${workerId}] ${message}` });
       return true;
     }
     const operation = interaction.options.getSubcommand();
@@ -207,5 +225,6 @@ module.exports = {
   handleCommand,
   handleButton,
   playerComponents,
-  playerText
+  playerText,
+  setStreambotNickname
 };

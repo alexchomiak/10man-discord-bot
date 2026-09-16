@@ -2,7 +2,7 @@
 
 const { WebSocket } = require('ws');
 
-const CAPABILITIES = ['play', 'join', 'stop', 'status', 'skip', 'scrub', 'pause', 'resume', 'catchup', 'setDisplayName'];
+const CAPABILITIES = ['play', 'join', 'stop', 'status', 'skip', 'scrub', 'pause', 'resume', 'catchup'];
 
 class StreamBrokerClient {
   constructor({ url, secret, workerId, control, streamManager, log = console.log } = {}) {
@@ -34,7 +34,13 @@ class StreamBrokerClient {
     this.socket = socket;
     socket.on('open', () => {
       this.log(`[streambot:${this.workerId}] connected to stream broker`);
-      this._send({ type: 'register', workerId: this.workerId, capabilities: CAPABILITIES, status: this.streamManager.status() });
+      this._send({
+        type: 'register',
+        workerId: this.workerId,
+        userId: this.streamManager?.client?.user?.id || null,
+        capabilities: CAPABILITIES,
+        status: this.streamManager.status()
+      });
       this.statusTimer = setInterval(() => this._send({ type: 'status', status: this.streamManager.status() }), 5000);
       this.statusTimer.unref?.();
     });

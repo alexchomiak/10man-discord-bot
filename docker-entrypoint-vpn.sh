@@ -8,11 +8,22 @@ fi
 vpn_pid=
 app_pid=
 reply_routes=false
+pia_dns_rule=false
+resolver_saved=false
 vpn_error='unknown startup failure'
+pia_dns_server="${PIA_DNS_SERVER:-10.0.0.243}"
 original_umask=$(umask)
 umask 077
 
 stop_vpn() {
+  if [ "$resolver_saved" = true ]; then
+    cat /app/pia/resolv.conf.original > /etc/resolv.conf 2>/dev/null || :
+    resolver_saved=false
+  fi
+  if [ "$pia_dns_rule" = true ]; then
+    ip -4 rule del priority 8000 to "$pia_dns_server/32" table main 2>/dev/null || :
+    pia_dns_rule=false
+  fi
   if [ -n "$vpn_pid" ]; then
     kill -TERM "$vpn_pid" 2>/dev/null || :
     # OpenVPN normally removes its routes on TERM; bound cleanup if it hangs.
@@ -39,7 +50,7 @@ stop_vpn() {
     ip -4 route flush table 51820 2>/dev/null || :
     reply_routes=false
   fi
-  rm -f /run/pia-vpn.pid /app/pia/auth.conf 2>/dev/null || :
+  rm -f /run/pia-vpn.pid /app/pia/auth.conf /app/pia/resolv.conf.original 2>/dev/null || :
 }
 
 shutdown() {
@@ -78,6 +89,10 @@ prepare_vpn() {
   esac
   case "$PIA_USERNAME$PIA_PASSWORD" in *'
 '*|*"$(printf '\r')"*) vpn_error='PIA credentials contain an invalid newline'; return 1 ;; esac
+  case "$pia_dns_server" in
+    10.0.0.241|10.0.0.242|10.0.0.243|10.0.0.244) ;;
+    *) vpn_error='PIA_DNS_SERVER must be one of the official PIA DNS addresses: 10.0.0.241, 10.0.0.242, 10.0.0.243, or 10.0.0.244'; return 1 ;;
+  esac
   [ "$(id -u)" = 0 ] || { vpn_error='VPN entrypoint is not running as root'; return 1; }
   [ -c /dev/net/tun ] || { vpn_error='/dev/net/tun is unavailable; add --device /dev/net/tun:/dev/net/tun to the container'; return 1; }
   mkdir -p /app/pia && chmod 700 /app/pia || { vpn_error='cannot create the private /app/pia runtime directory'; return 1; }
@@ -130,6 +145,30 @@ prepare_vpn() {
   vpn_pid=$!
 }
 
+configure_vpn_dns() {
+  # PIA's private DNS addresses are inside 10/8. The general 10/8 LAN rule
+  # above must remain for Unraid/Docker services, so give this single address
+  # a higher-priority lookup in the VPN-bearing main table.
+  ip -4 rule add priority 8000 to "$pia_dns_server/32" table main || {
+    vpn_error='cannot route PIA DNS through tun0; NET_ADMIN capability is required'
+    return 1
+  }
+  pia_dns_rule=true
+  ip -4 route get "$pia_dns_server" | grep -Eq "dev tun0( |$)" || {
+    vpn_error="PIA DNS $pia_dns_server is not routed through tun0"
+    return 1
+  }
+  cp /etc/resolv.conf /app/pia/resolv.conf.original || {
+    vpn_error='cannot save the container DNS configuration'
+    return 1
+  }
+  resolver_saved=true
+  printf 'nameserver %s\noptions timeout:2 attempts:3\n' "$pia_dns_server" > /etc/resolv.conf || {
+    vpn_error='cannot install the PIA DNS resolver in the container'
+    return 1
+  }
+}
+
 vpn_up=false
 if prepare_vpn; then
   elapsed=0
@@ -143,9 +182,12 @@ if prepare_vpn; then
     elapsed=$((elapsed + 1))
   done
   [ "$vpn_up" = true ] || vpn_error='OpenVPN did not establish a tun0 default route within 30 seconds; inspect the redacted OpenVPN lines above'
+  if [ "$vpn_up" = true ] && ! configure_vpn_dns; then
+    vpn_up=false
+  fi
   if [ "$vpn_up" = true ] && ! getent ahostsv4 discord.com >/dev/null 2>&1; then
     vpn_up=false
-    vpn_error='DNS could not resolve discord.com after the VPN route became active'
+    vpn_error="PIA DNS $pia_dns_server could not resolve discord.com through tun0"
   fi
 fi
 

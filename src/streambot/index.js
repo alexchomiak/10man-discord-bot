@@ -3,7 +3,7 @@
 require('dotenv').config();
 
 const { Client } = require('discord.js-selfbot-v13');
-const { loadConfig, redactToken, TAG } = require('./config');
+const { loadConfig, redactToken } = require('./config');
 const { CommandRegistry } = require('./commands');
 const { StreamManager } = require('./streamManager');
 const { resolveSource } = require('./sources');
@@ -102,13 +102,15 @@ try {
 // -----------------------------------------------------------------------------
 
 let shuttingDown = false;
+let readyTimer = null;
+const workerTag = `[streambot:${config.workerId}]`;
 
 function log(...parts) {
-  console.log(TAG, ...parts);
+  console.log(workerTag, ...parts);
 }
 
 function logError(...parts) {
-  console.error(TAG, ...parts);
+  console.error(workerTag, ...parts);
 }
 
 function safe(str) {
@@ -116,6 +118,8 @@ function safe(str) {
 }
 
 function onReady() {
+  clearTimeout(readyTimer);
+  readyTimer = null;
   const user = client && client.user;
   const name = user && user.username ? user.username : 'self';
   const id = user && user.id ? user.id : 'unknown';
@@ -184,7 +188,7 @@ function closeWebhook() {
   });
 }
 
-async function shutdown(reason) {
+async function shutdown(reason, exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   log('shutting down:', reason || 'signal');
@@ -198,12 +202,12 @@ async function shutdown(reason) {
   try {
     await client.destroy();
   } catch (e) {}
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 ['SIGINT', 'SIGTERM'].forEach((sig) => {
   process.on(sig, () => {
-    void shutdown(sig).catch(() => {});
+    void shutdown(sig, 0).catch(() => {});
   });
 });
 
@@ -213,6 +217,14 @@ process.on('unhandledRejection', (reason) => {
 
 void (async () => {
   try {
+    const configuredTimeout = Number.parseInt(process.env.SBOT_LOGIN_READY_TIMEOUT_MS || '45000', 10);
+    const readyTimeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 45000;
+    log(`logging in (ready timeout ${readyTimeoutMs}ms)…`);
+    readyTimer = setTimeout(() => {
+      logError(`Discord login did not reach ready within ${readyTimeoutMs}ms`);
+      void shutdown('ready-timeout', 1).catch(() => process.exit(1));
+    }, readyTimeoutMs);
+    readyTimer.unref?.();
     await client.login(config.token);
     log('login issued, awaiting ready…');
     if (webhookServer) {
@@ -225,8 +237,9 @@ void (async () => {
       });
     }
   } catch (err) {
+    clearTimeout(readyTimer);
+    readyTimer = null;
     log(`login failed: ${safe(err && err.message)}`);
-    await shutdown('login-failed').catch(() => {});
-    process.exit(1);
+    await shutdown('login-failed', 1).catch(() => process.exit(1));
   }
 })();
