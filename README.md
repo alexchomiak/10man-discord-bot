@@ -268,6 +268,7 @@ The primary worker keeps these legacy cross-server commands enabled by default. 
 - `$stream stop` / `$stop` — stop and leave voice.
 - `$stream status` / `$status` — current stream summary.
 - `$ping` — liveness echo.
+- `$set-stream-name <name>` — change the default worker account's global Discord display name. Use `$set-stream-name:<worker-id> <name>` for a secondary worker.
 
 ### Inbound webhook (for IPTV-Share / ShareTV to POST a trigger)
 - `POST /webhook/stream` on `:8081` (per `STREAMBOT_WEBHOOK_PORT`), with body (structured or legacy Discord-webhook shape — both accepted) and HMAC header:
