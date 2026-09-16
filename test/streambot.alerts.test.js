@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { createAlertSink } = require('../src/streambot/alerts');
-const { TAG } = require('../src/streambot/config');
+const { TAG, loadConfig } = require('../src/streambot/config');
 const { CommandRegistry } = require('../src/streambot/commands');
 const { M } = require('../src/streambot/messages');
 
@@ -167,4 +167,63 @@ test('commands.reply: redacts the bot token from the forwarded detail', async ()
   assert.strictEqual(alerts.length, 1);
   assert.ok(!alerts[0].detail.includes('SECRET-TOKEN'), 'the raw token must be redacted in the detail');
   assert.ok(alerts[0].detail.includes('***'), 'the redacted marker must replace the token');
+});
+
+test('commands: user allowlist permits listed authors and silently ignores everyone else', async () => {
+  const alerts = [];
+  const sink = { notify: async (event, detail) => { alerts.push({ event, detail }); } };
+  const streamManager = { config: { token: 't', allowedUserIds: ['111', '222'], alertSink: sink } };
+  const registry = new CommandRegistry({ client: {}, streamManager });
+
+  await registry.dispatch({ author: { id: '111' } }, 'ping');
+  assert.strictEqual(alerts.length, 1);
+  assert.strictEqual(alerts[0].detail, M.PONG);
+
+  await registry.dispatch({ author: { id: '999' } }, 'ping');
+  await registry.dispatch({}, 'ping');
+  assert.strictEqual(alerts.length, 1, 'unlisted or missing authors must receive no reply and run no command');
+});
+
+test('commands: empty user allowlist preserves open command access', async () => {
+  const alerts = [];
+  const sink = { notify: async (event, detail) => { alerts.push({ event, detail }); } };
+  const streamManager = { config: { token: 't', allowedUserIds: [], alertSink: sink } };
+  const registry = new CommandRegistry({ client: {}, streamManager });
+  await registry.dispatch({ author: { id: '999' } }, 'ping');
+  assert.strictEqual(alerts.length, 1);
+  assert.strictEqual(alerts[0].detail, M.PONG);
+});
+
+test('config: SBOT_ALLOWED_USER_IDS parses CSV, trims whitespace and removes duplicates', () => {
+  const oldToken = process.env.SELF_BOT_TOKEN;
+  const oldAllowed = process.env.SBOT_ALLOWED_USER_IDS;
+  try {
+    process.env.SELF_BOT_TOKEN = 'test';
+    process.env.SBOT_ALLOWED_USER_IDS = ' 111 ,222,111 ';
+    assert.deepStrictEqual(loadConfig().allowedUserIds, ['111', '222']);
+    process.env.SBOT_ALLOWED_USER_IDS = '';
+    assert.deepStrictEqual(loadConfig().allowedUserIds, []);
+    process.env.SBOT_ALLOWED_USER_IDS = '111,not-an-id';
+    assert.throws(() => loadConfig(), /SBOT_ALLOWED_USER_IDS/);
+  } finally {
+    if (oldToken === undefined) delete process.env.SELF_BOT_TOKEN; else process.env.SELF_BOT_TOKEN = oldToken;
+    if (oldAllowed === undefined) delete process.env.SBOT_ALLOWED_USER_IDS; else process.env.SBOT_ALLOWED_USER_IDS = oldAllowed;
+  }
+});
+
+test('config: VERBOSE is enabled only by true (case-insensitive)', () => {
+  const oldToken = process.env.SELF_BOT_TOKEN;
+  const oldVerbose = process.env.VERBOSE;
+  try {
+    process.env.SELF_BOT_TOKEN = 'test';
+    delete process.env.VERBOSE;
+    assert.strictEqual(loadConfig().verbose, false);
+    process.env.VERBOSE = 'TRUE';
+    assert.strictEqual(loadConfig().verbose, true);
+    process.env.VERBOSE = '1';
+    assert.strictEqual(loadConfig().verbose, false);
+  } finally {
+    if (oldToken === undefined) delete process.env.SELF_BOT_TOKEN; else process.env.SELF_BOT_TOKEN = oldToken;
+    if (oldVerbose === undefined) delete process.env.VERBOSE; else process.env.VERBOSE = oldVerbose;
+  }
 });

@@ -10,6 +10,10 @@ function log(...parts) {
   console.log(TAG, ...parts);
 }
 
+function verboseLog(config, ...parts) {
+  if (config?.verbose === true) log(...parts);
+}
+
 function stripTrailingSlash(value) {
   return String(value || '').replace(/\/+$/, '');
 }
@@ -108,7 +112,7 @@ async function resolveShareTv(raw, cfg) {
   const slug = detectShareSlug(raw, cfg);
   if (!slug || !base) return null;
 
-  log(`resolving ShareTV slug "${slug}" against ${base}`);
+  verboseLog(cfg, `resolving ShareTV slug "${slug}" against ${base}`);
   const { status, body } = await fetchShareApi(base, slug);
   const share = body && body.share && typeof body.share === 'object' ? body.share : null;
 
@@ -161,7 +165,7 @@ async function resolveShareTv(raw, cfg) {
     if (rawStream.hostname === 'localhost' || /^127\./.test(rawStream.hostname) || rawStream.hostname === '::1' || rawStream.hostname === '[::1]') {
       streamUrl = new URL(rawStream.pathname + rawStream.search, base).toString();
     } else {
-      log(`ignoring cross-host stream URL ${rawStream.hostname} (base is ${baseHost})`);
+      verboseLog(cfg, `ignoring cross-host stream URL ${rawStream.hostname} (base is ${baseHost})`);
       return { kind: 'sharetv', available: false, note: M.SHARETV_OFFLINE };
     }
   }
@@ -561,8 +565,8 @@ function isCombined(format) {
 }
 
 async function resolveYtdlp(raw, cfg) {
-  log('resolving via yt-dlp');
   const config = cfg || {};
+  verboseLog(config, 'resolving via yt-dlp');
   // Preferred audio-language codes (default English). loadConfig always hands
   // us an array; normalize defensively (string -> [string]) and fall back to
   // ['en'] when the key is absent (e.g. hand-built test configs).
@@ -718,7 +722,7 @@ async function resolveYtdlp(raw, cfg) {
     }
     bestAudio = pickBestAudio(combinedAudio, preferredLangs);
   }
-  if (bestAudio) {
+  if (bestAudio && config.verbose) {
     const audLang = String((bestAudio.language || bestAudio.alang) || '?');
     const audTbr = Number.isFinite(bestAudio.tbr) ? bestAudio.tbr : 'n/a';
     const audPref = bestAudio.language_preference != null ? bestAudio.language_preference : 'n/a';
@@ -726,8 +730,10 @@ async function resolveYtdlp(raw, cfg) {
   }
 
   if (bestVideo && bestAudio) {
-    log('info', `video track selected: codec=${normalizeVcodec(bestVideo.vcodec)} ` +
-      `height=${bestVideo.height || '?'} tbr=${bestVideo.tbr || 'n/a'} maxHeight=${sourceMaxHeight}`);
+    if (config.verbose) {
+      log('info', `video track selected: codec=${normalizeVcodec(bestVideo.vcodec)} ` +
+        `height=${bestVideo.height || '?'} tbr=${bestVideo.tbr || 'n/a'} maxHeight=${sourceMaxHeight}`);
+    }
     return {
       kind: 'ytdlp',
       streamType: 'dash',

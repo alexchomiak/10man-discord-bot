@@ -111,8 +111,16 @@ class StreamManager {
     return this._streamer;
   }
 
+  _verbose(...parts) {
+    if (this.config.verbose === true) log('info', ...parts);
+  }
+
   async _video() {
     if (this._videoModule) return this._videoModule;
+    // discord-video-stream uses debug-level internally for demux/frame timing
+    // logs. Override DEBUG_LEVEL here so a host-wide setting cannot make the
+    // streambot noisy unless its own VERBOSE switch is enabled.
+    process.env.DEBUG_LEVEL = this.config.verbose === true ? 'INFO' : 'OFF';
     this._videoModule = await import('@dank074/discord-video-stream');
     return this._videoModule;
   }
@@ -125,7 +133,7 @@ class StreamManager {
     const bitrate = Number.isFinite(cfg.streamBitrate) ? cfg.streamBitrate : 5000;
     const width = cfg.streamWidth || 1920; // fixed session format; pad instead of changing aspect ratio
     const height = Number.isFinite(cfg.streamHeight) && cfg.streamHeight > 0 ? cfg.streamHeight : 1080;
-    log('info', `stream options: width=${width} (padded, AR-preserving), height=${height}, codec=${codec}`);
+    if (cfg.verbose) log('info', `stream options: width=${width} (padded, AR-preserving), height=${height}, codec=${codec}`);
     const opts = {
       width,
       height,
@@ -173,7 +181,7 @@ class StreamManager {
     try {
       await demuxGuard.ensureTrackerInstalled();
     } catch (e) {
-      log('info', `demux tracker unavailable: ${e && e.message}`);
+      this._verbose(`demux tracker unavailable: ${e && e.message}`);
     }
     return videoModule;
   }
@@ -298,12 +306,14 @@ class StreamManager {
         .outputOptions('-preset', 'ultrafast')
         .outputOptions('-pix_fmt', 'yuv420p')
         .outputOptions('-bf', '0');
-      log('info', 'media pipeline: libx264/ultrafast fallback used (Encoders module unavailable)');
+      if (cfg.verbose) log('info', 'media pipeline: libx264/ultrafast fallback used (Encoders module unavailable)');
     }
 
-    log('info', `media pipeline: input=${piece?.isLive ? 'live' : (piece?.isFiller ? 'filler' : 'vod')} ` +
-      `output=${cfg.streamWidth || 1920}x${height}@${fps} encoder=${encoderSettings?.name || 'libx264'} ` +
-      `rate=${bitrate}k/${bitrateMax}k buffer=${cfg.pipelineBufferMb || 8}MiB`);
+    if (cfg.verbose) {
+      log('info', `media pipeline: input=${piece?.isLive ? 'live' : (piece?.isFiller ? 'filler' : 'vod')} ` +
+        `output=${cfg.streamWidth || 1920}x${height}@${fps} encoder=${encoderSettings?.name || 'libx264'} ` +
+        `rate=${bitrate}k/${bitrateMax}k buffer=${cfg.pipelineBufferMb || 8}MiB`);
+    }
 
     // Audio: libopus 48k stereo @streamAudioBitrate k (mirrors newApi.js:147-161).
     command
@@ -350,7 +360,7 @@ class StreamManager {
     if (bindableEndpoint) {
       command.audioFilters(`azmq=b=${bindableEndpoint.replaceAll(':', '\\\\:')}`);
     } else {
-      log('info', 'dash merge: azmq filter skipped (no bindable loopback endpoint); volume fixed at 1.0');
+      this._verbose('dash merge: azmq filter skipped (no bindable loopback endpoint); volume fixed at 1.0');
     }
 
     // Wire the zeromq request client. Lazy require — keeps the file from
@@ -364,7 +374,7 @@ class StreamManager {
           resolve(client);
         });
       } catch (e) {
-        log('info', `dash merge: volume control disabled (zeromq failed: ${e && e.message})`);
+        this._verbose(`dash merge: volume control disabled (zeromq failed: ${e && e.message})`);
       }
     }
 
@@ -404,7 +414,7 @@ class StreamManager {
           this._volume = newVolume;
           return true;
         } catch (e) {
-          log('info', `setVolume(${newVolume}) failed: ${e && e.message}`);
+          this._verbose(`setVolume(${newVolume}) failed: ${e && e.message}`);
           return false;
         }
       }
@@ -536,12 +546,12 @@ class StreamManager {
     const joinTimeoutMs = this._voiceJoinTimeoutMs();
     const existing = this.getVoiceLink(guildId, channelId);
     if (existing?.streamer.voiceConnection && !existing.closing) {
-      log('info', `voice: join enter guild=${guildId} channel=${channelId} reused=true`);
+      this._verbose(`voice: join enter guild=${guildId} channel=${channelId} reused=true`);
       this._clearGraceTimer(existing);
       return { ok: true, voiceLink: existing, reused: true };
     }
     if (this.voiceLink) {
-      log('info', `voice: join enter guild=${guildId} channel=${channelId} reused=false leaving prior link`);
+      this._verbose(`voice: join enter guild=${guildId} channel=${channelId} reused=false leaving prior link`);
       const prior = this.voiceLink;
       try {
         // joinVoice/_leaveVoiceLink can hang waiting on gateway voice
@@ -560,9 +570,9 @@ class StreamManager {
         prior.closing = prior.closing || Promise.resolve();
         if (this.voiceLink === prior) this.voiceLink = null;
       }
-      log('info', `voice: prior link left (or force-reset)`);
+      this._verbose('voice: prior link left (or force-reset)');
     } else {
-      log('info', `voice: join enter guild=${guildId} channel=${channelId} reused=false no prior link`);
+      this._verbose(`voice: join enter guild=${guildId} channel=${channelId} reused=false no prior link`);
     }
     const streamer = this._getStreamer(videoModule);
     // FORCE-CLEAR a stale server-side voice session before the fresh join.
@@ -577,7 +587,7 @@ class StreamManager {
     // REST call, so it is permitted for this restricted selfbot. Idempotent.
     try {
       streamer.leaveVoice();
-      log('info', `voice: sent null-channel voice-state clear before fresh join guild=${guildId} channel=${channelId}`);
+      this._verbose(`voice: sent null-channel voice-state clear before fresh join guild=${guildId} channel=${channelId}`);
     } catch (clearError) {
       log('warn', `voice: pre-join clear send failed (continuing): ${clearError && clearError.message}`);
     }
@@ -588,13 +598,13 @@ class StreamManager {
     // as a fresh (null→channel) membership transition rather than a redundant
     // channel→channel no-op. A sleep would only add latency to the join path.
     try {
-      log('info', `voice: joinVoice start guild=${guildId} channel=${channelId}`);
+      this._verbose(`voice: joinVoice start guild=${guildId} channel=${channelId}`);
       const webRtc = await this._raceWithTimeout(
         streamer.joinVoice(guildId, channelId),
         joinTimeoutMs,
         `joinVoice timed out after ${joinTimeoutMs}ms (no VOICE_STATE_UPDATE/VOICE_SERVER_UPDATE — restricted selfbot voice gateway or stale server-side session)`
       );
-      log('info', `voice: joinVoice resolved guild=${guildId} channel=${channelId}`);
+      this._verbose(`voice: joinVoice resolved guild=${guildId} channel=${channelId}`);
       const link = { guildId, channelId, streamer, webRtc, joinedAt: Date.now(), graceTimer: null, pipeline: null };
       this.voiceLink = link;
       return { ok: true, voiceLink: link, reused: false };
@@ -622,20 +632,20 @@ class StreamManager {
     let resolveReady;
     pipeline.ready = new Promise(resolve => { resolveReady = resolve; });
     pipeline.resolveReady = resolveReady;
-    // Go-live and self_video are separate library signals. Enable self_video
-    // once, never on content transitions; the go-live track is owned by playStream.
-    link.streamer.signalVideo?.(true);
+    // playStream(type: 'go-live') owns the screen-share state through
+    // createStream(). Do not set self_video: that is Discord's separate
+    // camera indicator and would expose an empty camera tile alongside it.
     const options = { type: 'go-live', width: this.config.streamWidth || 1920,
       height: this.config.streamHeight || 1080, frameRate: this.config.streamFrameRate || 30 };
     const burst = this._startBurstSec();
     if (burst > 0) options.readrateInitialBurst = burst;
     // Mark the exact moment an explicitly configured startup burst ends.
     if (burst > 0) {
-      log('info', `startup packet burst enabled for ${burst}s (normal pacing resumes afterward)`);
+      this._verbose(`startup packet burst enabled for ${burst}s (normal pacing resumes afterward)`);
       pipeline.burstEndTimer = setTimeout(() => {
         pipeline.burstEndTimer = null;
         if (pipeline.closed) return;
-        log('info', `startup packet burst ended after ${burst}s; normal A/V pacing resumed`);
+        this._verbose(`startup packet burst ended after ${burst}s; normal A/V pacing resumed`);
       }, Math.max(0, Math.round(burst * 1000)));
       pipeline.burstEndTimer.unref?.();
     }
@@ -740,7 +750,7 @@ class StreamManager {
           result.output.on('error', failure);
           piece.control.signal.addEventListener('abort', () => finish(), { once: true });
           result.promise?.then(() => finish(), failure);
-          try {
+          if (this.config.verbose === true) try {
             piece.telemetry = telemetry.createTelemetry({ command: result.command,
               getOutputBytes: () => result.output?.takeByteCounts?.(),
               getBufferState: () => ({
@@ -797,7 +807,6 @@ class StreamManager {
         p.control.abort(); // playStream's normal cleanup owns stopStream
         // Before its abort listener exists (demux/handshake), explicitly stop.
         if (link.streamer.voiceConnection?.streamConnection) link.streamer.stopStream();
-        link.streamer.signalVideo?.(false);
         this._cancelPiece(p.activeWriter);
         p.remux.interrupt();
         try { await p.writerTask; }

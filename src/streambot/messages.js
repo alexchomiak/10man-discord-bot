@@ -41,7 +41,7 @@ const M = Object.freeze({
   CATCHUP_NEED_CONTENT: 'Nothing is playing to catch up on — start content with `stream <url>` first.',
   STREAM_STATUS: (s) =>
     [`Streaming: ${s.streamUrl}`, `Channel: ${s.channelId}`, `Started: ${Math.round(s.elapsedMs / 1000)}s ago`, s.alive ? 'Status: alive' : 'Status: ended'].join('\n'),
-  STREAM_PLAY_STREAM_HANG: 'Stream did not start (selfbot token may not have gateway STREAM_CREATE permission). Run with SBOT_DEBUG=1 for gateway event logs.',
+  STREAM_PLAY_STREAM_HANG: 'Stream did not start (selfbot token may not have gateway STREAM_CREATE permission). Run with VERBOSE=true and SBOT_DEBUG=1 for gateway event logs.',
   JOINED: (channelId) => `In the room (voice ${channelId}). Start a stream anytime — viewers are already set.`,
   // $join with the local filler PLACEHOLDER active (fillerOnJoin). The
   // go-live handshake is already pre-warmed; `stream <url>` swaps the real

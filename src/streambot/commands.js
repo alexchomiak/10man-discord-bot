@@ -41,6 +41,11 @@ class CommandRegistry {
     const name = (parts[0] || '').toLowerCase();
     const args = parts.slice(1);
     if (!name || !this.has(name)) return;
+    const allowedUserIds = this.streamManager?.config?.allowedUserIds;
+    if (Array.isArray(allowedUserIds) && allowedUserIds.length > 0) {
+      const authorId = message?.author?.id == null ? '' : String(message.author.id);
+      if (!allowedUserIds.includes(authorId)) return;
+    }
     const handler = this.commands.get(name);
     try {
       await handler(message, args);

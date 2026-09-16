@@ -251,11 +251,11 @@ test('one go-live call and strict shared-output order across N queued pieces', a
   assert.equal(fv.plays[0].options.type,'go-live');
   assert.equal(fv.streamer.createStreamCalls,1);
   assert.equal(fv.calls.stopStream,0);
-  assert.deepEqual(fv.calls.signalVideo,[true]);
+  assert.deepEqual(fv.calls.signalVideo, []);
   assert(!first.pipeline.output.destroyed,'idle keeps the persistent stream open');
   await mgr.stop();
   assert.equal(fv.calls.stopStream,1);
-  assert.deepEqual(fv.calls.signalVideo,[true,false]);
+  assert.deepEqual(fv.calls.signalVideo,[]);
   assert.equal(f.closeCount,1);
 });
 
@@ -275,7 +275,7 @@ test('placeholder is content[0]; replacement never closes shared demuxers or tra
   assert.equal(orphan.count,0);
   assert.equal(fv.plays.length,1);
   assert.equal(fv.calls.stopStream,0);
-  assert.deepEqual(fv.calls.signalVideo,[true]);
+  assert.deepEqual(fv.calls.signalVideo, []);
   await mgr.stop(); await mgr.stop();
   assert.equal(orphan.count,1,'global cleanup only once on final teardown');
 });
@@ -570,7 +570,7 @@ test('$skip advances to the next real piece (buffer in between)', async t => {
   // The go-live session was NOT torn down.
   assert.equal(fv.plays.length, 1, 'exactly ONE go-live playStream for the link lifetime');
   assert.equal(fv.calls.stopStream, 0, 'skip must NOT call stopStream');
-  assert.deepEqual(fv.calls.signalVideo, [true], 'signalVideo must still be exactly [true]');
+  assert.deepEqual(fv.calls.signalVideo, [], 'go-live must not toggle the separate camera state');
   await mgr.stop();
 });
 
@@ -591,7 +591,7 @@ test('$skip with an empty queue falls back to the filler placeholder', async t =
   // The go-live session was NOT torn down.
   assert.equal(fv.plays.length, 1, 'skip must NOT tear down the persistent go-live stream');
   assert.equal(fv.calls.stopStream, 0);
-  assert.deepEqual(fv.calls.signalVideo, [true]);
+  assert.deepEqual(fv.calls.signalVideo, []);
   await mgr.stop();
 });
 
@@ -677,7 +677,7 @@ test('$scrub on a VOD advances the piece and keeps ONE go-live', async t => {
   // the go-live session was NOT torn down
   assert.equal(fv.plays.length, 1, 'exactly ONE go-live playStream for the link lifetime');
   assert.equal(fv.calls.stopStream, 0, 'scrub must NOT call stopStream');
-  assert.deepEqual(fv.calls.signalVideo, [true], 'signalVideo must still be exactly [true]');
+  assert.deepEqual(fv.calls.signalVideo, [], 'go-live must not toggle the separate camera state');
   assert.equal(fv.streamer.calls.leaveVoice, 0, 'scrub must NOT leave the voice channel');
   await mgr.stop();
 });
@@ -693,7 +693,7 @@ test('$scrub on a filler/no-content is a no-op and does NOT tear down', async t 
   assert(!r.applied, 'a filler scrub must NOT be applied');
   assert.equal(fv.plays.length, 1, 'the go-live session must remain');
   assert.equal(fv.calls.stopStream, 0, 'scrub must NOT tear down');
-  assert.deepEqual(fv.calls.signalVideo, [true]);
+  assert.deepEqual(fv.calls.signalVideo, []);
   await mgr.stop();
 });
 
@@ -712,7 +712,7 @@ test('$scrub on a live piece is a no-op (applied:false, reason live) and does NO
   assert.equal(mgr.session, active, 'the active live piece must NOT be replaced');
   assert.equal(fv.plays.length, 1);
   assert.equal(fv.calls.stopStream, 0);
-  assert.deepEqual(fv.calls.signalVideo, [true]);
+  assert.deepEqual(fv.calls.signalVideo, []);
   await mgr.stop();
 });
 
@@ -737,7 +737,7 @@ test('$pause stops feeding without tearing down and does NOT advance a queued pi
   assert.equal(fv.plays.length, 1, 'exactly ONE go-live');
   assert.equal(fv.calls.stopStream, 0, 'pause must NOT call stopStream');
   assert.equal(fv.streamer.calls.leaveVoice, 0, 'pause must NOT leave the channel');
-  assert.deepEqual(fv.calls.signalVideo, [true]);
+  assert.deepEqual(fv.calls.signalVideo, []);
   assert(!mgr.voiceLink.pipeline.output.destroyed, 'the shared muxer output stays OPEN');
   await mgr.stop();
 });
@@ -756,7 +756,7 @@ test('$resume re-opens the paused VOD at the held position and resumes feeding',
   await until(() => fv.pieces.length >= 2);
   assert.equal(fv.plays.length, 1, 'exactly ONE go-live for the link lifetime');
   assert.equal(fv.calls.stopStream, 0);
-  assert.deepEqual(fv.calls.signalVideo, [true]);
+  assert.deepEqual(fv.calls.signalVideo, []);
   const p = mgr.voiceLink.pipeline;
   const active2 = p.activeWriter;
   assert(active2, 'a piece must be active after resume');
@@ -783,7 +783,7 @@ test('$catchup on a live piece restarts at offset 0 and keeps ONE go-live', asyn
   assert.equal(reopened.isLive, true);
   assert.equal(fv.plays.length, 1, 'exactly ONE go-live');
   assert.equal(fv.calls.stopStream, 0);
-  assert.deepEqual(fv.calls.signalVideo, [true]);
+  assert.deepEqual(fv.calls.signalVideo, []);
   await mgr.stop();
 });
 

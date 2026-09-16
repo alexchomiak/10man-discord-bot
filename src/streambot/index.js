@@ -18,12 +18,13 @@ const sourcesModule = { resolveSource };
 const webhookServer = createWebhookServer({ config, streamManager, sources: sourcesModule });
 
 // TEMPORARY DIAGNOSTIC (NOT part of normal operation) -------------------------
-// Gated by SBOT_DEBUG_RAW=1; NO-OP and cannot throw when unset.
+// Gated by VERBOSE=true plus SBOT_DEBUG_RAW=1; NO-OP otherwise.
 // Attaches raw/shard-lifecycle tracing plus a shard state snapshot so we can
 // tell whether the gateway is CONNECTED+READY and whether outbound voice ops
 // are actually reaching the socket. Safe to remove after the investigation.
 try {
   const _sbRawEnabled = () => {
+    if (!config.verbose) return false;
     const v = String(process.env.SBOT_DEBUG_RAW || '');
     return v === '1' || v === 'true';
   };
@@ -51,7 +52,7 @@ try {
       return `_shard=${s ? s.id : 'none'} shardStatus=${s ? s.status : 'n/a'} wsStatus=${ws ? ws.status : 'n/a'} connPresent=${conn ? 'yes' : 'no'} shards=${ws && ws.shards ? ws.shards.size : 'n/a'} sessionId=${s ? (s.sessionId || 'null') : 'n/a'}`;
     } catch { return 'state=unknown'; }
   };
-  client.on('shardReady', (id) => { try { console.log('[streambot:raw] EVENT shardReady id=' + id + ' | ' + _sbShardState()); } catch { /* never throw */ } });
+  client.on('shardReady', (id) => { _sbLog('EVENT shardReady id=' + id + ' | ' + _sbShardState()); });
   client.on('shardReconnecting', (id) => { _sbLog('EVENT shardReconnecting id=' + id + ' | ' + _sbShardState()); });
   client.on('shardDisconnect', (ev) => { _sbLog('EVENT shardDisconnect code=' + ((ev && ev.code) ?? 'n/a') + ' reason=' + ((ev && ev.reason) ?? 'n/a') + ' wasClean=' + ((ev && ev.wasClean) ?? 'n/a')); });
   client.on('shardError', (err) => { _sbLog('EVENT shardError ' + _sbFmt(err && (err.message || err.code || String(err)))); });
@@ -126,9 +127,11 @@ function onMessage(message) {
 
 // Gateway-event trace for diagnosing the "bot joins deafened, no video" hang:
 // selfbot tokens sometimes lack the go-live stream opcodes, so the library's
-// createStream() awaits forever. Off by default (set SBOT_DEBUG=1 to enable).
+// createStream() awaits forever. Off by default; VERBOSE=true and
+// SBOT_DEBUG=1 enable it.
 const DEBUG_T = new Set(['VOICE_STATE_UPDATE', 'VOICE_SERVER_UPDATE', 'STREAM_CREATE', 'STREAM_SERVER_UPDATE']);
 client.on('raw', (d) => {
+  if (!config.verbose) return;
   if (process.env.SBOT_DEBUG !== '1' && process.env.SBOT_DEBUG !== 'true') return;
   if (!d || typeof d !== 'object') return;
   const t = d.t != null ? String(d.t) : null;

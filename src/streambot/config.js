@@ -63,6 +63,14 @@ function parseLangList(value) {
     .filter(Boolean);
 }
 
+function parseDiscordIdList(value) {
+  if (value == null || String(value).trim() === '') return [];
+  const ids = String(value).split(',').map((id) => id.trim()).filter(Boolean);
+  const invalid = ids.find((id) => !/^\d+$/.test(id));
+  if (invalid) throw new Error(`${TAG} SBOT_ALLOWED_USER_IDS must be a comma-separated list of numeric Discord user IDs.`);
+  return [...new Set(ids)];
+}
+
 function loadConfig() {
   const token = (process.env.SELF_BOT_TOKEN || '').trim();
   if (!token) {
@@ -79,6 +87,13 @@ function loadConfig() {
     token,
     guildId: (process.env.SBOT_GUILD_ID || '').trim() || null,
     commandPrefix: (process.env.SBOT_COMMAND_PREFIX || '$').trim() || '$',
+    // Per-frame/media telemetry and gateway diagnostics are intentionally
+    // quiet unless the streambot operator opts in with VERBOSE=true.
+    verbose: process.env.VERBOSE?.trim().toLowerCase() === 'true',
+    // Empty keeps the existing open-command behavior. When populated, only
+    // these Discord users may invoke the selfbot's prefix commands. This
+    // setting is consumed only by src/streambot and never by the app bot.
+    allowedUserIds: parseDiscordIdList(process.env.SBOT_ALLOWED_USER_IDS),
     streamChannelId: (process.env.STREAM_CHANNEL_ID || '').trim() || null,
     streamWidth: parsePositiveInt(process.env.STREAM_WIDTH, 1920),
     streamHeight: parsePositiveInt(process.env.STREAM_HEIGHT, 1080),
