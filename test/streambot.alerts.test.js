@@ -194,6 +194,35 @@ test('commands: empty user allowlist preserves open command access', async () =>
   assert.strictEqual(alerts[0].detail, M.PONG);
 });
 
+test('commands: unqualified chat commands target the default worker and :id targets one secondary', async () => {
+  const primaryAlerts = [];
+  const youtubeAlerts = [];
+  const primary = new CommandRegistry({
+    client: {},
+    streamManager: {
+      config: { workerId: 'primary', defaultWorkerId: 'primary', allowedUserIds: [], alertSink: { notify: async (event, detail) => primaryAlerts.push({ event, detail }) } }
+    }
+  });
+  const youtube = new CommandRegistry({
+    client: {},
+    streamManager: {
+      config: { workerId: 'youtube', defaultWorkerId: 'primary', allowedUserIds: [], alertSink: { notify: async (event, detail) => youtubeAlerts.push({ event, detail }) } }
+    }
+  });
+  const message = { author: { id: '111' } };
+
+  await primary.dispatch(message, 'ping');
+  await youtube.dispatch(message, 'ping');
+  assert.strictEqual(primaryAlerts.length, 1);
+  assert.strictEqual(youtubeAlerts.length, 0);
+
+  await primary.dispatch(message, 'ping:youtube');
+  await youtube.dispatch(message, 'ping:youtube');
+  assert.strictEqual(primaryAlerts.length, 1);
+  assert.strictEqual(youtubeAlerts.length, 1);
+  assert.strictEqual(youtubeAlerts[0].detail, M.PONG);
+});
+
 test('config: SBOT_ALLOWED_USER_IDS parses CSV, trims whitespace and removes duplicates', () => {
   const oldToken = process.env.SELF_BOT_TOKEN;
   const oldAllowed = process.env.SBOT_ALLOWED_USER_IDS;
@@ -225,5 +254,34 @@ test('config: VERBOSE is enabled only by true (case-insensitive)', () => {
   } finally {
     if (oldToken === undefined) delete process.env.SELF_BOT_TOKEN; else process.env.SELF_BOT_TOKEN = oldToken;
     if (oldVerbose === undefined) delete process.env.VERBOSE; else process.env.VERBOSE = oldVerbose;
+  }
+});
+
+test('config: primary keeps chat commands by default while secondary workers default broker-only', () => {
+  const previous = {
+    token: process.env.SELF_BOT_TOKEN,
+    id: process.env.STREAMBOT_ID,
+    chat: process.env.SBOT_CHAT_COMMANDS,
+    scoped: process.env.SBOT_CHAT_COMMANDS_YOUTUBE
+  };
+  try {
+    process.env.SELF_BOT_TOKEN = 'test';
+    delete process.env.SBOT_CHAT_COMMANDS;
+    process.env.STREAMBOT_ID = 'primary';
+    assert.strictEqual(loadConfig().chatCommands, true);
+    process.env.STREAMBOT_ID = 'youtube';
+    assert.strictEqual(loadConfig().chatCommands, false);
+    process.env.SBOT_CHAT_COMMANDS = 'true';
+    assert.strictEqual(loadConfig().chatCommands, true);
+    process.env.SBOT_CHAT_COMMANDS_YOUTUBE = 'false';
+    assert.strictEqual(loadConfig().chatCommands, false, 'worker-scoped value wins over the global fallback');
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      const envName = key === 'token' ? 'SELF_BOT_TOKEN'
+        : key === 'id' ? 'STREAMBOT_ID'
+          : key === 'scoped' ? 'SBOT_CHAT_COMMANDS_YOUTUBE'
+            : 'SBOT_CHAT_COMMANDS';
+      if (value === undefined) delete process.env[envName]; else process.env[envName] = value;
+    }
   }
 });

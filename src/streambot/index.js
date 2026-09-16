@@ -8,14 +8,27 @@ const { CommandRegistry } = require('./commands');
 const { StreamManager } = require('./streamManager');
 const { resolveSource } = require('./sources');
 const { createWebhookServer } = require('./webhookServer');
+const { StreamControl } = require('./control');
+const { StreamBrokerClient } = require('./brokerClient');
 
 const config = loadConfig();
 const client = new Client({});
 const streamManager = new StreamManager(client, config.streamChannelId, config);
 const commands = new CommandRegistry({ client, streamManager });
+const control = new StreamControl({ streamManager, config, client });
+const brokerClient = new StreamBrokerClient({
+  url: config.brokerUrl,
+  secret: config.brokerSecret,
+  workerId: config.workerId,
+  control,
+  streamManager,
+  log
+});
 const prefix = config.commandPrefix;
 const sourcesModule = { resolveSource };
-const webhookServer = createWebhookServer({ config, streamManager, sources: sourcesModule });
+const webhookServer = config.webhookEnabled
+  ? createWebhookServer({ config, streamManager, sources: sourcesModule })
+  : null;
 
 // TEMPORARY DIAGNOSTIC (NOT part of normal operation) -------------------------
 // Gated by VERBOSE=true plus SBOT_DEBUG_RAW=1; NO-OP otherwise.
@@ -107,6 +120,7 @@ function onReady() {
   const name = user && user.username ? user.username : 'self';
   const id = user && user.id ? user.id : 'unknown';
   log(`Logged in as ${name} (${id})`);
+  brokerClient.start();
 }
 
 function onMessage(message) {
@@ -141,7 +155,7 @@ client.on('raw', (d) => {
 });
 
 client.on('ready', onReady);
-client.on('messageCreate', onMessage);
+if (config.chatCommands) client.on('messageCreate', onMessage);
 client.on('error', (err) => {
   log('client error:', safe(err && err.message));
 });
@@ -164,6 +178,7 @@ async function shutdown(reason) {
   try {
     await closeWebhook();
   } catch (e) {}
+  try { brokerClient.close(); } catch (e) {}
   try {
     await streamManager.stop();
   } catch (e) {}
@@ -187,13 +202,15 @@ void (async () => {
   try {
     await client.login(config.token);
     log('login issued, awaiting ready…');
-    webhookServer.listen(config.webhookPort, config.webhookHost, () => {
-      const secretSet = config.webhookSecret ? 'SET' : 'NOT SET';
-      log(`webhook listening on http://${config.webhookHost}:${config.webhookPort}/webhook/stream (secret: ${secretSet})`);
-    });
-    webhookServer.on('error', (err) => {
-      logError(`webhook server error: ${safe(err && err.message)}`);
-    });
+    if (webhookServer) {
+      webhookServer.listen(config.webhookPort, config.webhookHost, () => {
+        const secretSet = config.webhookSecret ? 'SET' : 'NOT SET';
+        log(`webhook listening on http://${config.webhookHost}:${config.webhookPort}/webhook/stream (secret: ${secretSet})`);
+      });
+      webhookServer.on('error', (err) => {
+        logError(`webhook server error: ${safe(err && err.message)}`);
+      });
+    }
   } catch (err) {
     log(`login failed: ${safe(err && err.message)}`);
     await shutdown('login-failed').catch(() => {});

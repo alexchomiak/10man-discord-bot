@@ -7,8 +7,8 @@ set -e
 #
 # MODE (env): all (default) | bot | streambot
 #   - "bot"       → only the CS2 real-bot (existing behavior)
-#   - "streambot" → only the TV streaming selfbot
-#   - "all"       → both; SELF_BOT_TOKEN is ignored if unset (bot only)
+#   - "streambot" → one or more TV streaming workers
+#   - "all"       → both when SELF_BOT_TOKEN or STREAMBOT_IDS is set
 #   - "help"      → print usage and exit
 
 MODE="${MODE:-all}"
@@ -22,7 +22,7 @@ Usage: MODE=all|bot|streambot run.sh
 
 MODE=all (default)     run the CS2 real-bot AND the TV streaming selfbot.
 MODE=bot               run only the CS2 real-bot (legacy behavior).
-MODE=streambot         run only the TV streaming selfbot.
+MODE=streambot         run TV streaming worker(s); configure STREAMBOT_IDS for multiple.
 EOF
 }
 
@@ -37,13 +37,13 @@ case "$MODE" in
     ;;
   streambot)
     log "MODE=streambot → starting TV streaming selfbot only"
-    exec node src/streambot/index.js
+    exec node src/streambot/supervisor.js
     ;;
   all)
     log "MODE=all → running CS2 real-bot + TV streaming selfbot concurrently"
     log "  - bot:         node src/index.js"
-    if [ -n "${SELF_BOT_TOKEN:-}" ]; then
-      log "  - streambot:   node src/streambot/index.js"
+    if [ -n "${SELF_BOT_TOKEN:-}" ] || [ -n "${STREAMBOT_IDS:-}" ]; then
+      log "  - streambot:   node src/streambot/supervisor.js"
       # Both foreground, one process each. The container's main process is
       # this script; when either dies the shell (with set -e) will wait.
       # Use `wait` on both; trap to kill the sibling on exit.
@@ -51,7 +51,7 @@ case "$MODE" in
         set -m
         node src/index.js &
         PID_BOT=$!
-        node src/streambot/index.js &
+        node src/streambot/supervisor.js &
         PID_SBOT=$!
         trap 'kill $PID_BOT $PID_SBOT 2>/dev/null' INT TERM EXIT
         # Exit with the first non-zero exit code, or 0 if both clean.
@@ -62,7 +62,7 @@ case "$MODE" in
       )
       exit $?
     else
-      log "SELF_BOT_TOKEN unset → streambot not started; running CS2 bot only"
+      log "SELF_BOT_TOKEN and STREAMBOT_IDS unset → streambot not started; running CS2 bot only"
       exec node src/index.js
     fi
     ;;

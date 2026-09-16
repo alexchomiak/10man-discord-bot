@@ -38,9 +38,18 @@ class CommandRegistry {
 
   async dispatch(message, argString) {
     const parts = String(argString || '').split(/\s+/).filter(Boolean);
-    const name = (parts[0] || '').toLowerCase();
+    const commandToken = (parts[0] || '').toLowerCase();
+    const separator = commandToken.indexOf(':');
+    const name = separator === -1 ? commandToken : commandToken.slice(0, separator);
+    const requestedWorkerId = separator === -1 ? null : commandToken.slice(separator + 1);
     const args = parts.slice(1);
     if (!name || !this.has(name)) return;
+    if (separator !== -1 && (!requestedWorkerId || !/^[a-z0-9_-]{1,32}$/.test(requestedWorkerId))) return;
+    const config = this.streamManager?.config || {};
+    const workerId = String(config.workerId || 'primary').toLowerCase();
+    const defaultWorkerId = String(config.defaultWorkerId || 'primary').toLowerCase();
+    const targetWorkerId = requestedWorkerId || defaultWorkerId;
+    if (workerId !== targetWorkerId) return;
     const allowedUserIds = this.streamManager?.config?.allowedUserIds;
     if (Array.isArray(allowedUserIds) && allowedUserIds.length > 0) {
       const authorId = message?.author?.id == null ? '' : String(message.author.id);

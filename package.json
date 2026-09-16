@@ -6,9 +6,9 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/index.js",
-    "start-streambot": "node src/streambot/index.js",
-    "test": "node --test test/streambot.sources.test.js test/streambot.demuxer.test.js test/streambot.pacing.test.js test/streambot.voice-link.test.js test/streambot.alerts.test.js",
-    "check": "node --check src/index.js && node --check src/draftManager.js && node --check src/notificationManager.js && node --check src/audioManager.js && node --check src/announcementManager.js && node --check src/playerManager.js && node --check src/commands.ts && node --check src/messages.ts && node --check src/speech.ts && node --check src/streambot/index.js && node --check src/streambot/config.js && node --check src/streambot/commands.js && node --check src/streambot/streamManager.js && node --check src/streambot/demuxGuard.js && node --check src/streambot/telemetry.js && node --check src/streambot/alerts.js && node --check src/streambot/messages.js && node --check src/streambot/sources.js && node --check src/streambot/webhookServer.js"
+    "start-streambot": "node src/streambot/supervisor.js",
+    "test": "node --test test/streambot.sources.test.js test/streambot.demuxer.test.js test/streambot.pacing.test.js test/streambot.voice-link.test.js test/streambot.alerts.test.js test/streambroker.test.js",
+    "check": "node --check src/index.js && node --check src/draftManager.js && node --check src/notificationManager.js && node --check src/audioManager.js && node --check src/announcementManager.js && node --check src/playerManager.js && node --check src/commands.ts && node --check src/messages.ts && node --check src/speech.ts && node --check src/streamBroker.js && node --check src/streamInteractions.js && node --check src/streambot/index.js && node --check src/streambot/config.js && node --check src/streambot/commands.js && node --check src/streambot/control.js && node --check src/streambot/brokerClient.js && node --check src/streambot/supervisor.js && node --check src/streambot/streamManager.js && node --check src/streambot/demuxGuard.js && node --check src/streambot/telemetry.js && node --check src/streambot/alerts.js && node --check src/streambot/messages.js && node --check src/streambot/sources.js && node --check src/streambot/webhookServer.js"
   },
   "engines": {
     "node": ">=22.4.0"
@@ -24,6 +24,7 @@
     "ffmpeg-static": "^5.2.0",
     "google-tts-api": "^2.0.2",
     "libsodium-wrappers": "^0.7.15",
-    "opusscript": "^0.1.1"
+    "opusscript": "^0.1.1",
+    "ws": "8.21.3"
   }
 }

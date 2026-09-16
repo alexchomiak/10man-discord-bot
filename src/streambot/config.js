@@ -71,6 +71,11 @@ function parseDiscordIdList(value) {
   return [...new Set(ids)];
 }
 
+function parseBoolean(value, fallback = false) {
+  if (value == null || String(value).trim() === '') return fallback;
+  return String(value).trim().toLowerCase() === 'true';
+}
+
 function loadConfig() {
   const token = (process.env.SELF_BOT_TOKEN || '').trim();
   if (!token) {
@@ -82,9 +87,20 @@ function loadConfig() {
 
   const hardwareAccel = process.env.HARDWARE_ACCEL?.trim().toLowerCase() === 'true';
   const configuredEncoder = (process.env.STREAMBOT_VIDEO_ENCODER || '').trim().toLowerCase();
+  const workerId = (process.env.STREAMBOT_ID || 'primary').trim() || 'primary';
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(workerId)) throw new Error(`${TAG} invalid STREAMBOT_ID '${workerId}'.`);
+  const defaultWorkerId = (process.env.STREAMBOT_DEFAULT_ID || 'primary').trim() || 'primary';
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(defaultWorkerId)) throw new Error(`${TAG} invalid STREAMBOT_DEFAULT_ID '${defaultWorkerId}'.`);
+  const workerSuffix = workerId.toUpperCase().replace(/-/g, '_');
+  const chatCommandsValue = process.env[`SBOT_CHAT_COMMANDS_${workerSuffix}`] ?? process.env.SBOT_CHAT_COMMANDS;
 
   return {
     token,
+    workerId,
+    defaultWorkerId,
+    chatCommands: parseBoolean(chatCommandsValue, workerId === 'primary'),
+    brokerUrl: (process.env.STREAM_BROKER_URL || (process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET ? 'ws://127.0.0.1:8090' : '')).trim(),
+    brokerSecret: (process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET || '').trim(),
     guildId: (process.env.SBOT_GUILD_ID || '').trim() || null,
     commandPrefix: (process.env.SBOT_COMMAND_PREFIX || '$').trim() || '$',
     // Per-frame/media telemetry and gateway diagnostics are intentionally
@@ -189,6 +205,7 @@ function loadConfig() {
     webhookPort: parsePositiveInt(process.env.STREAMBOT_WEBHOOK_PORT, 8081),
     // default 0.0.0.0 so a separate iptv-share container can reach it across the cluster; on a single host prefer 127.0.0.1
     webhookHost: (process.env.STREAMBOT_WEBHOOK_HOST || '0.0.0.0').trim() || '0.0.0.0',
+    webhookEnabled: workerId === 'primary',
     // Optional OUTBOUND alert webhook (see alerts.js): the bot account is
     // restricted and can no longer send channel messages, so success/error
     // feedback is logged locally and POSTed to a regular Discord server

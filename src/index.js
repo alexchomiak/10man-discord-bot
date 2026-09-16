@@ -16,10 +16,27 @@ const { AnnouncementManager } = require('./announcementManager');
 const { PlayerManager, summarizeError: summarizePlayerError } = require('./playerManager');
 const { COMMANDS, DRAFT_TYPE_CHOICES } = require('./commands.ts');
 const { DISCORD_MESSAGES } = require('./messages.ts');
+const { StreamBroker } = require('./streamBroker');
+const {
+  streamCommand,
+  playerCommand,
+  setStreamNameCommand,
+  autocomplete: handleStreamAutocomplete,
+  handleCommand: handleStreamCommand,
+  handleButton: handleStreamButton
+} = require('./streamInteractions');
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
   throw new Error('Missing DISCORD_TOKEN in environment.');
+}
+
+function parseDiscordIdList(value, name) {
+  if (!String(value || '').trim()) return [];
+  const ids = String(value).split(',').map(id => id.trim()).filter(Boolean);
+  const invalid = ids.find(id => !/^\d+$/.test(id));
+  if (invalid) throw new Error(`${name} must contain only comma-separated Discord user IDs.`);
+  return [...new Set(ids)];
 }
 
 const config = {
@@ -54,7 +71,15 @@ const config = {
   leetifyApiKey: process.env.LEETIFY_API_KEY || null,
   leetifyApiBase: process.env.LEETIFY_API_BASE || 'https://api-public.cs-prod.leetify.com',
   leetifyLegacyApiBase: process.env.LEETIFY_LEGACY_API_BASE || 'https://api.cs-prod.leetify.com',
-  ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24'
+  ratingRefreshIntervalHours: process.env.RATING_REFRESH_INTERVAL_HOURS || '24',
+  streamBrokerHost: process.env.STREAM_BROKER_HOST || '0.0.0.0',
+  streamBrokerPort: Number.parseInt(process.env.STREAM_BROKER_PORT || '8090', 10),
+  streamBrokerSecret: process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET || '',
+  defaultStreambotId: process.env.STREAMBOT_DEFAULT_ID || 'primary',
+  streamAllowedUserIds: parseDiscordIdList(
+    process.env.STREAM_ALLOWED_USER_IDS || process.env.SBOT_ALLOWED_USER_IDS,
+    'STREAM_ALLOWED_USER_IDS'
+  )
 };
 
 
@@ -221,6 +246,13 @@ const client = new Client({
   partials: [Partials.GuildMember]
 });
 const notificationManager = new NotificationManager(client, config);
+const streamBroker = new StreamBroker({
+  host: config.streamBrokerHost,
+  port: config.streamBrokerPort,
+  secret: config.streamBrokerSecret,
+  defaultWorkerId: config.defaultStreambotId
+});
+streamBroker.start();
 
 const teamDraftCommand = new SlashCommandBuilder()
   .setName(COMMANDS.TEAM_DRAFT.name)
@@ -471,7 +503,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
   try {
-    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, announceCommand, resetAnnounceTimerCommand, removeAnnouncementCommand, audioStatusCommand];
+    const commands = [teamDraftCommand, teamDraftMockCommand, linkCommand, unlinkCommand, getInfoCommand, refreshCommand, refreshVoiceCommand, leaderboardCommand, refreshLeaderboardCommand, draftStatusCommand, draftCancelCommand, draftCleanupCommand, returnToVoiceCommand, buildVersionCommand, testLobbyMusicCommand, testTtsCommand, announceCommand, resetAnnounceTimerCommand, removeAnnouncementCommand, audioStatusCommand, streamCommand, playerCommand, setStreamNameCommand];
 
     if (config.guildIds.length > 0) {
       if (!config.keepGlobalCommands) {
@@ -499,6 +531,10 @@ client.once(Events.ClientReady, async (readyClient) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (interaction.isAutocomplete() && await handleStreamAutocomplete(interaction, streamBroker)) return;
+    if (interaction.isButton() && await handleStreamButton(interaction, streamBroker, config.streamAllowedUserIds)) return;
+    if (interaction.isChatInputCommand() && await handleStreamCommand(interaction, streamBroker, config.streamAllowedUserIds)) return;
+
     if (interaction.isChatInputCommand() && interaction.commandName === COMMANDS.TEAM_DRAFT.name) {
       await draftManager.startDraft(interaction, config);
       return;
@@ -802,3 +838,10 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 });
 
 client.login(token);
+
+async function shutdown() {
+  await streamBroker.close().catch(() => {});
+  client.destroy();
+}
+process.once('SIGINT', () => void shutdown());
+process.once('SIGTERM', () => void shutdown());

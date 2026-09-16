@@ -236,17 +236,31 @@ docker run -d \
 
 ## Streaming selfbot (Mode B)
 
-This image ships **two independent, co-existing apps** in one container: the CS2 real-bot (`src/index.js`) and the TV streaming selfbot (`src/streambot/index.js`). Switch or run-both via the `MODE` env var (see `run.sh`):
+This image ships the CS2 app bot (`src/index.js`) and one or more TV streaming workers (`src/streambot/index.js`) in one container. Switch or run both via the `MODE` env var (see `run.sh`):
 
 - `MODE=bot` (or unset) — run the CS2 real-bot only. Legacy behavior, unchanged.
-- `MODE=streambot` — run the TV streaming selfbot only. Requires `SELF_BOT_TOKEN` (a Discord **user** token, not a bot token) and a `libzmq`-capable `ffmpeg` on the container's `$PATH`. See `streambot.env.example` for the full env list.
-- `MODE=all` — run both concurrently (both tokens must be set).
+- `MODE=streambot` — run the streaming worker supervisor only. Requires one Discord **user** token per worker and a `libzmq`-capable `ffmpeg` on the container's `$PATH`.
+- `MODE=all` — run the app bot and streaming workers concurrently.
 
-The two are fully disjoint in code: the selfbot does not import from `src/index.js` or `src/audioManager.js`, and the bot does not import from `src/streambot/`. They share only the Node runtime and the install of the two new npm deps (`discord.js-selfbot-v13@3.7.1` + `@dank074/discord-video-stream@6.0.0`).
+The app bot accepts `/stream` and `/player`, then sends authenticated WebSocket commands to the selected worker. Workers initiate the connection, so workers in the same container need no extra published port. Set one shared `STREAM_BROKER_SECRET`; the local broker URL defaults to `ws://127.0.0.1:8090`.
+
+For multiple workers in one container, set:
+
+```dotenv
+STREAMBOT_IDS=primary,youtube
+SELF_BOT_TOKEN_PRIMARY=...
+SELF_BOT_TOKEN_YOUTUBE=...
+SBOT_CHAT_COMMANDS_PRIMARY=true
+SBOT_CHAT_COMMANDS_YOUTUBE=false
+```
+
+An omitted `bot` option targets `STREAMBOT_DEFAULT_ID` (`primary` by default). Every `/stream` subcommand exposes an autocompleted optional `bot` option. `/player [bot]` opens pause, resume, and ±5s/±30s/±1m controls. `/set-stream-name name:<name> [bot]` changes the selected worker account's global Discord display name. `STREAM_ALLOWED_USER_IDS` restricts these app-bot controls. See `streambot.env.example` for the full worker configuration.
 
 The selfbot streams real video (H.264/H.265/VP8/VP9/AV1) into a Discord voice channel via the selfbot user-token path — the same `StreamBot` (ysdragon) approach. This is ToS-adjacent; use a dedicated/throwaway Discord account, never a token used elsewhere, and do not run both apps on the same Discord account.
 
 ### Selfbot commands (in-channel, prefix `$` by default)
+The primary worker keeps these legacy cross-server commands enabled by default. Secondary workers default to broker-only. Override either worker with `SBOT_CHAT_COMMANDS_<WORKER_ID>=true|false`; hyphens in IDs become underscores in the env suffix. When multiple workers listen for chat commands, an unqualified command such as `$join` executes only on `STREAMBOT_DEFAULT_ID` (`primary` by default). Add a colon suffix to target another worker: `$join:youtube`, `$stream:youtube <url>`, `$scrub:youtube +30s`, and so on. Each listener ignores commands addressed to another worker, preventing duplicate execution.
+
 - `$stream <url>` — start streaming a URL. The URL can be:
   - a **ShareTV slug** or `/s/<slug>` link (resolved via `SHARETV_BASE/api/public/share/:slug`, prefers `hls_url`)
   - a **direct** media URL (`.m3u8` / `.ts` / `.mp4` / `.mkv`)
