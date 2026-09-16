@@ -216,6 +216,7 @@ function fixture(t, config = {}, moduleOptions = {}) {
     },
     append: async (input, signal) => {
       writers++; maxWriters = Math.max(maxWriters, writers);
+      if (moduleOptions.hangAppend) return new Promise(() => {});
       const cancel = () => input.destroy();
       signal.addEventListener('abort', cancel, {once:true});
       try { for await (const chunk of input) { if (!signal.aborted) fv.collected.push(chunk.toString()); } }
@@ -372,6 +373,21 @@ test('external Discord voice move reopens Go Live and preserves active content p
   assert.equal(mgr.session.title,'a');
   assert(mgr.session.startOffsetSec>=11,'seekable content resumes near its previous position');
   assert.deepEqual(mgr.voiceLink.pipeline.enqueue.map(piece=>piece.title),['b']);
+});
+
+test('external move cannot wedge stop/play commands when the old media writer never exits', async t => {
+  const {mgr,start}=fixture(t,{streamBufferSec:0,streamCleanupTimeoutMs:30},{hangAppend:true});
+  await start('a');
+
+  const moved=await mgr.handleVoiceStateUpdate({
+    t:'VOICE_STATE_UPDATE',
+    d:{user_id:'u1',guild_id:'g1',channel_id:'c2'}
+  });
+  assert(moved.ok && moved.moved);
+  assert.equal(mgr.voiceLink.channelId,'c2');
+
+  await mgr.stop();
+  assert.equal(mgr.voiceLink,null,'stop must run after forced cleanup instead of waiting forever');
 });
 
 test('unrelated and duplicate self voice-state updates do not reopen Go Live', async t => {

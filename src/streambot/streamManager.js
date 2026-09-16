@@ -531,6 +531,11 @@ class StreamManager {
     return Number.isFinite(ms) && ms > 0 ? ms : 300000;
   }
 
+  _cleanupTimeoutMs() {
+    const ms = Number(this.config.streamCleanupTimeoutMs);
+    return Number.isFinite(ms) && ms > 0 ? ms : 5000;
+  }
+
   _startGraceTimer(link, reason) {
     this._clearGraceTimer(link);
     const fire = () => this._serialize(async () => {
@@ -797,10 +802,21 @@ class StreamManager {
         if (link.streamer.voiceConnection?.streamConnection) link.streamer.stopStream();
         this._cancelPiece(p.activeWriter);
         p.feeder.interrupt();
-        try { await p.writerTask; }
-        finally {
-          try { await p.feeder.close(); }
-          finally { await demuxGuard.closeAllDemuxers(); }
+        // Start native demux cleanup BEFORE waiting for writerTask. The writer
+        // can itself be blocked in demux(), so the old ordering deadlocked:
+        // writer waited for demux close while teardown waited for writer.
+        const demuxCleanup = demuxGuard.closeAllDemuxers();
+        const cleanupTimeoutMs = this._cleanupTimeoutMs();
+        try {
+          await this._raceWithTimeout(
+            Promise.allSettled([p.writerTask, demuxCleanup, p.feeder.close()]),
+            cleanupTimeoutMs,
+            `stream cleanup timed out after ${cleanupTimeoutMs}ms`
+          );
+        } catch (error) {
+          // A dead native demuxer must never retain the serialized command
+          // queue. Its inputs/processes are already aborted and destroyed.
+          log('error', `voice: ${error.message}; continuing forced teardown`);
         }
       }
       if (this.session?.voiceLink === link) this.session = null;
@@ -1104,6 +1120,7 @@ class StreamManager {
       }
       for (const piece of queued) pipeline.enqueue.push(this._copyQueuedPiece(newLink, piece));
       if (!wasPaused) this._pump(newLink, videoModule);
+      log('info', `voice: move recovery reopened Go Live in ${channelId}; restored=${active?.title || (wasPaused ? pausedSession?.title : 'filler') || 'filler'} queued=${queued.length}`);
       return { ok: true, moved: true, voiceLink: newLink, pipeline };
     });
   }

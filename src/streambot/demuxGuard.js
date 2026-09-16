@@ -131,7 +131,10 @@ async function closeAllDemuxers() {
       }
     })
   );
-  trackedDemuxers.clear();
+  // Delete only the snapshot we attempted. A timed-out cleanup may finish
+  // after a replacement stream has already registered new demuxers; clearing
+  // the whole live set here would lose tracking for that new stream.
+  for (const demuxer of all) trackedDemuxers.delete(demuxer);
   return results.filter((r) => r.status === 'fulfilled').length;
 }
 
