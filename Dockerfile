@@ -28,20 +28,19 @@ ENV NODE_ENV=production
 # (The CS2 bot does NOT use this system binary — it always uses the
 #  self-contained ffmpeg-static npm binary, so it is unaffected.)
 #
-# Optional, for hardware decoding (HARDWARE_ACCEL=true) inside this image:
-#   - Intel GPU : add `libva-intel-driver`
+# Optional, for VAAPI encoding (HARDWARE_ACCEL=true) inside this image:
+#   - Intel GPU : Intel Media Driver (`intel-media-va-driver`)
 #   - NVIDIA GPU: keep software encode; hardware paths need the NVIDIA
 #                 container toolkit (docker run --gpus all) + matching
 #                 driver/runtime libraries, which are deployment-specific.
 # Core: everything the bot needs on any arch.
-# libva-intel-driver is the Intel iGPU VAAPI runtime — it is x86/AMD64-only
-# (no arm64 candidate), so make it best-effort: builds that need it (Intel
-# GPU host) get it; ARM builds (e.g. Apple Silicon test builds) skip it and
-# still run, using software decode/encode by default.
+# Intel Media Driver supports modern Intel graphics, including Arc. Keep the
+# legacy i965 driver as a fallback for older Intel hosts. Both are x86-only,
+# so installation is best-effort for arm64 development builds.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu ffmpeg libva2 curl \
-  && { apt-get install -y --no-install-recommends libva-intel-driver \
-       || echo "skip: libva-intel-driver unavailable on this architecture (non-x86/Intel)"; } \
+  && apt-get install -y --no-install-recommends ca-certificates gosu ffmpeg libva2 curl openvpn iproute2 unzip \
+  && { apt-get install -y --no-install-recommends intel-media-va-driver libva-intel-driver \
+       || echo "skip: Intel VAAPI drivers unavailable on this architecture"; } \
   && rm -rf /var/lib/apt/lists/*
 
 # yt-dlp is an EXTERNAL binary (not an npm package) used by the selfbot's
@@ -69,8 +68,9 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY docker-entrypoint-vpn.sh /usr/local/bin/docker-entrypoint-vpn.sh
 COPY run.sh /app/run.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh /app/run.sh \
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint-vpn.sh /app/run.sh \
   && mkdir -p /app/data \
   && chown -R node:node /app
 
@@ -81,5 +81,5 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh /app/run.sh \
 #   docker run ... MODE=streambot <image> # selfbot only
 # (You may also override CMD with ["/app/run.sh"] — run.sh reads MODE from env.)
 ENV MODE=bot
-ENTRYPOINT ["docker-entrypoint.sh"]
+ENTRYPOINT ["docker-entrypoint-vpn.sh"]
 CMD ["/app/run.sh"]

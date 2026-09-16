@@ -17,6 +17,76 @@ const prefix = config.commandPrefix;
 const sourcesModule = { resolveSource };
 const webhookServer = createWebhookServer({ config, streamManager, sources: sourcesModule });
 
+// TEMPORARY DIAGNOSTIC (NOT part of normal operation) -------------------------
+// Gated by SBOT_DEBUG_RAW=1; NO-OP and cannot throw when unset.
+// Attaches raw/shard-lifecycle tracing plus a shard state snapshot so we can
+// tell whether the gateway is CONNECTED+READY and whether outbound voice ops
+// are actually reaching the socket. Safe to remove after the investigation.
+try {
+  const _sbRawEnabled = () => {
+    const v = String(process.env.SBOT_DEBUG_RAW || '');
+    return v === '1' || v === 'true';
+  };
+  const _sbFmt = (...parts) => {
+    const out = parts
+      .map(v => {
+        try {
+          if (v == null) return String(v);
+          if (typeof v === 'object') return JSON.stringify(v);
+          return String(v);
+        } catch { return '<unserializable>'; }
+      })
+      .join(' ');
+    return out.length > 480 ? out.slice(0, 480) + '…(truncated)' : out;
+  };
+  const _sbLog = (...parts) => {
+    if (!_sbRawEnabled()) return;
+    try { console.log('[streambot:raw]', ...parts); } catch { /* never throw */ }
+  };
+  const _sbShardState = () => {
+    try {
+      const ws = client.ws;
+      const s = ws && ws.shards ? ws.shards.first() : null;
+      const conn = s && s.connection ? s.connection : null;
+      return `_shard=${s ? s.id : 'none'} shardStatus=${s ? s.status : 'n/a'} wsStatus=${ws ? ws.status : 'n/a'} connPresent=${conn ? 'yes' : 'no'} shards=${ws && ws.shards ? ws.shards.size : 'n/a'} sessionId=${s ? (s.sessionId || 'null') : 'n/a'}`;
+    } catch { return 'state=unknown'; }
+  };
+  client.on('shardReady', (id) => { try { console.log('[streambot:raw] EVENT shardReady id=' + id + ' | ' + _sbShardState()); } catch { /* never throw */ } });
+  client.on('shardReconnecting', (id) => { _sbLog('EVENT shardReconnecting id=' + id + ' | ' + _sbShardState()); });
+  client.on('shardDisconnect', (ev) => { _sbLog('EVENT shardDisconnect code=' + ((ev && ev.code) ?? 'n/a') + ' reason=' + ((ev && ev.reason) ?? 'n/a') + ' wasClean=' + ((ev && ev.wasClean) ?? 'n/a')); });
+  client.on('shardError', (err) => { _sbLog('EVENT shardError ' + _sbFmt(err && (err.message || err.code || String(err)))); });
+  // Outbound interceptor: ALWAYS forwards to the original broadcast (zero
+  // behavior change); only APPENDS a log line when SBOT_DEBUG_RAW is set.
+  // Proves the op-4 null-clear + op-4 join actually leave the socket.
+  {
+    const origBroadcast = client.ws.broadcast.bind(client.ws);
+    client.ws.broadcast = (packet) => {
+      if (_sbRawEnabled()) {
+        try {
+          const op = (packet && packet.op != null) ? packet.op : 'n/a';
+          const d = (packet && packet.d) || null;
+          let detail = 'n/a';
+          if (d && typeof d === 'object') {
+            const g = d.guild_id, c = d.channel_id, sv = d.self_video, sm = d.self_mute, sd = d.self_deaf;
+            detail = `_g=${g ?? null} ch=${c ?? null} self_video=${sv ?? '-'} self_mute=${sm ?? '-'} self_deaf=${sd ?? '-'}`;
+          }
+          _sbLog('OUT broadcast op=' + op + ' ' + detail + ' ' + _sbFmt('d=', d));
+        } catch { /* never throw */ }
+      }
+      return origBroadcast(packet);
+    };
+  }
+  client.on('raw', (packet) => {
+    if (!_sbRawEnabled()) return;
+    try {
+      const op = (packet && packet.op != null) ? packet.op : 'n/a';
+      const t = (packet && packet.t != null) ? packet.t : '-';
+      _sbLog('RAW op=' + op + ' t=' + t + ' ' + _sbFmt('d=', (packet && packet.d) || null));
+    } catch { /* never throw */ }
+  });
+} catch { /* the diagnostic must never break boot */ }
+// -----------------------------------------------------------------------------
+
 let shuttingDown = false;
 
 function log(...parts) {
@@ -92,7 +162,7 @@ async function shutdown(reason) {
     await closeWebhook();
   } catch (e) {}
   try {
-    streamManager.stop(null);
+    await streamManager.stop();
   } catch (e) {}
   try {
     await client.destroy();
