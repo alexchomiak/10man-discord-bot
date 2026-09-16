@@ -138,11 +138,11 @@ function loadConfig() {
     // by status() as paused:true while held.
     maxPauseSec: parseNonNegativeInt(process.env.SBOT_MAX_PAUSE_SEC, 900),
     hardwareAccel,
-    // HARDWARE_ACCEL=true selects VAAPI encoding by default. Arc uses VAAPI in
-    // Linux containers. Operators can override the encoder explicitly.
+    // Keep libx264 as the default encoder, including on GPU-equipped hosts.
+    // VAAPI remains available only through an explicit encoder selection.
     videoEncoder: ['software', 'vaapi'].includes(configuredEncoder)
       ? configuredEncoder
-      : (hardwareAccel ? 'vaapi' : 'software'),
+      : 'software',
     // Hardware-frame decode needs a different filter graph from the stable
     // software-scale -> VAAPI-upload encode path. Leave it opt-in; Arc encode
     // already removes the expensive part of 1080p H.264 transcoding.

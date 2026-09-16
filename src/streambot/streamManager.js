@@ -194,7 +194,7 @@ class StreamManager {
       ? videoModule.Utils.normalizeVideoCodec(cfg.videoCodec || 'H264')
       : (cfg.videoCodec || 'H264').toUpperCase();
     const bitrate = Number.isFinite(cfg.streamBitrate) && cfg.streamBitrate > 0 ? Math.round(cfg.streamBitrate) : 5000;
-    const bitrateMax = Math.round(bitrate * 1.2);
+    const bitrateMax = Math.round(bitrate * 1.4);
     const height = Number.isFinite(cfg.streamHeight) && cfg.streamHeight > 0 ? Math.round(cfg.streamHeight) : 1080;
     const fps = Number.isFinite(cfg.streamFrameRate) && cfg.streamFrameRate > 0 ? Math.round(cfg.streamFrameRate) : 30;
     const audioKbps = Number.isFinite(cfg.streamAudioBitrate) && cfg.streamAudioBitrate > 0 ? Math.round(cfg.streamAudioBitrate) : 128;

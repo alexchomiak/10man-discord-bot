@@ -28,7 +28,7 @@ ENV NODE_ENV=production
 # (The CS2 bot does NOT use this system binary — it always uses the
 #  self-contained ffmpeg-static npm binary, so it is unaffected.)
 #
-# Optional, for VAAPI encoding (HARDWARE_ACCEL=true) inside this image:
+# Optional, for explicitly selected VAAPI encoding inside this image:
 #   - Intel GPU : Intel Media Driver (`intel-media-va-driver`)
 #   - NVIDIA GPU: keep software encode; hardware paths need the NVIDIA
 #                 container toolkit (docker run --gpus all) + matching

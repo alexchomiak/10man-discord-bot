@@ -153,7 +153,7 @@ test('Arc mode uses VAAPI encode with the configured render device and 1080p/30 
   assert.ok(argv.includes('/dev/dri/renderD129'));
   assert.ok(argv.includes('scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=nv12|vaapi,hwupload'));
   assert.deepStrictEqual(argv.slice(argv.indexOf('-r'), argv.indexOf('-r') + 2), ['-r', '30']);
-  assert.ok(argv.includes('6000k'));
+  assert.ok(argv.includes('7000k'));
   assert.ok(argv.includes('10000k'));
 });
 
