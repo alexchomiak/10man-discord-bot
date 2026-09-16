@@ -12,7 +12,7 @@ pia_dns_rule=false
 resolver_saved=false
 vpn_error='unknown startup failure'
 pia_dns_server="${PIA_DNS_SERVER:-10.0.0.243}"
-pia_tun_mtu="${PIA_TUN_MTU:-1280}"
+pia_tun_mtu="${PIA_TUN_MTU:-1500}"
 original_umask=$(umask)
 umask 077
 
@@ -146,7 +146,7 @@ prepare_vpn() {
   # Ignore PIA's pushed def1 route and install a literal default via tun0.
   /usr/sbin/openvpn --writepid /run/pia-vpn.pid \
     --config /app/pia/region.ovpn --dev tun0 \
-    --tun-mtu "$pia_tun_mtu" --mssfix "$pia_tun_mtu" \
+    --tun-mtu "$pia_tun_mtu" --fast-io \
     --data-ciphers AES-256-GCM:AES-128-GCM:AES-128-CBC --data-ciphers-fallback AES-128-CBC \
     --auth-user-pass /app/pia/auth.conf --auth-nocache --auth-retry none \
     --pull-filter ignore redirect-gateway --redirect-gateway \

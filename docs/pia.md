@@ -103,10 +103,12 @@ resolver. `PIA_DNS_SERVER` may select one of PIA's official private DNS addresse
 lookup tears down the tunnel and follows the documented fail-open path. Validate
 ShareTV reachability and port 8081 on deployment.
 
-For real-time Discord video, the wrapper defaults `PIA_TUN_MTU` to `1280`,
-PIA's small-packet strategy for unreliable or fragmented VPN paths. Values from
-1200 through 1500 are accepted. This changes tunnel packetization only; it does
-not lower the configured video resolution, frame rate, or bitrate.
+For real-time Discord video, the wrapper leaves `PIA_TUN_MTU` at OpenVPN's
+normal `1500` default and enables OpenVPN's UDP fast-I/O path. Values from 1200
+through 1500 are accepted for diagnosing a path with a confirmed MTU problem.
+Smaller values increase tunnel packet rate and should not be used as general
+latency tuning. This setting does not lower the configured video resolution,
+frame rate, or bitrate.
 
 ## Deployment verification
 

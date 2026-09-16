@@ -45,8 +45,9 @@ esac
     executable(bindir / 'openvpn', '''#!/usr/bin/env python3
 import os, pathlib, signal, time, sys
 root = pathlib.Path(os.environ['ROOT'])
-assert '--tun-mtu' in sys.argv and sys.argv[sys.argv.index('--tun-mtu') + 1] == os.environ.get('PIA_TUN_MTU', '1280')
-assert '--mssfix' in sys.argv and sys.argv[sys.argv.index('--mssfix') + 1] == os.environ.get('PIA_TUN_MTU', '1280')
+assert '--tun-mtu' in sys.argv and sys.argv[sys.argv.index('--tun-mtu') + 1] == os.environ.get('PIA_TUN_MTU', '1500')
+assert '--fast-io' in sys.argv
+assert '--mssfix' not in sys.argv
 assert (root / 'pia/auth.conf').stat().st_mode & 0o777 == 0o600
 assert (root / 'pia/auth.conf').read_text() == os.environ['PIA_USERNAME'] + '\\n' + os.environ['PIA_PASSWORD'] + '\\n'
 (root / 'vpn.pid').write_text(str(os.getpid()))
