@@ -38,7 +38,7 @@ ENV NODE_ENV=production
 # legacy i965 driver as a fallback for older Intel hosts. Both are x86-only,
 # so installation is best-effort for arm64 development builds.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu ffmpeg libva2 curl openvpn iproute2 unzip \
+  && apt-get install -y --no-install-recommends ca-certificates gosu ffmpeg libva2 curl jq openvpn wireguard-tools iproute2 unzip \
   && { apt-get install -y --no-install-recommends intel-media-va-driver libva-intel-driver \
        || echo "skip: Intel VAAPI drivers unavailable on this architecture"; } \
   && rm -rf /var/lib/apt/lists/*
@@ -67,6 +67,7 @@ RUN case "$TARGETARCH" in \
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
+COPY pia-ca.rsa.4096.crt /usr/local/share/pia/ca.rsa.4096.crt
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY docker-entrypoint-vpn.sh /usr/local/bin/docker-entrypoint-vpn.sh
 COPY run.sh /app/run.sh

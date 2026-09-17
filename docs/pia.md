@@ -1,24 +1,34 @@
-# Optional PIA OpenVPN
+# Optional PIA VPN
 
 Set `PIA_USERNAME`, `PIA_PASSWORD`, and `PIA_REGION` using the same credentials
 and variable names as your existing PIA setup. Keep them in your existing
 private env file; never commit it. `PIA_REGION` is the exact filename without
-`.ovpn` in PIA's bundle, for example `us_chicago`. Display names and region IDs
+`.ovpn` in PIA's bundle, for example `us_chicago` or `ca_toronto`. Display names and region IDs
 from other PIA clients are not necessarily profile filenames. If your existing
 compose uses different variable names, confirm those names before adapting it.
 No compose file or server credentials were available in this checkout.
 
-Keep the existing env-file path, image command and `8081:8081` mapping; add only:
+`PIA_PROTOCOL` defaults to `wireguard`, the recommended transport for real-time
+Discord video. Set `PIA_PROTOCOL=openvpn` only for compatibility or diagnosis.
+WireGuard region selection uses the same PIA IDs, obtains a short-lived API
+token, registers an ephemeral key, and discards the token and private key during
+shutdown. `PIA_WG_MTU` defaults to `1420`.
+
+Keep the existing env-file path, image command and `8081:8081` mapping. WireGuard
+requires:
 
 ```sh
---cap-add NET_ADMIN --device /dev/net/tun:/dev/net/tun
+--cap-add NET_ADMIN
 ```
+
+The existing `/dev/net/tun` mapping is harmless and may be retained. It is only
+required when `PIA_PROTOCOL=openvpn`.
 
 For example, with your existing env file containing all three PIA variables:
 
 ```sh
 docker run -d --name 10man-streambot \
-  --cap-add NET_ADMIN --device /dev/net/tun:/dev/net/tun \
+  --cap-add NET_ADMIN \
   --env-file /path/to/your/existing.env \
   -p 8081:8081 \
   10man
@@ -38,27 +48,28 @@ If **any** PIA variable is missing or empty, the wrapper prints
 executes the original entrypoint with the original arguments. It does no VPN
 filesystem, download, route, package or signal setup on this path.
 
-When enabled, the wrapper downloads the official bundle, extracts only the
-selected profile to `/app/pia/region.ovpn`, and writes a two-line, mode-0600
-`/app/pia/auth.conf` inside a mode-0700 directory. OpenVPN logs are private to
-root. Failure diagnostics redact credentials by literal string replacement,
-matching the app's token-redaction approach. The app's shared redactor also
-removes `PIA_PASSWORD`, even when no Discord token is supplied.
+When WireGuard is enabled, the wrapper obtains a short-lived PIA token, selects
+the requested region from PIA's server list, registers an ephemeral public key,
+and configures the `pia` interface. Private material is stored only in the
+mode-0700 runtime directory and removed during cleanup. OpenVPN mode downloads
+the official profile bundle and writes a mode-0600 authentication file. Failure
+diagnostics redact credentials by literal string replacement.
 
-The HTTPS download has a separate 30-second timeout. After launching OpenVPN,
-the wrapper waits up to 30 seconds for a default IPv4 route through `tun0`, then
-prints `PIA VPN up: tun0 active` and launches the unchanged original entrypoint.
+WireGuard setup uses PIA's authenticated server API and prints
+`PIA VPN up: pia active (WireGuard, ...)` after installing the interface, route,
+and private DNS. OpenVPN downloads have a separate 30-second timeout. After
+launching OpenVPN, the wrapper waits up to 30 seconds for a default IPv4 route
+through `tun0`, then prints `PIA VPN up: tun0 active` and launches the unchanged
+original entrypoint.
 It retains PIA's certificate validation and permits AES-128-CBC alongside modern
 GCM ciphers for compatibility with the downloaded profile and OpenVPN 2.6.
 
-Any setup/authentication/route timeout fails open: stop and reap OpenVPN, remove
-its interface, restore saved default routes, remove temporary reply rules and
-auth/PID files, print the redacted log tail and a stage-specific reason (missing
-TUN device, missing `NET_ADMIN`, invalid region, download failure, or tunnel
-timeout), then print
+Any setup/authentication/route timeout fails open: remove the VPN interface,
+restore saved default routes, remove temporary reply rules and credentials,
+print the redacted log tail and a stage-specific reason, then print
 `WARNING: PIA VPN failed to start; continuing on normal networking`, then exec
 the original entrypoint. A failed client cannot later reconnect behind the app.
-SIGTERM/SIGINT and normal app exit also clean up OpenVPN.
+SIGTERM/SIGINT and normal app exit also clean up the VPN.
 
 ## Implementation adjustments for PR review
 
@@ -85,7 +96,7 @@ SIGTERM/SIGINT and normal app exit also clean up OpenVPN.
   removes these rules. Explicitly binding an outbound socket to the old container
   address would use the original route; the app does not need such a binding.
 
-This is a separate OpenVPN connection using the same PIA account, not reuse of
+This is a separate VPN connection using the same PIA account, not reuse of
 the qBittorrent container's tunnel, and it need not receive the same exit IP.
 It is intentionally fail-open, with no kill switch. This implementation routes
 IPv4 and does not promise IPv6 protection on IPv6-enabled Docker networks.
@@ -93,7 +104,7 @@ Connected Docker subnets retain their routes. RFC1918 destinations
 (`10.0.0.0/8`, `172.16.0.0/12`, and `192.168.0.0/16`) use the original routing
 table so private Unraid/Docker and LAN services remain reachable.
 
-Once `tun0` is ready, the wrapper saves Docker's `/etc/resolv.conf`, installs
+Once the VPN interface is ready, the wrapper saves Docker's `/etc/resolv.conf`, installs
 PIA's private streaming DNS (`10.0.0.243` by default), and adds a higher-priority
 host rule that sends that address through the VPN-bearing main table instead of
 the general `10.0.0.0/8` LAN rule. It verifies both the DNS route and a

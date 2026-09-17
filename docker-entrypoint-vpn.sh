@@ -10,9 +10,14 @@ app_pid=
 reply_routes=false
 pia_dns_rule=false
 resolver_saved=false
+vpn_started=false
+wg_endpoint_ip=
 vpn_error='unknown startup failure'
+vpn_protocol="${PIA_PROTOCOL:-wireguard}"
+vpn_interface=tun0
 pia_dns_server="${PIA_DNS_SERVER:-10.0.0.243}"
 pia_tun_mtu="${PIA_TUN_MTU:-1500}"
+pia_wg_mtu="${PIA_WG_MTU:-1420}"
 original_umask=$(umask)
 umask 077
 
@@ -36,10 +41,14 @@ stop_vpn() {
     kill -KILL "$vpn_pid" 2>/dev/null || :
     wait "$vpn_pid" 2>/dev/null || :
     vpn_pid=
-    ip link delete tun0 2>/dev/null || :
+  fi
+  if [ "$vpn_started" = true ]; then
+    ip link delete "$vpn_interface" 2>/dev/null || :
+    [ -z "$wg_endpoint_ip" ] || ip route del "$wg_endpoint_ip/32" 2>/dev/null || :
     if [ -s /app/pia/default-routes ]; then
       ip route restore < /app/pia/default-routes 2>/dev/null || :
     fi
+    vpn_started=false
   fi
   if [ "$reply_routes" = true ]; then
     while IFS= read -r address; do
@@ -51,7 +60,10 @@ stop_vpn() {
     ip -4 route flush table 51820 2>/dev/null || :
     reply_routes=false
   fi
-  rm -f /run/pia-vpn.pid /app/pia/auth.conf /app/pia/resolv.conf.original 2>/dev/null || :
+  rm -f /run/pia-vpn.pid /app/pia/auth.conf /app/pia/username /app/pia/password \
+    /app/pia/token /app/pia/token-response.json /app/pia/wg-private /app/pia/wg-public \
+    /app/pia/wg-response.json \
+    /app/pia/resolv.conf.original 2>/dev/null || :
 }
 
 shutdown() {
@@ -152,6 +164,94 @@ prepare_vpn() {
     --pull-filter ignore redirect-gateway --redirect-gateway \
     > /app/pia/openvpn.log 2>&1 &
   vpn_pid=$!
+  vpn_started=true
+}
+
+prepare_wireguard() {
+  vpn_interface=pia
+  case "$PIA_REGION" in
+    ''|*[!a-zA-Z0-9_-]*) vpn_error='PIA_REGION must be a PIA server-list region ID using only letters, digits, underscores, or hyphens'; return 1 ;;
+  esac
+  case "$PIA_USERNAME$PIA_PASSWORD" in *'
+'*|*"$(printf '\r')"*) vpn_error='PIA credentials contain an invalid newline'; return 1 ;; esac
+  case "$pia_dns_server" in
+    10.0.0.241|10.0.0.242|10.0.0.243|10.0.0.244) ;;
+    *) vpn_error='PIA_DNS_SERVER must be one of the official PIA DNS addresses: 10.0.0.241, 10.0.0.242, 10.0.0.243, or 10.0.0.244'; return 1 ;;
+  esac
+  case "$pia_wg_mtu" in
+    ''|*[!0-9]*) vpn_error='PIA_WG_MTU must be an integer from 1200 through 1420'; return 1 ;;
+  esac
+  if [ "$pia_wg_mtu" -lt 1200 ] || [ "$pia_wg_mtu" -gt 1420 ]; then
+    vpn_error='PIA_WG_MTU must be an integer from 1200 through 1420'
+    return 1
+  fi
+  [ "$(id -u)" = 0 ] || { vpn_error='VPN entrypoint is not running as root'; return 1; }
+  command -v wg >/dev/null 2>&1 || { vpn_error='wg is unavailable; install wireguard-tools'; return 1; }
+  command -v jq >/dev/null 2>&1 || { vpn_error='jq is unavailable'; return 1; }
+  mkdir -p /app/pia && chmod 700 /app/pia || { vpn_error='cannot create the private /app/pia runtime directory'; return 1; }
+  : > /app/pia/openvpn.log || { vpn_error='cannot create /app/pia startup log'; return 1; }
+  ip route save default > /app/pia/default-routes || { vpn_error='cannot read the container default route'; return 1; }
+
+  printf %s "$PIA_USERNAME" > /app/pia/username
+  printf %s "$PIA_PASSWORD" > /app/pia/password
+  chmod 600 /app/pia/username /app/pia/password
+  curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
+    --request POST --form 'username=</app/pia/username' --form 'password=</app/pia/password' \
+    https://www.privateinternetaccess.com/api/client/v2/token \
+    -o /app/pia/token-response.json 2>> /app/pia/openvpn.log || { vpn_error='failed to request a PIA authentication token'; return 1; }
+  jq -ejr '.token | select(type == "string" and length > 0)' /app/pia/token-response.json \
+    > /app/pia/token 2>> /app/pia/openvpn.log || { vpn_error='PIA rejected the supplied credentials'; return 1; }
+  chmod 600 /app/pia/token
+
+  curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 \
+    https://serverlist.piaservers.net/vpninfo/servers/v6 \
+    -o /app/pia/serverlist.raw 2>> /app/pia/openvpn.log || { vpn_error='failed to download the PIA server list'; return 1; }
+  head -n 1 /app/pia/serverlist.raw > /app/pia/serverlist.json
+  jq -e --arg region "$PIA_REGION" '.regions[] | select(.id == $region)' /app/pia/serverlist.json \
+    > /app/pia/region.json 2>> /app/pia/openvpn.log || { vpn_error="PIA_REGION '$PIA_REGION' was not found in the PIA server list"; return 1; }
+  wg_endpoint_ip=$(jq -er '.servers.wg[0].ip' /app/pia/region.json) || { vpn_error="PIA_REGION '$PIA_REGION' has no WireGuard server"; return 1; }
+  wg_hostname=$(jq -er '.servers.wg[0].cn' /app/pia/region.json) || { vpn_error="PIA_REGION '$PIA_REGION' has no WireGuard hostname"; return 1; }
+
+  wg genkey > /app/pia/wg-private || { vpn_error='failed to generate a WireGuard private key'; return 1; }
+  chmod 600 /app/pia/wg-private
+  wg_public=$(wg pubkey < /app/pia/wg-private) || { vpn_error='failed to derive the WireGuard public key'; return 1; }
+  printf %s "$wg_public" > /app/pia/wg-public
+  curl --fail --silent --show-error --get --connect-timeout 10 --max-time 30 \
+    --connect-to "$wg_hostname::$wg_endpoint_ip:" \
+    --cacert /usr/local/share/pia/ca.rsa.4096.crt \
+    --data-urlencode 'pt@/app/pia/token' --data-urlencode 'pubkey@/app/pia/wg-public' \
+    "https://$wg_hostname:1337/addKey" \
+    -o /app/pia/wg-response.json 2>> /app/pia/openvpn.log || { vpn_error='failed to register a WireGuard key with the selected PIA server'; return 1; }
+  [ "$(jq -r '.status // empty' /app/pia/wg-response.json)" = OK ] || { vpn_error='PIA WireGuard server rejected key registration'; return 1; }
+  wg_address=$(jq -er '.peer_ip' /app/pia/wg-response.json) || { vpn_error='PIA WireGuard response omitted peer_ip'; return 1; }
+  wg_server_key=$(jq -er '.server_key' /app/pia/wg-response.json) || { vpn_error='PIA WireGuard response omitted server_key'; return 1; }
+  wg_server_port=$(jq -er '.server_port' /app/pia/wg-response.json) || { vpn_error='PIA WireGuard response omitted server_port'; return 1; }
+
+  [ -z "$(ip -4 route show table 51820 2>/dev/null)" ] || { vpn_error='policy-routing table 51820 is already in use'; return 1; }
+  ip -o -4 addr show scope global | awk '{ sub(/\/.*/, "", $4); print $4 }' > /app/pia/reply-addresses || { vpn_error='cannot enumerate container IPv4 addresses'; return 1; }
+  ip -4 route show table main > /app/pia/main-routes || { vpn_error='cannot read the main routing table'; return 1; }
+  reply_routes=true
+  while IFS= read -r route; do ip -4 route add table 51820 $route || { vpn_error='cannot create VPN reply routes; NET_ADMIN capability is required'; return 1; }; done < /app/pia/main-routes
+  while IFS= read -r address; do ip -4 rule add priority 10000 from "$address" table 51820 || { vpn_error='cannot create VPN reply rules; NET_ADMIN capability is required'; return 1; }; done < /app/pia/reply-addresses
+  ip -4 rule add priority 8999 to 10.0.0.0/8 table 51820 || { vpn_error='cannot create private-network routing rules; NET_ADMIN capability is required'; return 1; }
+  ip -4 rule add priority 9000 to 192.168.0.0/16 table 51820 || { vpn_error='cannot create LAN routing rules; NET_ADMIN capability is required'; return 1; }
+  ip -4 rule add priority 9001 to 172.16.0.0/12 table 51820 || { vpn_error='cannot create Docker routing rules; NET_ADMIN capability is required'; return 1; }
+
+  endpoint_route=$(ip -4 route get "$wg_endpoint_ip") || { vpn_error='cannot determine the route to the PIA WireGuard endpoint'; return 1; }
+  endpoint_gateway=$(printf '%s\n' "$endpoint_route" | awk '{ for (i=1; i<=NF; i++) if ($i == "via") print $(i+1) }')
+  endpoint_device=$(printf '%s\n' "$endpoint_route" | awk '{ for (i=1; i<=NF; i++) if ($i == "dev") print $(i+1) }')
+  [ -n "$endpoint_device" ] || { vpn_error='could not determine the network device for the PIA WireGuard endpoint'; return 1; }
+  if [ -n "$endpoint_gateway" ]; then ip route add "$wg_endpoint_ip/32" via "$endpoint_gateway" dev "$endpoint_device"; else ip route add "$wg_endpoint_ip/32" dev "$endpoint_device"; fi \
+    || { vpn_error='cannot pin the WireGuard endpoint outside its own tunnel'; return 1; }
+
+  vpn_started=true
+  ip link add "$vpn_interface" type wireguard || { vpn_error='cannot create WireGuard interface; the Unraid host must support WireGuard and the container needs NET_ADMIN'; return 1; }
+  wg set "$vpn_interface" private-key /app/pia/wg-private peer "$wg_server_key" \
+    endpoint "$wg_endpoint_ip:$wg_server_port" allowed-ips 0.0.0.0/0 persistent-keepalive 25 \
+    || { vpn_error='cannot configure the WireGuard interface'; return 1; }
+  ip address add "$wg_address" dev "$vpn_interface" || { vpn_error='cannot assign the PIA WireGuard address'; return 1; }
+  ip link set mtu "$pia_wg_mtu" up dev "$vpn_interface" || { vpn_error='cannot bring up the WireGuard interface'; return 1; }
+  ip route replace default dev "$vpn_interface" || { vpn_error='cannot install the WireGuard default route'; return 1; }
 }
 
 configure_vpn_dns() {
@@ -159,12 +259,12 @@ configure_vpn_dns() {
   # above must remain for Unraid/Docker services, so give this single address
   # a higher-priority lookup in the VPN-bearing main table.
   ip -4 rule add priority 8000 to "$pia_dns_server/32" table main || {
-    vpn_error='cannot route PIA DNS through tun0; NET_ADMIN capability is required'
+    vpn_error="cannot route PIA DNS through $vpn_interface; NET_ADMIN capability is required"
     return 1
   }
   pia_dns_rule=true
-  ip -4 route get "$pia_dns_server" | grep -Eq "dev tun0( |$)" || {
-    vpn_error="PIA DNS $pia_dns_server is not routed through tun0"
+  ip -4 route get "$pia_dns_server" | grep -Eq "dev $vpn_interface( |$)" || {
+    vpn_error="PIA DNS $pia_dns_server is not routed through $vpn_interface"
     return 1
   }
   cp /etc/resolv.conf /app/pia/resolv.conf.original || {
@@ -179,24 +279,37 @@ configure_vpn_dns() {
 }
 
 vpn_up=false
-if prepare_vpn; then
-  elapsed=0
-  while [ "$elapsed" -lt 30 ]; do
-    if kill -0 "$vpn_pid" 2>/dev/null && ip -4 route show default | grep -Eq '^default.*dev tun0( |$)'; then
-      vpn_up=true
-      break
+case "$vpn_protocol" in
+  wireguard)
+    if prepare_wireguard && ip -4 route show default | grep -Eq '^default.*dev pia( |$)'; then vpn_up=true; fi
+    [ "$vpn_up" = true ] || [ "$vpn_error" != 'unknown startup failure' ] || vpn_error='WireGuard did not establish a default route'
+    ;;
+  openvpn)
+    vpn_interface=tun0
+    if prepare_vpn; then
+      elapsed=0
+      while [ "$elapsed" -lt 30 ]; do
+        if kill -0 "$vpn_pid" 2>/dev/null && ip -4 route show default | grep -Eq '^default.*dev tun0( |$)'; then
+          vpn_up=true
+          break
+        fi
+        kill -0 "$vpn_pid" 2>/dev/null || break
+        sleep 1
+        elapsed=$((elapsed + 1))
+      done
+      [ "$vpn_up" = true ] || vpn_error='OpenVPN did not establish a tun0 default route within 30 seconds; inspect the redacted OpenVPN lines above'
     fi
-    kill -0 "$vpn_pid" 2>/dev/null || break
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
-  [ "$vpn_up" = true ] || vpn_error='OpenVPN did not establish a tun0 default route within 30 seconds; inspect the redacted OpenVPN lines above'
+    ;;
+  *) vpn_error='PIA_PROTOCOL must be wireguard or openvpn' ;;
+esac
+
+if [ "$vpn_up" = true ]; then
   if [ "$vpn_up" = true ] && ! configure_vpn_dns; then
     vpn_up=false
   fi
   if [ "$vpn_up" = true ] && ! getent ahostsv4 discord.com >/dev/null 2>&1; then
     vpn_up=false
-    vpn_error="PIA DNS $pia_dns_server could not resolve discord.com through tun0"
+    vpn_error="PIA DNS $pia_dns_server could not resolve discord.com through $vpn_interface"
   fi
 fi
 
@@ -210,7 +323,11 @@ if [ "$vpn_up" != true ]; then
   exec /usr/local/bin/docker-entrypoint.sh "$@"
 fi
 
-echo "PIA VPN up: tun0 active (region $PIA_REGION, MTU $pia_tun_mtu)"
+if [ "$vpn_protocol" = wireguard ]; then
+  echo "PIA VPN up: pia active (WireGuard, region $PIA_REGION, MTU $pia_wg_mtu)"
+else
+  echo "PIA VPN up: tun0 active (OpenVPN, region $PIA_REGION, MTU $pia_tun_mtu)"
+fi
 umask "$original_umask"
 # An exec here would discard the cleanup traps. Only the enabled/success path
 # remains a supervisor; the original entrypoint still drops privileges as usual.

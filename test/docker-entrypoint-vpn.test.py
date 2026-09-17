@@ -24,6 +24,17 @@ exit 7
     executable(bindir / 'curl', '''#!/bin/sh
 echo curl >> "$ROOT/calls"
 if [ "$CASE" = download ]; then exit 22; fi
+output=
+previous=
+for argument in "$@"; do
+  if [ "$previous" = -o ]; then output=$argument; fi
+  previous=$argument
+done
+case "$*" in
+  *'/api/client/v2/token'*) printf '{"token":"test-token"}\\n' > "$output" ;;
+  *'serverlist.piaservers.net'*) printf '{"regions":[{"id":"us_chicago","servers":{"wg":[{"ip":"203.0.113.8","cn":"wg.example"}]}}]}\\nSIGNATURE\\n' > "$output" ;;
+  *'/addKey'*) printf '{"status":"OK","peer_ip":"10.7.8.9/32","server_key":"server-public-key","server_port":1337}\\n' > "$output" ;;
+esac
 exit 0
 ''')
     executable(bindir / 'getent', '''#!/bin/sh
@@ -38,8 +49,37 @@ case "$*" in
   '-o -4 addr show scope global') echo '2: eth0 inet 172.17.0.2/16 scope global eth0' ;;
   '-4 route show table main') echo 'default via 172.17.0.1 dev eth0' ;;
   '-4 route show default')
-    if [ -f "$ROOT/ready" ]; then echo 'default via 10.0.0.1 dev tun0'; fi ;;
-  '-4 route get 10.0.0.243') echo '10.0.0.243 dev tun0 src 10.1.2.3' ;;
+    if [ -f "$ROOT/ready" ]; then
+      if [ "${PIA_PROTOCOL:-wireguard}" = wireguard ]; then echo 'default dev pia'; else echo 'default via 10.0.0.1 dev tun0'; fi
+    fi ;;
+  '-4 route get 10.0.0.243')
+    if [ "${PIA_PROTOCOL:-wireguard}" = wireguard ]; then echo '10.0.0.243 dev pia src 10.7.8.9'; else echo '10.0.0.243 dev tun0 src 10.1.2.3'; fi ;;
+  '-4 route get 203.0.113.8') echo '203.0.113.8 via 172.17.0.1 dev eth0 src 172.17.0.2' ;;
+  'link set mtu 1420 up dev pia') touch "$ROOT/ready" ;;
+esac
+''')
+    executable(bindir / 'jq', '''#!/usr/bin/env python3
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[-1])
+data = json.loads(path.read_text())
+query = next((a for a in sys.argv[1:] if a.startswith('.')), '')
+if query.startswith('.regions'):
+    region = sys.argv[sys.argv.index('--arg') + 2]
+    print(json.dumps(next(r for r in data['regions'] if r['id'] == region)))
+elif '.token' in query: print(data['token'])
+elif '.servers.wg[0].ip' in query: print(data['servers']['wg'][0]['ip'])
+elif '.servers.wg[0].cn' in query: print(data['servers']['wg'][0]['cn'])
+elif '.status' in query: print(data.get('status', ''))
+elif '.peer_ip' in query: print(data['peer_ip'])
+elif '.server_key' in query: print(data['server_key'])
+elif '.server_port' in query: print(data['server_port'])
+else: sys.exit(1)
+''')
+    executable(bindir / 'wg', '''#!/bin/sh
+echo "wg $*" >> "$ROOT/calls"
+case "$1" in
+  genkey) echo private-key ;;
+  pubkey) cat >/dev/null; echo public-key ;;
 esac
 ''')
     executable(bindir / 'openvpn', '''#!/usr/bin/env python3
@@ -62,7 +102,7 @@ if os.environ['CASE'] == 'auth':
 if os.environ['CASE'] != 'timeout': (root / 'ready').touch()
 while True: time.sleep(.05)
 ''')
-    env = dict(os.environ, PATH=str(bindir)+':'+os.environ['PATH'], ROOT=str(root), PIA_USERNAME='test-user', PIA_PASSWORD='secret.*[$]value', PIA_REGION='us_chicago')
+    env = dict(os.environ, PATH=str(bindir)+':'+os.environ['PATH'], ROOT=str(root), PIA_USERNAME='test-user', PIA_PASSWORD='secret.*[$]value', PIA_REGION='us_chicago', PIA_PROTOCOL='openvpn')
     for case in ['missing-user', 'missing-password', 'missing-region', 'empty-user', 'empty-password', 'empty-region', 'download', 'invalid-region', 'invalid-dns', 'invalid-mtu', 'auth', 'timeout', 'dns', 'success', 'signal']:
         resolv.write_text('nameserver 127.0.0.11\n')
         for path in ['ready', 'stopped', 'calls']:
@@ -106,3 +146,21 @@ while True: time.sleep(.05)
             assert 'priority 8000 to 10.0.0.243/32 table main' in calls
             assert resolv.read_text() == 'nameserver 127.0.0.11\n'
         print('PASS '+case)
+
+    # WireGuard is the default transport. Its mocked success path exercises
+    # token acquisition, region selection, ephemeral keys, routing and cleanup.
+    for path in ['ready', 'stopped', 'calls']:
+        (root/path).unlink(missing_ok=True)
+    resolv.write_text('nameserver 127.0.0.11\n')
+    current = dict(env, CASE='wireguard-success')
+    current.pop('PIA_PROTOCOL')
+    p = subprocess.run([str(root/'wrapper'), 'space argument', '*.literal'], env=current, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=10)
+    assert p.returncode == 7, p.stdout
+    assert 'PIA VPN up: pia active (WireGuard' in p.stdout, p.stdout
+    assert 'APP:space argument:*.literal' in p.stdout, p.stdout
+    calls = (root/'calls').read_text()
+    assert 'wg genkey' in calls and 'wg set pia' in calls, calls
+    assert '203.0.113.8/32 via 172.17.0.1 dev eth0' in calls, calls
+    assert 'route restore' in calls and 'link delete pia' in calls, calls
+    assert resolv.read_text() == 'nameserver 127.0.0.11\n'
+    print('PASS wireguard-success')
