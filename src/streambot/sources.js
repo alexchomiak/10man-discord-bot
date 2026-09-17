@@ -411,7 +411,10 @@ function parseSignedDuration(raw) {
 // resolveYtdlp so tests can stub stdout.
 function ytdlpDumpJson(cfg, url) {
   const timeoutMs = Number.isFinite(cfg.ytdlpTimeoutMs) && cfg.ytdlpTimeoutMs > 0 ? cfg.ytdlpTimeoutMs : 20000;
-  return spawnYtdlp(cfg, ['--dump-json', '--no-playlist', url], timeoutMs);
+  // The image already includes Node. Let current yt-dlp use it for YouTube's
+  // player challenges so format discovery does not silently return a reduced
+  // set with the "no supported JavaScript runtime" warning.
+  return spawnYtdlp(cfg, ['--js-runtimes', 'node', '--dump-json', '--no-playlist', url], timeoutMs);
 }
 
 // vcodec preference: lower index = better; unknown vcodec codes sort last.

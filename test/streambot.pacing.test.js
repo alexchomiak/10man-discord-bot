@@ -115,13 +115,13 @@ function argvOf(command) {
   return arr.map((p) => String(p));
 }
 
-test('dash merge: network inputs use -re progressive pacing and bounded reconnect/read options', () => {
+test('dash merge: network inputs can read ahead and retain bounded reconnect/read options', () => {
   const command = buildDashCommand({ offset: 0 });
   const argv = argvOf(command);
   const inputs = argv.filter((a) => a === '-i').length;
   assert.strictEqual(inputs, 2, 'dash merge must keep exactly two -i inputs');
 
-  assert.strictEqual(argv.filter((a) => a === '-re').length, 2, 'each HTTP input must be paced');
+  assert.strictEqual(argv.filter((a) => a === '-re').length, 0, 'TimedTrack owns pacing; HTTP inputs must refill the buffer');
   assert.strictEqual(argv.filter((a) => a === '-thread_queue_size').length, 2);
   assert.strictEqual(argv.filter((a) => a === '-rw_timeout').length, 2);
   assert.strictEqual(argv.filter((a) => a === '-reconnect').length, 2);
@@ -129,13 +129,13 @@ test('dash merge: network inputs use -re progressive pacing and bounded reconnec
   assert.ok(!argv.includes('-ss'), 'no -ss without an offset');
 });
 
-test('dash merge: with offset, ONE -ss and ONE -re per network input', () => {
+test('dash merge: with offset, ONE -ss per network input and no duplicate pacing', () => {
   const command = buildDashCommand({ offset: 60 });
   const argv = argvOf(command);
   assert.strictEqual(argv.filter((a) => a === '-i').length, 2, 'still two inputs');
   assert.strictEqual(argv.filter((a) => a === '-ss').length, 2, 'one -ss per input, not duplicated');
   assert.strictEqual(argv.filter((a) => a === '60').length, 2, 'offset value appears per input');
-  assert.strictEqual(argv.filter((a) => a === '-re').length, 2);
+  assert.strictEqual(argv.filter((a) => a === '-re').length, 0);
 });
 
 test('single lavfi filler paces both synthetic inputs with -re', () => {

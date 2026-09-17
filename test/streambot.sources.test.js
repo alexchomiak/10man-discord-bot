@@ -302,6 +302,9 @@ test('selection: media_url present -> media_url chosen and yt-dlp IS invoked (si
   assert.strictEqual(calls.length, 1, 'exactly one yt-dlp call (--dump-json, no download) for a single platform stream');
   assert.strictEqual(calls[0].mode, 'dump');
   assert.strictEqual(calls[0].url, 'https://twitch.tv/example');
+  const runtimeIndex = calls[0].argv.indexOf('--js-runtimes');
+  assert.ok(runtimeIndex >= 0, 'yt-dlp must be given the JavaScript runtime bundled in the image');
+  assert.strictEqual(calls[0].argv[runtimeIndex + 1], 'node');
 });
 
 test('selection: media_url absent, hls_url absent -> stream_url chosen', async () => {

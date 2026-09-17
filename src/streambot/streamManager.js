@@ -348,10 +348,10 @@ class StreamManager {
       if (!isHttpUrl(url)) return;
       const timeoutUs = Math.max(1000, Math.round((cfg.ffmpegReadTimeoutMs || 15000) * 1000));
       command.inputOptions([
-        // Keep remote inputs tied to their media timestamps. This preserves
-        // progressive playback and prevents long VODs from being pulled and
-        // transcoded ahead as quickly as the network and CPU permit.
-        '-re',
+        // TimedTrack is the one realtime clock for outgoing Discord packets.
+        // Do not also apply -re to remote inputs: separate YouTube DASH audio
+        // and video downloads must be able to read ahead and refill the
+        // bounded producer buffer after a CDN or VPN stall.
         '-thread_queue_size', '2048',
         '-rw_timeout', String(timeoutUs),
         '-user_agent', 'Mozilla/5.0'
