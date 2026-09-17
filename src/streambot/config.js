@@ -115,6 +115,16 @@ function loadConfig() {
     streamHeight: parsePositiveInt(process.env.STREAM_HEIGHT, 1080),
     streamFrameRate: parsePositiveNumber(process.env.STREAM_FRAME_RATE, 30),
     streamBitrate: parseKbps(process.env.STREAM_BITRATE, 5000),
+    // Limit the encoder's short-term bitrate reservoir. At 1080p, a large
+    // reservoir lets forced H.264 IDRs become hundreds of KiB and arrive as
+    // a single RTP burst even though the average bitrate is reasonable.
+    // Null derives a 300ms reservoir from STREAM_BITRATE in StreamManager.
+    streamVbvBufferKbps: process.env.STREAMBOT_VBV_BUFFER_KBITS
+      ? parseKbps(process.env.STREAMBOT_VBV_BUFFER_KBITS, null)
+      : null,
+    // Two seconds is a normal WebRTC GOP: quick late-join recovery without
+    // forcing a large IDR on every single second of playback.
+    keyframeIntervalSec: parsePositiveNumber(process.env.STREAMBOT_KEYFRAME_INTERVAL_SEC, 2),
     // Keep the source at or below the output raster. Pulling a 1440p/4K track
     // only to downscale it to 1080p wastes decoder bandwidth and GPU/CPU.
     sourceMaxHeight: parsePositiveInt(process.env.SBOT_SOURCE_MAX_HEIGHT, 1080),

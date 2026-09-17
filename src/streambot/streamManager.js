@@ -294,6 +294,9 @@ class StreamManager {
 
   _encoder(videoModule) {
     const cfg = this.config;
+    const keyframeFrames = Math.max(1, Math.round(
+      (cfg.streamFrameRate || 30) * (cfg.keyframeIntervalSec || 2)
+    ));
     if (cfg.videoEncoder === 'vaapi') {
       const device = cfg.vaapiDevice || '/dev/dri/renderD128';
       // The library's generic VAAPI preset leaves profile, GOP and IDR
@@ -309,8 +312,8 @@ class StreamManager {
           options: [
             '-profile:v', 'constrained_baseline',
             '-level:v', '4.1',
-            '-g', String(Math.max(1, Math.round(cfg.streamFrameRate || 30))),
-            '-keyint_min', String(Math.max(1, Math.round(cfg.streamFrameRate || 30))),
+            '-g', String(keyframeFrames),
+            '-keyint_min', String(keyframeFrames),
             '-idr_interval', '0',
             '-bf', '0',
             '-b:v', `${Math.round(bitrate)}k`,
@@ -331,6 +334,16 @@ class StreamManager {
       : (cfg.videoCodec || 'H264').toUpperCase();
     const bitrate = Number.isFinite(cfg.streamBitrate) && cfg.streamBitrate > 0 ? Math.round(cfg.streamBitrate) : 5000;
     const bitrateMax = Math.round(bitrate * 1.4);
+    // A small VBV reservoir smooths the encoded wire rate. With the previous
+    // two-second reservoir, complex 1080p IDRs reached ~300 KiB and were
+    // fragmented into roughly 200 RTP packets at once. A 300ms reservoir
+    // kept the same sample below 100 KiB without reducing average bitrate.
+    const vbvBufferKbps = Number.isFinite(cfg.streamVbvBufferKbps) && cfg.streamVbvBufferKbps > 0
+      ? Math.round(cfg.streamVbvBufferKbps)
+      : Math.max(500, Math.round(bitrate * 0.3));
+    const keyframeIntervalSec = Number.isFinite(cfg.keyframeIntervalSec) && cfg.keyframeIntervalSec > 0
+      ? cfg.keyframeIntervalSec
+      : 2;
     const height = Number.isFinite(cfg.streamHeight) && cfg.streamHeight > 0 ? Math.round(cfg.streamHeight) : 1080;
     const fps = Number.isFinite(cfg.streamFrameRate) && cfg.streamFrameRate > 0 ? Math.round(cfg.streamFrameRate) : 30;
     const audioKbps = Number.isFinite(cfg.streamAudioBitrate) && cfg.streamAudioBitrate > 0 ? Math.round(cfg.streamAudioBitrate) : 128;
@@ -402,12 +415,13 @@ class StreamManager {
       .addOutputOption(audioUrl ? '-map 1:a:0' : '-map 0:a:0?')
       .videoFilter(`scale=${cfg.streamWidth || 1920}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${cfg.streamWidth || 1920}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`)
       .fpsOutput(fps)
-      .addOutputOption(['-b:v', `${bitrate}k`, '-maxrate:v', `${bitrateMax}k`, '-bufsize:v', `${bitrate * 2}k`, '-bf', '0', '-pix_fmt', 'yuv420p']);
+      .addOutputOption(['-b:v', `${bitrate}k`, '-maxrate:v', `${bitrateMax}k`, '-bufsize:v', `${vbvBufferKbps}k`, '-bf', '0', '-pix_fmt', 'yuv420p']);
 
     // A second silent track supplies audio for video-only sources/placeholder.
     // The remuxer selects real audio first when present and drops the spare.
     if (!audioUrl) command.addOutputOption('-map 1:a:0');
-    command.addOutputOption('-shortest').addOutputOption('-force_key_frames', 'expr:gte(t,n_forced*1)');
+    command.addOutputOption('-shortest')
+      .addOutputOption('-force_key_frames', `expr:gte(t,n_forced*${keyframeIntervalSec})`);
 
     // Encoder settings use VAAPI on Intel when configured and libx264
     // otherwise. Fall back to ultrafast libx264 if the library exports no
@@ -440,7 +454,8 @@ class StreamManager {
     if (cfg.verbose) {
       log('info', `media pipeline: input=${piece?.isLive ? 'live' : (piece?.isFiller ? 'filler' : 'vod')} ` +
         `output=${cfg.streamWidth || 1920}x${height}@${fps} encoder=${encoderSettings?.name || 'libx264'} ` +
-        `rate=${bitrate}k/${bitrateMax}k buffer=${cfg.pipelineBufferMb || 8}MiB`);
+        `rate=${bitrate}k/${bitrateMax}k vbv=${vbvBufferKbps}k gop=${keyframeIntervalSec}s ` +
+        `buffer=${cfg.pipelineBufferMb || 8}MiB`);
     }
 
     // Audio: libopus 48k stereo @streamAudioBitrate k (mirrors newApi.js:147-161).

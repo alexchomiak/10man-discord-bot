@@ -171,11 +171,34 @@ test('Arc mode uses VAAPI encode with the configured render device and 1080p/30 
   assert.ok(argv.includes('scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=nv12,hwupload'));
   assert.deepStrictEqual(argv.slice(argv.indexOf('-r'), argv.indexOf('-r') + 2), ['-r', '30']);
   assert.ok(argv.includes('7000k'));
-  assert.ok(argv.includes('10000k'));
+  assert.ok(argv.includes('1500k'));
   assert.deepStrictEqual(argv.slice(argv.indexOf('-profile:v'), argv.indexOf('-profile:v') + 2), ['-profile:v', 'constrained_baseline']);
   assert.deepStrictEqual(argv.slice(argv.indexOf('-level:v'), argv.indexOf('-level:v') + 2), ['-level:v', '4.1']);
-  assert.deepStrictEqual(argv.slice(argv.indexOf('-g'), argv.indexOf('-g') + 2), ['-g', '30']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-g'), argv.indexOf('-g') + 2), ['-g', '60']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-keyint_min'), argv.indexOf('-keyint_min') + 2), ['-keyint_min', '60']);
   assert.deepStrictEqual(argv.slice(argv.indexOf('-idr_interval'), argv.indexOf('-idr_interval') + 2), ['-idr_interval', '0']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-bufsize:v'), argv.indexOf('-bufsize:v') + 2), ['-bufsize:v', '1500k']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-force_key_frames'), argv.indexOf('-force_key_frames') + 2),
+    ['-force_key_frames', 'expr:gte(t,n_forced*2)']);
+});
+
+test('video burst controls are configurable without reducing average or peak bitrate', () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    videoCodec: 'H264', streamBitrate: 6000, streamVbvBufferKbps: 2400,
+    keyframeIntervalSec: 1.5, streamHeight: 1080, streamFrameRate: 30,
+    streamAudioBitrate: 128
+  });
+  const command = StreamManager.prototype._buildDashMerge.call(
+    mgr,
+    { Utils: { normalizeVideoCodec: (c) => c } },
+    'https://cdn.example/v.mp4', 'https://cdn.example/a.m4a', 0, null, {}
+  ).command;
+  const argv = argvOf(command);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-b:v'), argv.indexOf('-b:v') + 2), ['-b:v', '6000k']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-maxrate:v'), argv.indexOf('-maxrate:v') + 2), ['-maxrate:v', '8400k']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-bufsize:v'), argv.indexOf('-bufsize:v') + 2), ['-bufsize:v', '2400k']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-force_key_frames'), argv.indexOf('-force_key_frames') + 2),
+    ['-force_key_frames', 'expr:gte(t,n_forced*1.5)']);
 });
 
 test('remote media builds a real bounded jitter buffer before Discord drains it', async () => {
