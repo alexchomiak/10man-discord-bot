@@ -238,6 +238,38 @@ class StreamManager {
     });
   }
 
+  _probeVaapiInfo(device) {
+    return new Promise(resolve => {
+      let child;
+      try {
+        child = spawn('vainfo', ['--display', 'drm', '--device', device], {
+          env: { ...process.env, LIBVA_DRIVER_NAME: process.env.LIBVA_DRIVER_NAME || 'iHD' },
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+      } catch (error) {
+        resolve(`vainfo could not start: ${error.message}`);
+        return;
+      }
+      let output = '';
+      let settled = false;
+      const finish = detail => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(String(detail || '').replace(/\s+/g, ' ').trim());
+      };
+      const collect = chunk => { output = (output + String(chunk)).slice(-4096); };
+      child.stdout.on('data', collect);
+      child.stderr.on('data', collect);
+      child.once('error', error => finish(`vainfo failed to start: ${error.message}`));
+      child.once('close', code => finish(`vainfo exit ${code}: ${output}`));
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch {}
+        finish('vainfo timed out after 10 seconds');
+      }, 10000);
+    });
+  }
+
   async _ensureVaapiReady() {
     if (this._vaapiReady) return this._vaapiReady;
     this._vaapiReady = (async () => {
@@ -250,6 +282,9 @@ class StreamManager {
           return device;
         }
         failures.push(`${device}: ${String(result.detail || 'initialization failed').replace(/\s+/g, ' ').trim()}`);
+      }
+      if (failures.length) {
+        failures.push(`diagnostic: ${await this._probeVaapiInfo(this._vaapiCandidates()[0])}`);
       }
       this._vaapiReady = null;
       throw new Error(`VAAPI H.264 initialization failed for every render device. ${failures.join(' | ')}`);

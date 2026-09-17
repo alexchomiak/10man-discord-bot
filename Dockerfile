@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS deps
+FROM node:22-trixie-slim AS deps
 
 WORKDIR /app
 ENV NODE_ENV=production
@@ -11,7 +11,7 @@ COPY package.json ./
 RUN npm install --omit=dev \
   && npm cache clean --force
 
-FROM node:22-bookworm-slim
+FROM node:22-trixie-slim
 
 WORKDIR /app
 ARG BUILD_VERSION=dev
@@ -23,7 +23,7 @@ ENV NODE_ENV=production
 # ca-certificates + gosu are needed by the CS2 bot.
 # ffmpeg is required by the Discord video-stream library: it spawns a SYSTEM
 # ffmpeg binary (fluent-ffmpeg), which must be built with the libzmq muxer
-# (Discord sends stream data over a ZMQ socket). Debian bookworm's ffmpeg
+# (Discord sends stream data over a ZMQ socket). Debian trixie's ffmpeg
 # ships with libzmq and pulls in the libva2 runtime for VAAPI.
 # (The CS2 bot does NOT use this system binary — it always uses the
 #  self-contained ffmpeg-static npm binary, so it is unaffected.)
@@ -34,14 +34,16 @@ ENV NODE_ENV=production
 #                 container toolkit (docker run --gpus all) + matching
 #                 driver/runtime libraries, which are deployment-specific.
 # Core: everything the bot needs on any arch.
-# Intel Media Driver supports modern Intel graphics, including Arc. Keep the
-# legacy i965 driver as a fallback for older Intel hosts. Both are x86-only,
-# so installation is best-effort for arm64 development builds.
+# Intel Media Driver supports modern Intel graphics, including Arc. It is
+# x86-only, so installation is best-effort for arm64 development builds.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu ffmpeg libva2 curl jq openvpn wireguard-tools iproute2 unzip \
-  && { apt-get install -y --no-install-recommends intel-media-va-driver libva-intel-driver \
+  && apt-get install -y --no-install-recommends ca-certificates gosu ffmpeg libva2 vainfo curl jq openvpn wireguard-tools iproute2 unzip \
+  && { apt-get install -y --no-install-recommends intel-media-va-driver \
        || echo "skip: Intel VAAPI drivers unavailable on this architecture"; } \
   && rm -rf /var/lib/apt/lists/*
+
+# Intel's modern VAAPI backend.
+ENV LIBVA_DRIVER_NAME=iHD
 
 # yt-dlp is an EXTERNAL binary (not an npm package) used by the selfbot's
 # resolver (src/streambot/sources.js) to turn platform page URLs
