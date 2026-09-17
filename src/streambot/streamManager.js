@@ -191,8 +191,30 @@ class StreamManager {
 
   _encoder(videoModule) {
     const cfg = this.config;
-    if (cfg.videoEncoder === 'vaapi' && videoModule.Encoders?.vaapi) {
-      return videoModule.Encoders.vaapi({ device: cfg.vaapiDevice || '/dev/dri/renderD128' });
+    if (cfg.videoEncoder === 'vaapi') {
+      const device = cfg.vaapiDevice || '/dev/dri/renderD128';
+      // The library's generic VAAPI preset leaves profile, GOP and IDR
+      // behavior to the driver. Arc can consequently emit a valid H.264
+      // stream that late-joining Discord viewers cannot initialize. Keep the
+      // hardware upload path, but constrain H.264 to a WebRTC-safe stream
+      // with decoder headers on every one-second IDR boundary.
+      return (bitrate, bitrateMax) => ({
+        H264: {
+          name: 'h264_vaapi',
+          outFilters: ['format=nv12', 'hwupload'],
+          globalOptions: ['-vaapi_device', device],
+          options: [
+            '-profile:v', 'constrained_baseline',
+            '-level:v', '4.1',
+            '-g', String(Math.max(1, Math.round(cfg.streamFrameRate || 30))),
+            '-keyint_min', String(Math.max(1, Math.round(cfg.streamFrameRate || 30))),
+            '-idr_interval', '0',
+            '-bf', '0',
+            '-b:v', `${Math.round(bitrate)}k`,
+            '-maxrate:v', `${Math.round(bitrateMax)}k`
+          ]
+        }
+      });
     }
     return videoModule.Encoders?.software?.({ x264: { preset: 'superfast', tune: 'film' } }) || null;
   }
@@ -680,6 +702,75 @@ class StreamManager {
     piece.output?.destroy?.();
   }
 
+  _jitterBufferSec(piece) {
+    if (!piece || piece.isFiller || piece.inputFormat === 'lavfi') return 0;
+    const seconds = Number(this.config.jitterBufferSec);
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : 4;
+  }
+
+  // FFmpeg's output PassThrough used to be described as an 8 MiB stall
+  // buffer, but attaching the demuxer immediately kept readableLength near
+  // zero. Build a real media runway before the timestamp-paced Discord tracks
+  // begin draining it. Count only intervals in which producer bytes advance,
+  // so a CDN/VPN stall during startup does not consume the requested runway.
+  // The capacity threshold and deadline keep very high- and very low-bitrate
+  // inputs bounded.
+  async _prebuffer(output, piece) {
+    const seconds = this._jitterBufferSec(piece);
+    if (seconds <= 0 || !output || typeof output.readableLength !== 'number' || output.destroyed || output.readableEnded) return;
+    const signal = piece.control?.signal;
+    signal?.throwIfAborted?.();
+    const capacity = Number(output.readableHighWaterMark) ||
+      Math.max(1, Math.round((this.config.pipelineBufferMb || 8) * 1024 * 1024));
+    const capacityTarget = Math.max(1, Math.floor(capacity * 0.75));
+    const targetActiveMs = seconds * 1000;
+    const deadlineMs = Math.max(15000, targetActiveMs * 4);
+    const started = Date.now();
+    let previousAt = started;
+    let previousBytes = Number(output.readableLength) || 0;
+    let activeMs = 0;
+
+    await new Promise((resolve, reject) => {
+      let interval;
+      let done = false;
+      const cleanup = () => {
+        if (interval) clearInterval(interval);
+        output.off?.('end', finish);
+        output.off?.('finish', finish);
+        output.off?.('close', finish);
+        output.off?.('error', fail);
+        signal?.removeEventListener?.('abort', abort);
+      };
+      const settle = (fn, value) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        fn(value);
+      };
+      const finish = () => settle(resolve);
+      const fail = error => settle(reject, error);
+      const abort = () => settle(reject, signal.reason || new Error('Playback cancelled while buffering'));
+      const sample = () => {
+        if (signal?.aborted) { abort(); return; }
+        if (output.destroyed || output.readableEnded) { finish(); return; }
+        const now = Date.now();
+        const bytes = Number(output.readableLength) || 0;
+        if (bytes > previousBytes) activeMs += now - previousAt;
+        previousBytes = bytes;
+        previousAt = now;
+        if (activeMs >= targetActiveMs || bytes >= capacityTarget || now - started >= deadlineMs) finish();
+      };
+      output.once?.('end', finish);
+      output.once?.('finish', finish);
+      output.once?.('close', finish);
+      output.once?.('error', fail);
+      signal?.addEventListener?.('abort', abort, { once: true });
+      interval = setInterval(sample, 100);
+      sample();
+    });
+    this._verbose(`media prebuffer ready: ${(Number(output.readableLength) / 1024 / 1024).toFixed(2)}MiB, target=${seconds}s`);
+  }
+
   async _reapPiece(piece) {
     const escalation = setTimeout(() => { try { piece.command?.kill('SIGKILL'); } catch {} }, 2000);
     try {
@@ -755,6 +846,7 @@ class StreamManager {
               log: (level, message) => log(level, message) });
             piece.telemetry.start();
           } catch {}
+          await this._prebuffer(result.output, piece);
           appendTask = p.feeder.append(result.output, piece.control.signal);
           await Promise.all([appendTask, completion]);
           if (!piece.control.signal.aborted && !piece.isFiller) this._notifyEnded(piece, clean);

@@ -197,7 +197,7 @@ async function until(check) {
 function fixture(t, config = {}, moduleOptions = {}) {
   const fv = fakeVideoModule(moduleOptions);
   const alerts = [];
-  const mgr = new StreamManager(makeClient(), 'c1', { playStreamStartTimeoutMs: 100,
+  const mgr = new StreamManager(makeClient(), 'c1', { playStreamStartTimeoutMs: 100, jitterBufferSec: 0,
     alertSink: { notify: async (event, detail) => alerts.push({event,detail}) }, ...config });
   mgr._videoModule = fv.moduleRef;
   mgr._prepareSingle = (vm, piece) => vm.prepareStream(piece.streamUrl,
@@ -561,13 +561,21 @@ test('joinVoice happy path retains existing behavior', async t => {
   await f.mgr.stop();
 });
 
-test('config: streamBufferSec default is 15 and honors env override', () => {
+test('config: stream and jitter buffer defaults are stable', () => {
   const old = process.env.SELF_BOT_TOKEN;
+  const oldJitter = process.env.SBOT_JITTER_BUFFER_SEC;
   process.env.SELF_BOT_TOKEN = 'test';
+  delete process.env.SBOT_JITTER_BUFFER_SEC;
   try {
     const cfg = require('../src/streambot/config').loadConfig();
     assert.equal(cfg.streamBufferSec, Number(process.env.SBOT_STREAM_BUFFER_SEC) || 15);
-  } finally { if (old === undefined) delete process.env.SELF_BOT_TOKEN; else process.env.SELF_BOT_TOKEN=old; }
+    assert.equal(cfg.jitterBufferSec, 4);
+    process.env.SBOT_JITTER_BUFFER_SEC = '0';
+    assert.equal(require('../src/streambot/config').loadConfig().jitterBufferSec, 0);
+  } finally {
+    if (old === undefined) delete process.env.SELF_BOT_TOKEN; else process.env.SELF_BOT_TOKEN=old;
+    if (oldJitter === undefined) delete process.env.SBOT_JITTER_BUFFER_SEC; else process.env.SBOT_JITTER_BUFFER_SEC=oldJitter;
+  }
 });
 
 test('buffer is inserted before a real piece while a real piece is active', async t => {

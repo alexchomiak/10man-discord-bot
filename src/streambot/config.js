@@ -180,9 +180,14 @@ function loadConfig() {
     hardwareDecode: process.env.STREAMBOT_HARDWARE_DECODE?.trim().toLowerCase() === 'true',
     vaapiDevice: (process.env.STREAMBOT_VAAPI_DEVICE || '/dev/dri/renderD128').trim() || '/dev/dri/renderD128',
     // Bounded NUT queue between FFmpeg and Discord. Eight MiB is roughly
-    // 11-13 seconds at the default aggregate bitrate, enough to absorb short
-    // CDN/VPN stalls without allowing unbounded memory growth.
+    // 11-13 seconds at the default aggregate bitrate. The feeder deliberately
+    // fills part of this queue before playback so it can absorb short CDN/VPN
+    // stalls without allowing unbounded memory growth.
     pipelineBufferMb: parsePositiveInt(process.env.SBOT_PIPELINE_BUFFER_MB, 8),
+    // Real remote sources build this much media runway before their first
+    // packet is handed to Discord. The persistent Go Live connection remains
+    // open while it fills. Zero disables the jitter buffer.
+    jitterBufferSec: parseNonNegativeNumber(process.env.SBOT_JITTER_BUFFER_SEC, 4),
     ffmpegReadTimeoutMs: parsePositiveInt(process.env.SBOT_FFMPEG_READ_TIMEOUT_MS, 15000),
     ffmpegPath: (process.env.FFMPEG_PATH || '').trim() || 'ffmpeg',
 

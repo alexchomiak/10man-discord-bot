@@ -3,6 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { EventEmitter } = require('events');
+const { PassThrough } = require('stream');
 
 const { createTelemetry } = require('../src/streambot/telemetry');
 const {
@@ -134,27 +135,49 @@ test('Arc mode uses VAAPI encode with the configured render device and 1080p/30 
     streamWidth: 1920, streamHeight: 1080, streamFrameRate: 30,
     streamBitrate: 5000, streamAudioBitrate: 128, pipelineBufferMb: 8
   });
-  const videoModule = {
-    Utils: { normalizeVideoCodec: (c) => c },
-    Encoders: {
-      vaapi: ({ device }) => () => ({ H264: {
-        name: 'h264_vaapi',
-        outFilters: ['format=nv12|vaapi', 'hwupload'],
-        globalOptions: ['-vaapi_device', device],
-        options: []
-      } })
-    }
-  };
+  const videoModule = { Utils: { normalizeVideoCodec: (c) => c } };
   const command = StreamManager.prototype._buildDashMerge.call(
     mgr, videoModule, 'https://cdn.example/v.mp4', 'https://cdn.example/a.m4a', 0, null, { isLive: true }
   ).command;
   const argv = argvOf(command);
   assert.ok(argv.includes('h264_vaapi'));
   assert.ok(argv.includes('/dev/dri/renderD129'));
-  assert.ok(argv.includes('scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=nv12|vaapi,hwupload'));
+  assert.ok(argv.includes('scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=nv12,hwupload'));
   assert.deepStrictEqual(argv.slice(argv.indexOf('-r'), argv.indexOf('-r') + 2), ['-r', '30']);
   assert.ok(argv.includes('7000k'));
   assert.ok(argv.includes('10000k'));
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-profile:v'), argv.indexOf('-profile:v') + 2), ['-profile:v', 'constrained_baseline']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-level:v'), argv.indexOf('-level:v') + 2), ['-level:v', '4.1']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-g'), argv.indexOf('-g') + 2), ['-g', '30']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-idr_interval'), argv.indexOf('-idr_interval') + 2), ['-idr_interval', '0']);
+});
+
+test('remote media builds a real bounded jitter buffer before Discord drains it', async () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    jitterBufferSec: 0.2, pipelineBufferMb: 1
+  });
+  const output = new PassThrough({ highWaterMark: 1024 * 1024 });
+  const control = new AbortController();
+  const piece = { isFiller: false, control };
+  let settled = false;
+  const buffering = mgr._prebuffer(output, piece).then(() => { settled = true; });
+
+  output.write(Buffer.alloc(128));
+  await new Promise(resolve => setTimeout(resolve, 110));
+  assert.strictEqual(settled, false, 'one short production interval is not enough runway');
+  output.write(Buffer.alloc(128));
+  await buffering;
+  assert.ok(output.readableLength >= 256, 'producer bytes remain queued for the feeder');
+  output.destroy();
+});
+
+test('filler and an explicit zero setting skip the jitter buffer', async () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', { jitterBufferSec: 4 });
+  const output = new PassThrough();
+  await mgr._prebuffer(output, { isFiller: true, control: new AbortController() });
+  mgr.config.jitterBufferSec = 0;
+  await mgr._prebuffer(output, { isFiller: false, control: new AbortController() });
+  output.destroy();
 });
 
 // ============================================================================

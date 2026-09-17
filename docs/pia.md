@@ -64,12 +64,13 @@ original entrypoint.
 It retains PIA's certificate validation and permits AES-128-CBC alongside modern
 GCM ciphers for compatibility with the downloaded profile and OpenVPN 2.6.
 
-Any setup/authentication/route timeout fails open: remove the VPN interface,
-restore saved default routes, remove temporary reply rules and credentials,
-print the redacted log tail and a stage-specific reason, then print
-`WARNING: PIA VPN failed to start; continuing on normal networking`, then exec
-the original entrypoint. A failed client cannot later reconnect behind the app.
-SIGTERM/SIGINT and normal app exit also clean up the VPN.
+When any PIA setting is present, setup/authentication/route failures are
+fail-closed by default: the wrapper removes the VPN interface, restores saved
+routes, removes temporary rules and credentials, prints a redacted reason, and
+exits without launching the app. This prevents Discord from seeing the host's
+normal egress IP after a VPN failure. `PIA_FAIL_OPEN=true` explicitly restores
+the former fallback to normal networking. SIGTERM/SIGINT and normal app exit
+also clean up the VPN.
 
 ## Implementation adjustments for PR review
 
@@ -98,7 +99,7 @@ SIGTERM/SIGINT and normal app exit also clean up the VPN.
 
 This is a separate VPN connection using the same PIA account, not reuse of
 the qBittorrent container's tunnel, and it need not receive the same exit IP.
-It is intentionally fail-open, with no kill switch. This implementation routes
+Configured PIA mode is fail-closed during startup. This implementation routes
 IPv4 and does not promise IPv6 protection on IPv6-enabled Docker networks.
 Connected Docker subnets retain their routes. RFC1918 destinations
 (`10.0.0.0/8`, `172.16.0.0/12`, and `192.168.0.0/16`) use the original routing
@@ -111,7 +112,7 @@ the general `10.0.0.0/8` LAN rule. It verifies both the DNS route and a
 `discord.com` lookup before starting the app. Cleanup restores Docker's original
 resolver. `PIA_DNS_SERVER` may select one of PIA's official private DNS addresses:
 `10.0.0.241`, `10.0.0.242`, `10.0.0.243`, or `10.0.0.244`. A failed route or
-lookup tears down the tunnel and follows the documented fail-open path. Validate
+lookup tears down the tunnel and follows the documented fail-closed path. Validate
 ShareTV reachability and port 8081 on deployment.
 
 For real-time Discord video, the wrapper leaves `PIA_TUN_MTU` at OpenVPN's
@@ -120,6 +121,14 @@ through 1500 are accepted for diagnosing a path with a confirmed MTU problem.
 Smaller values increase tunnel packet rate and should not be used as general
 latency tuning. This setting does not lower the configured video resolution,
 frame rate, or bitrate.
+
+The media pipeline separately uses `SBOT_JITTER_BUFFER_SEC=4` by default. It
+fills part of the bounded `SBOT_PIPELINE_BUFFER_MB=8` NUT queue before a remote
+source begins feeding the persistent Discord tracks. This absorbs short source
+or tunnel stalls while keeping the same Go Live connection. If a longer stall
+exhausts that runway, track timing rebases when data resumes instead of sending
+all delayed RTP frames in a catch-up burst. Set the jitter buffer to `0` only
+for diagnosis; larger values add the same amount of playback startup delay.
 
 ## Deployment verification
 

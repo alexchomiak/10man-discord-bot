@@ -1,8 +1,23 @@
 #!/bin/sh
-# Keep the disabled path before all VPN setup, filesystem changes and traps.
-if [ -z "${PIA_USERNAME:-}" ] || [ -z "${PIA_PASSWORD:-}" ] || [ -z "${PIA_REGION:-}" ]; then
+# Keep the fully disabled path before all VPN setup, filesystem changes and traps.
+# A partial PIA configuration is an error: silently treating it as disabled
+# could expose the bot's normal egress address.
+if [ -z "${PIA_USERNAME:-}" ] && [ -z "${PIA_PASSWORD:-}" ] && [ -z "${PIA_REGION:-}" ]; then
   echo 'PIA VPN disabled (credentials not set); using normal networking'
   exec /usr/local/bin/docker-entrypoint.sh "$@"
+fi
+
+pia_fail_open=false
+case "${PIA_FAIL_OPEN:-false}" in true|TRUE|True) pia_fail_open=true ;; esac
+
+if [ -z "${PIA_USERNAME:-}" ] || [ -z "${PIA_PASSWORD:-}" ] || [ -z "${PIA_REGION:-}" ]; then
+  echo 'PIA VPN startup failed: PIA_USERNAME, PIA_PASSWORD, and PIA_REGION must all be set' >&2
+  if [ "$pia_fail_open" = true ]; then
+    echo 'WARNING: PIA VPN failed to start; PIA_FAIL_OPEN=true permits normal networking' >&2
+    exec /usr/local/bin/docker-entrypoint.sh "$@"
+  fi
+  echo 'ERROR: PIA VPN is configured but unavailable; refusing to start the app without the tunnel' >&2
+  exit 1
 fi
 
 vpn_pid=
@@ -317,10 +332,14 @@ if [ "$vpn_up" != true ]; then
   stop_vpn
   print_log_tail
   echo "PIA VPN startup failed: $vpn_error" >&2
-  echo 'WARNING: PIA VPN failed to start; continuing on normal networking' >&2
-  trap - INT TERM
-  umask "$original_umask"
-  exec /usr/local/bin/docker-entrypoint.sh "$@"
+  if [ "$pia_fail_open" = true ]; then
+    echo 'WARNING: PIA VPN failed to start; PIA_FAIL_OPEN=true permits normal networking' >&2
+    trap - INT TERM
+    umask "$original_umask"
+    exec /usr/local/bin/docker-entrypoint.sh "$@"
+  fi
+  echo 'ERROR: refusing to start the app without the configured PIA tunnel' >&2
+  exit 1
 fi
 
 if [ "$vpn_protocol" = wireguard ]; then

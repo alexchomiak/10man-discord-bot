@@ -103,11 +103,15 @@ if os.environ['CASE'] != 'timeout': (root / 'ready').touch()
 while True: time.sleep(.05)
 ''')
     env = dict(os.environ, PATH=str(bindir)+':'+os.environ['PATH'], ROOT=str(root), PIA_USERNAME='test-user', PIA_PASSWORD='secret.*[$]value', PIA_REGION='us_chicago', PIA_PROTOCOL='openvpn')
-    for case in ['missing-user', 'missing-password', 'missing-region', 'empty-user', 'empty-password', 'empty-region', 'download', 'invalid-region', 'invalid-dns', 'invalid-mtu', 'auth', 'timeout', 'dns', 'success', 'signal']:
+    for case in ['disabled', 'missing-user', 'missing-password', 'missing-region', 'empty-user', 'empty-password', 'empty-region', 'download', 'invalid-region', 'invalid-dns', 'invalid-mtu', 'auth', 'timeout', 'dns', 'success', 'signal']:
         resolv.write_text('nameserver 127.0.0.11\n')
         for path in ['ready', 'stopped', 'calls']:
             (root/path).unlink(missing_ok=True)
         current = dict(env, CASE=case)
+        if case == 'disabled':
+            current.pop('PIA_USERNAME')
+            current.pop('PIA_PASSWORD')
+            current.pop('PIA_REGION')
         if case.startswith('missing-'):
             current.pop({'missing-user':'PIA_USERNAME','missing-password':'PIA_PASSWORD','missing-region':'PIA_REGION'}[case])
         if case.startswith('empty-'):
@@ -123,21 +127,24 @@ while True: time.sleep(.05)
             p.terminate()
         output = p.communicate(timeout=10)[0]
         assert current['PIA_PASSWORD'] not in output if current.get('PIA_PASSWORD') else True, output
-        assert 'APP:space argument:*.literal' in output, output
-        assert p.returncode == (143 if case == 'signal' else 7), (case, p.returncode, output)
-        if case.startswith(('missing-', 'empty-')):
-            assert 'PIA VPN disabled' in output and not (root/'calls').exists(), output
-        elif case in ['success', 'signal']:
-            assert 'PIA VPN up: tun0 active' in output and (root/'stopped').exists(), output
+        if case in ['disabled', 'success', 'signal']:
+            assert 'APP:space argument:*.literal' in output, output
+            assert p.returncode == (143 if case == 'signal' else 7), (case, p.returncode, output)
         else:
-            assert 'WARNING: PIA VPN failed to start' in output, output
+            assert 'APP:space argument:*.literal' not in output, output
+            assert p.returncode == 1, (case, p.returncode, output)
             assert 'PIA VPN startup failed:' in output, output
+            assert 'refusing to start' in output, output
             if case == 'download': assert 'failed to download' in output, output
             if case == 'invalid-region': assert 'PIA_REGION must be' in output, output
             if case == 'invalid-dns': assert 'PIA_DNS_SERVER must be' in output, output
             if case == 'invalid-mtu': assert 'PIA_TUN_MTU must be' in output, output
             if case in ['auth', 'timeout']: assert 'did not establish a tun0 default route' in output, output
             if case == 'dns': assert 'could not resolve discord.com through tun0' in output, output
+        if case == 'disabled':
+            assert 'PIA VPN disabled' in output and not (root/'calls').exists(), output
+        if case in ['success', 'signal']:
+            assert 'PIA VPN up: tun0 active' in output and (root/'stopped').exists(), output
         if case in ['auth', 'timeout', 'success', 'signal']:
             assert not (root/'pia/auth.conf').exists()
             assert 'route restore' in (root/'calls').read_text()
@@ -146,6 +153,16 @@ while True: time.sleep(.05)
             assert 'priority 8000 to 10.0.0.243/32 table main' in calls
             assert resolv.read_text() == 'nameserver 127.0.0.11\n'
         print('PASS '+case)
+
+    # Normal-network fallback exists only when the operator explicitly opts in.
+    for path in ['ready', 'stopped', 'calls']:
+        (root/path).unlink(missing_ok=True)
+    current = dict(env, CASE='download', PIA_FAIL_OPEN='true')
+    p = subprocess.run([str(root/'wrapper'), 'space argument', '*.literal'], env=current, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=10)
+    assert p.returncode == 7, p.stdout
+    assert 'PIA_FAIL_OPEN=true permits normal networking' in p.stdout, p.stdout
+    assert 'APP:space argument:*.literal' in p.stdout, p.stdout
+    print('PASS explicit-fail-open')
 
     # WireGuard is the default transport. Its mocked success path exercises
     # token acquisition, region selection, ephemeral keys, routing and cleanup.

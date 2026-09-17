@@ -7,10 +7,13 @@ const { setTimeout: sleep } = require('node:timers/promises');
 // Same timestamp-driven sender used by discord-video-stream, kept here so a
 // new normalized input can be attached without calling createStream again.
 class TimedTrack extends Writable {
-  constructor(send, type) {
+  constructor(send, type, options = {}) {
     super({ objectMode: true, highWaterMark: 0 });
     this.send = send;
     this.type = type;
+    this.now = options.now || (() => performance.now());
+    this.sleep = options.sleep || sleep;
+    this.maxCatchupMs = Number.isFinite(options.maxCatchupMs) ? options.maxCatchupMs : 250;
     this.pts = undefined;
     this.syncTrack = null;
     this.startTime = undefined;
@@ -22,9 +25,9 @@ class TimedTrack extends Writable {
       const { data, pts, duration, timeBase } = packet;
       if (!data) return callback();
       const frameMs = Number(duration) * timeBase.num * 1000 / timeBase.den;
-      const started = performance.now();
+      const started = this.now();
       this.send(Buffer.from(data), frameMs);
-      const ended = performance.now();
+      const ended = this.now();
       this.pts = Number(pts) * timeBase.num * 1000 / timeBase.den;
       this.startTime ??= started;
       this.startPts ??= this.pts;
@@ -33,12 +36,25 @@ class TimedTrack extends Writable {
       if (this.type === 'video' && !this.syncTrack?.writableEnded && Number.isFinite(other) && this.pts - other > 20) {
         while (!this.destroyed && !this.syncTrack?.writableEnded &&
           Number.isFinite(this.syncTrack?.pts) && this.pts - this.syncTrack.pts > 20) {
-          await sleep(frameMs);
+          await this.sleep(frameMs);
         }
         this.startTime = this.startPts = undefined;
       } else {
-        const delay = Math.max(0, this.pts - this.startPts + frameMs - (ended - this.startTime));
-        if (delay > 0) await sleep(delay);
+        const mediaElapsed = this.pts - this.startPts + frameMs;
+        const wallElapsed = ended - this.startTime;
+        const lateBy = wallElapsed - mediaElapsed;
+        if (lateBy > this.maxCatchupMs) {
+          // Both remote input stalls and a congested tunnel can leave this
+          // sender far behind its original wall clock. Sending every delayed
+          // frame with zero sleep creates an RTP burst and makes the freeze
+          // worse. Rebase at the next frame and resume steady pacing.
+          this.startTime = ended;
+          this.startPts = this.pts;
+          await this.sleep(frameMs);
+        } else {
+          const delay = Math.max(0, mediaElapsed - wallElapsed);
+          if (delay > 0) await this.sleep(delay);
+        }
       }
       callback();
     } catch (error) {

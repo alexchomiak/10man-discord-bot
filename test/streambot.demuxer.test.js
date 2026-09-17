@@ -166,7 +166,7 @@ test('streamManager: teardown() still succeeds when the demuxer close throws', a
 // The muxer's packet timeline is testable without loading native codecs.
 const { PersistentNut } = require('../src/streambot/persistentNut');
 const { PassThrough } = require('node:stream');
-const { PersistentTrackFeeder } = require('../src/streambot/persistentTrackFeeder');
+const { PersistentTrackFeeder, TimedTrack } = require('../src/streambot/persistentTrackFeeder');
 function fakeAv(writes, options = {}) {
   let opens=0, muxOpens=0, closed=0;
   const streams=[
@@ -271,4 +271,24 @@ test('persistent track feeder creates one go-live connection across sequential c
   assert.equal(creates, 1, 'content changes must not recreate the Discord stream');
   assert.equal(videoFrames, 2); assert.equal(audioFrames, 2); assert.equal(frees, 4);
   await feeder.close();
+});
+
+test('timed track rebases after starvation instead of bursting delayed frames', async () => {
+  const times = [0, 0, 1000, 1000];
+  const sleeps = [];
+  const track = new TimedTrack(() => {}, 'video', {
+    now: () => times.shift(),
+    sleep: async ms => { sleeps.push(ms); },
+    maxCatchupMs: 250
+  });
+  const packet = pts => ({
+    data: Buffer.from([1]), pts: BigInt(pts), duration: 1n,
+    timeBase: { num: 1, den: 30 }, free() {}
+  });
+  await new Promise((resolve, reject) => track.write(packet(0), error => error ? reject(error) : resolve()));
+  await new Promise((resolve, reject) => track.write(packet(1), error => error ? reject(error) : resolve()));
+  assert.equal(sleeps.length, 2);
+  assert.ok(sleeps[0] > 30 && sleeps[0] < 35, 'normal first frame uses 30fps pacing');
+  assert.ok(sleeps[1] > 30 && sleeps[1] < 35, 'late frame resumes 30fps pacing instead of a zero-delay burst');
+  track.destroy();
 });
