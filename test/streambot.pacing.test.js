@@ -45,6 +45,32 @@ test('preparePlayback: a tracker install failure is swallowed (start() must neve
   }
 });
 
+test('preparePlayback: VAAPI preflight selects the first render node that actually encodes', async () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    videoEncoder: 'vaapi', vaapiDevice: '/dev/dri/renderD128'
+  });
+  const checked = [];
+  mgr._vaapiCandidates = () => ['/dev/dri/renderD128', '/dev/dri/renderD129'];
+  mgr._probeVaapiDevice = async device => {
+    checked.push(device);
+    return device.endsWith('129') ? { ok: true } : { ok: false, detail: 'Device creation failed' };
+  };
+  await mgr.preparePlayback({});
+  assert.deepStrictEqual(checked, ['/dev/dri/renderD128', '/dev/dri/renderD129']);
+  assert.equal(mgr.config.vaapiDevice, '/dev/dri/renderD129');
+  await mgr.preparePlayback({});
+  assert.equal(checked.length, 2, 'successful probe is cached for the worker lifetime');
+});
+
+test('preparePlayback: VAAPI preflight refuses playback when no render node works', async () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    videoEncoder: 'vaapi', vaapiDevice: '/dev/dri/renderD128'
+  });
+  mgr._vaapiCandidates = () => ['/dev/dri/renderD128'];
+  mgr._probeVaapiDevice = async () => ({ ok: false, detail: 'permission denied' });
+  await assert.rejects(() => mgr.preparePlayback({}), /VAAPI H\.264 initialization failed.*permission denied/);
+});
+
 test('start() call-site latch: StreamManager.prototype.start references preparePlayback', () => {
   assert.ok(
     StreamManager.prototype.start.toString().includes('preparePlayback'),

@@ -3,6 +3,7 @@
 const { M } = require('./messages');
 const { TAG, redactToken } = require('./config');
 const fs = require('fs');
+const { spawn } = require('child_process');
 const { PassThrough } = require('stream');
 const { PersistentTrackFeeder } = require('./persistentTrackFeeder');
 // NOTE: module reference (not a destructure) so test harnesses can patch the
@@ -88,6 +89,7 @@ class StreamManager {
     }
     this.session = null;
     this._videoModule = null;
+    this._vaapiReady = null;
     // A single shared Streamer for the manager's lifetime: `new Streamer()`
     // attaches a permanent client.on('raw') listener, so per-session
     // instances leak listeners on every start(). Cleared only when the
@@ -186,7 +188,73 @@ class StreamManager {
     } catch (e) {
       this._verbose(`demux tracker unavailable: ${e && e.message}`);
     }
+    if (this.config.videoEncoder === 'vaapi') await this._ensureVaapiReady();
     return videoModule;
+  }
+
+  _vaapiCandidates() {
+    const configured = this.config.vaapiDevice || '/dev/dri/renderD128';
+    let discovered = [];
+    try {
+      discovered = fs.readdirSync('/dev/dri')
+        .filter(name => /^renderD\d+$/.test(name))
+        .sort()
+        .map(name => `/dev/dri/${name}`);
+    } catch { /* preflight reports the configured path below */ }
+    return [...new Set([configured, ...discovered])];
+  }
+
+  _probeVaapiDevice(device) {
+    const bin = this.config.ffmpegPath || 'ffmpeg';
+    const args = [
+      '-hide_banner', '-loglevel', 'error',
+      '-vaapi_device', device,
+      '-f', 'lavfi', '-i', 'color=c=black:s=320x180:r=30',
+      '-frames:v', '1', '-vf', 'format=nv12,hwupload',
+      '-c:v', 'h264_vaapi', '-profile:v', 'constrained_baseline',
+      '-f', 'null', '-'
+    ];
+    return new Promise(resolve => {
+      let child;
+      try { child = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] }); }
+      catch (error) { resolve({ ok: false, detail: error.message }); return; }
+      let stderr = '';
+      let settled = false;
+      const finish = result => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      child.stderr.on('data', chunk => {
+        stderr = (stderr + String(chunk)).slice(-4096);
+      });
+      child.once('error', error => finish({ ok: false, detail: error.message }));
+      child.once('close', code => finish({ ok: code === 0, detail: stderr.trim() || `ffmpeg exited ${code}` }));
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch {}
+        finish({ ok: false, detail: 'VAAPI probe timed out after 10 seconds' });
+      }, 10000);
+    });
+  }
+
+  async _ensureVaapiReady() {
+    if (this._vaapiReady) return this._vaapiReady;
+    this._vaapiReady = (async () => {
+      const failures = [];
+      for (const device of this._vaapiCandidates()) {
+        const result = await this._probeVaapiDevice(device);
+        if (result.ok) {
+          this.config.vaapiDevice = device;
+          log('info', `VAAPI ready: h264_vaapi on ${device}`);
+          return device;
+        }
+        failures.push(`${device}: ${String(result.detail || 'initialization failed').replace(/\s+/g, ' ').trim()}`);
+      }
+      this._vaapiReady = null;
+      throw new Error(`VAAPI H.264 initialization failed for every render device. ${failures.join(' | ')}`);
+    })();
+    return this._vaapiReady;
   }
 
   _encoder(videoModule) {
