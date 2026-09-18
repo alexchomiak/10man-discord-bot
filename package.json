@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "type": "commonjs",
   "scripts": {
+    "postinstall": "node scripts/patch-node-av.js",
     "start": "node src/index.js",
     "start-streambot": "node src/streambot/supervisor.js",
     "test": "node --test test/streambot.sources.test.js test/streambot.demuxer.test.js test/streambot.pacing.test.js test/streambot.voice-link.test.js test/streambot.alerts.test.js test/streambroker.test.js",

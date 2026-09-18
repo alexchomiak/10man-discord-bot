@@ -292,7 +292,7 @@ class StreamManager {
     return this._vaapiReady;
   }
 
-  _encoder(videoModule) {
+  _encoder(videoModule, inputOnVaapi = false) {
     const cfg = this.config;
     const keyframeFrames = Math.max(1, Math.round(
       (cfg.streamFrameRate || 30) * (cfg.keyframeIntervalSec || 2)
@@ -307,7 +307,9 @@ class StreamManager {
       return (bitrate, bitrateMax) => ({
         H264: {
           name: 'h264_vaapi',
-          outFilters: ['format=nv12', 'hwupload'],
+          // Hardware-decoded frames already live on the VAAPI device. Avoid
+          // downloading and uploading them between decode, scale and encode.
+          outFilters: inputOnVaapi ? [] : ['format=nv12', 'hwupload'],
           globalOptions: ['-vaapi_device', device],
           options: [
             '-profile:v', 'constrained_baseline',
@@ -351,6 +353,7 @@ class StreamManager {
     const producerBufferBytes = Math.max(1, Math.round((cfg.pipelineBufferMb || 8) * 1024 * 1024));
     const output = new MeteredPassThrough({ highWaterMark: producerBufferBytes });
     const offset = Number.isFinite(startOffsetSec) && startOffsetSec > 0 ? Math.round(startOffsetSec) : 0;
+    const useVaapiFrames = cfg.videoEncoder === 'vaapi' && cfg.hardwareDecode === true && piece?.inputFormat !== 'lavfi';
 
     const configureInput = (command, url, { localRealtime = false } = {}) => {
       if (localRealtime) {
@@ -380,7 +383,14 @@ class StreamManager {
     const command = ff(videoUrl);
     if (singleOptions?.customInputOptions?.length) command.inputOptions(singleOptions.customInputOptions);
     else if (offset > 0) command.inputOptions(['-ss', String(offset)]);
-    if (singleOptions?.hardwareAcceleratedDecoding) command.inputOptions(['-hwaccel', 'auto']);
+    if (useVaapiFrames) {
+      const device = cfg.vaapiDevice || '/dev/dri/renderD128';
+      command.inputOptions([
+        '-hwaccel', 'vaapi',
+        '-hwaccel_device', device,
+        '-hwaccel_output_format', 'vaapi'
+      ]);
+    }
     configureInput(command, videoUrl, { localRealtime: piece?.inputFormat === 'lavfi' });
     // Secondary input (audio). fluent-ffmpeg's input(source) only accepts a
     // source arg — the second-arg options form is not a real API. Apply input
@@ -408,12 +418,17 @@ class StreamManager {
     // Output config mirrors newApi.js:111-145 (single-input case) adapted to
     // the 2-input map (0:v:0 from video, 1:a:0? from audio, tolerant of a
     // missing audio stream on odd formats).
+    const videoFilter = useVaapiFrames
+      ? `scale_vaapi=w=${cfg.streamWidth || 1920}:h=${height}:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12,` +
+        `pad_vaapi=w=${cfg.streamWidth || 1920}:h=${height}:x=(ow-iw)/2:y=(oh-ih)/2`
+      : `scale=${cfg.streamWidth || 1920}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
+        `pad=${cfg.streamWidth || 1920}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
     command
       .output(output)
       .outputFormat('nut')
       .addOutputOption('-map 0:v:0')
       .addOutputOption(audioUrl ? '-map 1:a:0' : '-map 0:a:0?')
-      .videoFilter(`scale=${cfg.streamWidth || 1920}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${cfg.streamWidth || 1920}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`)
+      .videoFilter(videoFilter)
       .fpsOutput(fps)
       .addOutputOption(['-b:v', `${bitrate}k`, '-maxrate:v', `${bitrateMax}k`, '-bufsize:v', `${vbvBufferKbps}k`, '-bf', '0', '-pix_fmt', 'yuv420p']);
 
@@ -428,7 +443,7 @@ class StreamManager {
     // encoder helper (mainly useful for compatibility with older releases).
     let encoderSettings = null;
     try {
-      const encoder = this._encoder(videoModule);
+      const encoder = this._encoder(videoModule, useVaapiFrames);
       if (encoder) {
         if (typeof encoder === 'function') {
           const byCodec = encoder(bitrate, bitrateMax) || {};

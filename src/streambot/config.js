@@ -187,7 +187,9 @@ function loadConfig() {
     // Hardware-frame decode needs a different filter graph from the stable
     // software-scale -> VAAPI-upload encode path. Leave it opt-in; Arc encode
     // already removes the expensive part of 1080p H.264 transcoding.
-    hardwareDecode: process.env.STREAMBOT_HARDWARE_DECODE?.trim().toLowerCase() === 'true',
+    hardwareDecode: process.env.STREAMBOT_HARDWARE_DECODE == null
+      ? configuredEncoder === 'vaapi'
+      : process.env.STREAMBOT_HARDWARE_DECODE.trim().toLowerCase() === 'true',
     vaapiDevice: (process.env.STREAMBOT_VAAPI_DEVICE || '/dev/dri/renderD128').trim() || '/dev/dri/renderD128',
     // Bounded NUT queue between FFmpeg and Discord. Eight MiB is roughly
     // 11-13 seconds at the default aggregate bitrate. The feeder deliberately

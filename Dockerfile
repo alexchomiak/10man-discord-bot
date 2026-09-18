@@ -7,8 +7,9 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
-COPY package.json ./
-RUN npm install --omit=dev \
+COPY package.json package-lock.json ./
+COPY scripts ./scripts
+RUN npm ci --omit=dev \
   && npm cache clean --force
 
 FROM node:22-trixie-slim
@@ -68,6 +69,7 @@ RUN case "$TARGETARCH" in \
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
+COPY scripts ./scripts
 COPY src ./src
 COPY pia-ca.rsa.4096.crt /usr/local/share/pia/ca.rsa.4096.crt
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
