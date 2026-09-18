@@ -14,7 +14,9 @@ class TimedTrack extends Writable {
     this.now = options.now || (() => performance.now());
     this.sleep = options.sleep || sleep;
     this.maxCatchupMs = Number.isFinite(options.maxCatchupMs) ? options.maxCatchupMs : 250;
+    this.maxPtsJumpMs = Number.isFinite(options.maxPtsJumpMs) ? options.maxPtsJumpMs : 500;
     this.pts = undefined;
+    this.previousPts = undefined;
     this.syncTrack = null;
     this.startTime = undefined;
     this.startPts = undefined;
@@ -26,9 +28,22 @@ class TimedTrack extends Writable {
       if (!data) return callback();
       const frameMs = Number(duration) * timeBase.num * 1000 / timeBase.den;
       const started = this.now();
+      const packetPts = Number(pts) * timeBase.num * 1000 / timeBase.den;
+      const ptsStep = Number.isFinite(this.previousPts) ? packetPts - this.previousPts : frameMs;
+      // Live MPEG-TS feeds can jump their timestamps forward/backward after a
+      // discontinuity. Treating that jump as wall time makes the sender sleep
+      // for seconds, freezing video before it resumes at the new timestamp.
+      // Rebase the pacing clock; RTP still advances by the normalized frame
+      // duration, so delivery remains a steady 30 fps.
+      if (Number.isFinite(this.previousPts) &&
+          (ptsStep < 0 || Math.abs(ptsStep - frameMs) > this.maxPtsJumpMs)) {
+        this.startTime = started;
+        this.startPts = packetPts;
+      }
       this.send(Buffer.from(data), frameMs);
       const ended = this.now();
-      this.pts = Number(pts) * timeBase.num * 1000 / timeBase.den;
+      this.pts = packetPts;
+      this.previousPts = packetPts;
       this.startTime ??= started;
       this.startPts ??= this.pts;
 

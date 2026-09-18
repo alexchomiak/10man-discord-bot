@@ -418,10 +418,15 @@ class StreamManager {
     // Output config mirrors newApi.js:111-145 (single-input case) adapted to
     // the 2-input map (0:v:0 from video, 1:a:0? from audio, tolerant of a
     // missing audio stream on odd formats).
+    const deinterlaceFilter = piece?.isLive
+      ? (useVaapiFrames
+          ? 'deinterlace_vaapi=mode=motion_adaptive:rate=frame:auto=1,'
+          : 'bwdif=mode=send_frame:parity=auto:deint=interlaced,')
+      : '';
     const videoFilter = useVaapiFrames
-      ? `scale_vaapi=w=${cfg.streamWidth || 1920}:h=${height}:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12,` +
+      ? `${deinterlaceFilter}scale_vaapi=w=${cfg.streamWidth || 1920}:h=${height}:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12,` +
         `pad_vaapi=w=${cfg.streamWidth || 1920}:h=${height}:x=(ow-iw)/2:y=(oh-ih)/2`
-      : `scale=${cfg.streamWidth || 1920}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
+      : `${deinterlaceFilter}scale=${cfg.streamWidth || 1920}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
         `pad=${cfg.streamWidth || 1920}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
     command
       .output(output)
@@ -430,7 +435,7 @@ class StreamManager {
       .addOutputOption(audioUrl ? '-map 1:a:0' : '-map 0:a:0?')
       .videoFilter(videoFilter)
       .fpsOutput(fps)
-      .addOutputOption(['-b:v', `${bitrate}k`, '-maxrate:v', `${bitrateMax}k`, '-bufsize:v', `${vbvBufferKbps}k`, '-bf', '0', '-pix_fmt', 'yuv420p']);
+      .addOutputOption(['-fps_mode', 'cfr', '-b:v', `${bitrate}k`, '-maxrate:v', `${bitrateMax}k`, '-bufsize:v', `${vbvBufferKbps}k`, '-bf', '0', '-pix_fmt', 'yuv420p']);
 
     // A second silent track supplies audio for video-only sources/placeholder.
     // The remuxer selects real audio first when present and drops the spare.

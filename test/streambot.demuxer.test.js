@@ -292,3 +292,24 @@ test('timed track rebases after starvation instead of bursting delayed frames', 
   assert.ok(sleeps[1] > 30 && sleeps[1] < 35, 'late frame resumes 30fps pacing instead of a zero-delay burst');
   track.destroy();
 });
+
+test('timed track rebases a live timestamp discontinuity instead of sleeping for the jump', async () => {
+  const times = [0, 0, 34, 34];
+  const sleeps = [];
+  const track = new TimedTrack(() => {}, 'video', {
+    now: () => times.shift(),
+    sleep: async ms => { sleeps.push(ms); },
+    maxPtsJumpMs: 500
+  });
+  const packet = pts => ({
+    data: Buffer.from([1]), pts: BigInt(pts), duration: 1n,
+    timeBase: { num: 1, den: 30 }, free() {}
+  });
+  await new Promise((resolve, reject) => track.write(packet(0), error => error ? reject(error) : resolve()));
+  // Jump from frame 0 to media second 3. This used to schedule roughly a
+  // three-second sleep; it must resume at one normal frame interval.
+  await new Promise((resolve, reject) => track.write(packet(90), error => error ? reject(error) : resolve()));
+  assert.equal(sleeps.length, 2);
+  assert.ok(sleeps[1] > 30 && sleeps[1] < 35, `expected one frame sleep, got ${sleeps[1]}ms`);
+  track.destroy();
+});

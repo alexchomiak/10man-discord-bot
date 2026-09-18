@@ -163,7 +163,7 @@ test('Arc mode uses VAAPI encode with the configured render device and 1080p/30 
   });
   const videoModule = { Utils: { normalizeVideoCodec: (c) => c } };
   const command = StreamManager.prototype._buildDashMerge.call(
-    mgr, videoModule, 'https://cdn.example/v.mp4', 'https://cdn.example/a.m4a', 0, null, { isLive: true }
+    mgr, videoModule, 'https://cdn.example/v.mp4', 'https://cdn.example/a.m4a', 0, null, {}
   ).command;
   const argv = argvOf(command);
   assert.ok(argv.includes('h264_vaapi'));
@@ -198,6 +198,21 @@ test('Arc hardware decode keeps decode, aspect-correct scale, pad and encode on 
     ['-hwaccel', 'vaapi', '-hwaccel_device', '/dev/dri/renderD129', '-hwaccel_output_format', 'vaapi']);
   assert.ok(argv.includes('scale_vaapi=w=1920:h=1080:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12,pad_vaapi=w=1920:h=1080:x=(ow-iw)/2:y=(oh-ih)/2'));
   assert.ok(!argv.includes('format=nv12,hwupload'), 'hardware frames must not make a GPU -> CPU -> GPU round trip');
+});
+
+test('live Arc input automatically deinterlaces on GPU and emits constant 30fps', () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    videoCodec: 'H264', videoEncoder: 'vaapi', hardwareDecode: true,
+    vaapiDevice: '/dev/dri/renderD128', streamWidth: 1920, streamHeight: 1080,
+    streamFrameRate: 30, streamBitrate: 5000, streamAudioBitrate: 128
+  });
+  const command = StreamManager.prototype._buildDashMerge.call(
+    mgr, { Utils: { normalizeVideoCodec: c => c } },
+    'https://tv.example/live.ts', null, 0, null, { isLive: true }
+  ).command;
+  const argv = argvOf(command);
+  assert.ok(argv.includes('deinterlace_vaapi=mode=motion_adaptive:rate=frame:auto=1,scale_vaapi=w=1920:h=1080:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12,pad_vaapi=w=1920:h=1080:x=(ow-iw)/2:y=(oh-ih)/2'));
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-fps_mode'), argv.indexOf('-fps_mode') + 2), ['-fps_mode', 'cfr']);
 });
 
 test('video burst controls are configurable without reducing average or peak bitrate', () => {
