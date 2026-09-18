@@ -13,6 +13,9 @@ class TimedTrack extends Writable {
     this.type = type;
     this.now = options.now || (() => performance.now());
     this.sleep = options.sleep || sleep;
+    // A/V sync gate: video is held behind audio until the delta falls within
+    // avGateMs (default 20, operator-tunable via SBOT_AV_SYNC_MS).
+    this.avGateMs = Number.isFinite(options.avGateMs) ? options.avGateMs : 20;
     this.maxCatchupMs = Number.isFinite(options.maxCatchupMs) ? options.maxCatchupMs : 250;
     this.maxPtsJumpMs = Number.isFinite(options.maxPtsJumpMs) ? options.maxPtsJumpMs : 500;
     this.pts = undefined;
@@ -48,9 +51,9 @@ class TimedTrack extends Writable {
       this.startPts ??= this.pts;
 
       const other = this.syncTrack?.pts;
-      if (this.type === 'video' && !this.syncTrack?.writableEnded && Number.isFinite(other) && this.pts - other > 20) {
+      if (this.type === 'video' && !this.syncTrack?.writableEnded && Number.isFinite(other) && this.pts - other > this.avGateMs) {
         while (!this.destroyed && !this.syncTrack?.writableEnded &&
-          Number.isFinite(this.syncTrack?.pts) && this.pts - this.syncTrack.pts > 20) {
+          Number.isFinite(this.syncTrack?.pts) && this.pts - this.syncTrack.pts > this.avGateMs) {
           await this.sleep(frameMs);
         }
         this.startTime = this.startPts = undefined;
@@ -81,12 +84,14 @@ class TimedTrack extends Writable {
 }
 
 class PersistentTrackFeeder {
-  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30 } = {}) {
+  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30, avGateMs, maxCatchupMs } = {}) {
     this.streamer = streamer;
     this.videoModule = videoModule;
     this.width = width;
     this.height = height;
     this.frameRate = frameRate;
+    this.avGateMs = avGateMs;
+    this.maxCatchupMs = maxCatchupMs;
     this.connection = null;
     this.startPromise = null;
     this.startAbort = null;
@@ -148,8 +153,9 @@ class PersistentTrackFeeder {
       const media = await this.videoModule.demux(input, { format: 'nut' });
       signal?.throwIfAborted();
       if (!media.video || !media.audio) throw new Error('Content must contain normalized video and Opus audio');
-      const video = new TimedTrack((frame, ms) => connection.sendVideoFrame(frame, ms), 'video');
-      const audio = new TimedTrack((frame, ms) => connection.sendAudioFrame(frame, ms), 'audio');
+      const trackOpts = { avGateMs: this.avGateMs, maxCatchupMs: this.maxCatchupMs };
+      const video = new TimedTrack((frame, ms) => connection.sendVideoFrame(frame, ms), 'video', trackOpts);
+      const audio = new TimedTrack((frame, ms) => connection.sendAudioFrame(frame, ms), 'audio', trackOpts);
       video.syncTrack = audio;
       active = { input, video, audio, videoSource: media.video.stream, audioSource: media.audio.stream };
       this.active = active;

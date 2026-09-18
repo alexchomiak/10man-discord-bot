@@ -128,6 +128,20 @@ function loadConfig() {
     // Keep the source at or below the output raster. Pulling a 1440p/4K track
     // only to downscale it to 1080p wastes decoder bandwidth and GPU/CPU.
     sourceMaxHeight: parsePositiveInt(process.env.SBOT_SOURCE_MAX_HEIGHT, 1080),
+    // B2: optional per-codec source-height cap. When > 0, an AV1 track taller
+    // than this is treated as if capped when ranking, so a lower-height H.264/
+    // VP9 track wins. Off by default (0) — never changes anyone else's pick.
+    // Set e.g. 720 to avoid silently CPU-decoding a 1080p AV1 source on an
+    // Intel iGPU that cannot hardware-decode AV1.
+    av1MaxSourceHeight: parseNonNegativeInt(process.env.SBOT_AV1_MAX_SOURCE_HEIGHT, 0),
+    // B1: A/V sync gate (ms) — video is held until within this of audio.
+    avSyncMs: parsePositiveNumber(process.env.SBOT_AV_SYNC_MS, 20),
+    // B1: max catch-up (ms) the sender may run behind its wall clock before
+    // rebasing instead of bursting.
+    maxCatchupMs: parsePositiveNumber(process.env.SBOT_MAX_CATCHUP_MS, 250),
+    // A5: per-piece feed watchdog slack (seconds), added on top of the piece's
+    // duration to bound a hung feeder.append. 0 disables the watchdog.
+    pieceWatchdogSec: parseNonNegativeInt(process.env.SBOT_PIECE_WATCHDOG_SEC, 30),
     // Audio bitrate used when merging separate video+audio (DASH) streams in-memory.
     streamAudioBitrate: parseKbps(process.env.STREAMBOT_AUDIO_BITRATE, 128),
     videoCodec: (process.env.VIDEO_CODEC || 'H264').trim() || 'H264',

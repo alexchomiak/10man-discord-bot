@@ -565,6 +565,9 @@ class StreamManager {
     const controller = {
       _volume: 1.0,
       get volume() { return this._volume; },
+      // Teardown seam (A4): make the zeromq requester socket reachable from the
+      // manager's destroy paths even if the ffmpeg promise never settles.
+      dispose() { try { closeVolume(); } catch {} },
       async setVolume(newVolume) {
         if (typeof newVolume !== 'number' || Number.isNaN(newVolume) || newVolume < 0) return false;
         if (!zmqClientPromise) return false;
@@ -822,6 +825,10 @@ class StreamManager {
       if (pipeline.closed) return;
       this._notifyError(`persistent playStream failed: ${error.message}`);
       pipeline.resolveReady(false);
+      // A3: if the go-live handshake never produced a streamConnection, the
+      // library's stopStream() no-ops, so close the live voice/WebRTC conn
+      // explicitly here (null-safe; _leaveVoiceLink also does this downstream).
+      try { link.streamer.voiceConnection?.stop?.(); } catch {}
       void this._serialize(() => this._leaveVoiceLink(link));
     };
     pipeline.playPromise.catch(fail);
@@ -844,6 +851,17 @@ class StreamManager {
     if (!piece || piece.isFiller || piece.inputFormat === 'lavfi') return 0;
     const seconds = Number(this.config.jitterBufferSec);
     return Number.isFinite(seconds) && seconds >= 0 ? seconds : 4;
+  }
+
+  // A5: per-piece feed watchdog. Returns a timeout in ms, or null when the
+  // operator disabled it (SBOT_PIECE_WATCHDOG_SEC=0). The bound is the piece's
+  // own duration plus a fixed slack (default 30s, SBOT_PIECE_WATCHDOG_SEC),
+  // floored at 20s so a zero/unknown-duration live piece still gets coverage.
+  _pieceWatchdog(piece) {
+    const slackSec = Number(this.config.pieceWatchdogSec);
+    if (!Number.isFinite(slackSec) || slackSec <= 0) return null;
+    const pieceSec = Number.isFinite(piece?.durationSec) && piece.durationSec > 0 ? piece.durationSec : 0;
+    return Math.max(20000, (pieceSec * 1000) + (slackSec * 1000));
   }
 
   // FFmpeg's output PassThrough used to be described as an 8 MiB stall
@@ -941,6 +959,7 @@ class StreamManager {
         p.activeWriter = piece;
         this.session = piece; // compatibility: status/volume target active content
         let appendTask;
+        let demuxBaseline = null;
         let clean = false;
         try {
           const result = piece.isDash
@@ -956,17 +975,23 @@ class StreamManager {
           let finish;
           let reject;
           const completion = new Promise((resolve, fail) => { finish = resolve; reject = fail; });
-          const failure = error => {
-            if (piece.control.signal.aborted) { finish(); return; }
-            if (isAmbiguousPipeClose(error)) {
-              const code = result.command.ffmpegProc?.exitCode ?? result.command.process?.exitCode;
-              clean = code === 0;
-              log('info', `stream ended: pipe closed; ffmpegExit=${code ?? 'unknown'}`);
-              piece.ambiguous = true;
-              finish();
-            } else reject(error);
-            result.output.destroy?.();
-          };
+           const failure = error => {
+             if (piece.control.signal.aborted) { finish(); return; }
+             if (isAmbiguousPipeClose(error)) {
+               const code = result.command.ffmpegProc?.exitCode ?? result.command.process?.exitCode;
+               clean = code === 0;
+               log('info', `stream ended: pipe closed; ffmpegExit=${code ?? 'unknown'}`);
+               piece.ambiguous = true;
+               finish();
+             } else reject(error);
+             result.output.destroy?.();
+             // A2: signal the ffmpeg child on the failure path, not only in
+             // finally. _cancelPiece skips SIGTERM when the piece is already
+             // aborted (e.g. an external move), so a stuck encoder would wait
+             // on the 2s _reapPiece SIGKILL alone. SIGTERM now; _reapPiece's
+             // escalation still provides the SIGKILL backstop.
+             try { result.command?.kill?.('SIGTERM'); } catch {}
+           };
           result.command.on('end', () => { clean = true; finish(); });
           result.command.on('error', failure);
           result.output.on('error', failure);
@@ -981,18 +1006,42 @@ class StreamManager {
                 pipelineCapacityBytes: 0
               }),
               getVoiceConnection: () => link.streamer.voiceConnection?.streamConnection,
-              log: (level, message) => log(level, message) });
+            log: (level, message) => log(level, message) });
             piece.telemetry.start();
           } catch {}
           await this._prebuffer(result.output, piece);
+          // A1 baseline: set of demuxers that already exist right before this
+          // piece's append — we must NOT close those in the finally block
+          // (they belong to prior/shared/orphan instances this piece does not own).
+          demuxBaseline = [...demuxGuard.trackedDemuxers];
           appendTask = p.feeder.append(result.output, piece.control.signal);
-          await Promise.all([appendTask, completion]);
+          // A5 watchdog: bound a hung feeder.append (a stuck TimedTrack sync
+          // loop can hold finished() forever, leaking the native demux thread
+          // and a core). The race REJECTS on timeout; the catch below then runs
+          // the SAME canonical teardown (cancel/close/reap) as any other failure.
+          // _raceWithTimeout clears its own timer on either settle, so it leaks
+          // nothing. SBOT_PIECE_WATCHDOG_SEC=0 disables entirely.
+          const wd = this._pieceWatchdog(piece);
+          const timedAppend = wd ? this._raceWithTimeout(appendTask, wd, `piece feed hung beyond ${(wd / 1000) | 0}s watchdog`) : appendTask;
+          await Promise.all([timedAppend, completion]);
           if (!piece.control.signal.aborted && !piece.isFiller) this._notifyEnded(piece, clean);
         } catch (error) {
           if (!piece.control.signal.aborted && !p.closed) this._notifyError(`ffmpeg error: ${error.message}`);
         } finally {
           this._cancelPiece(piece);
           await appendTask?.catch(() => {});
+          // A1: on a piece end that is neither a clean 'end' NOR a clean operator
+          // abort (i.e. a real error — EAGAIN hang, demuxer stall, hung feed),
+          // the library's LibavDemuxer.cleanup() is never reached, so its native
+          // demux thread + FormatContext + packet queues leak a spinning core.
+          // Close only the demuxers THIS piece's append opened (present after
+          // demuxBaseline), and ONLY for that error case: a clean end already ran
+          // the library's own cleanup, and a replaced/aborted piece is the
+          // intentional "replacement never closes shared demuxers" case — those
+          // survive to final stop(). The pump awaits this iteration before
+          // shifting the next, so the snapshot is stable.
+          const errorEnded = !clean && !piece.control.signal.aborted;
+          if (demuxBaseline && errorEnded) await demuxGuard.closeOpenedDemuxers(demuxBaseline);
           await this._reapPiece(piece);
           if (this.session === piece) this.session = null;
           p.activeWriter = null;

@@ -421,6 +421,10 @@ function ytdlpDumpJson(cfg, url) {
 // yt-dlp sometimes reports fourcc-style codes (avc1.640028, hev1.1.6...) —
 // normalize the common prefixes to canonical names for ranking purposes.
 const VCODEC_PRIORITY = ['h264', 'h265', 'vp9', 'vp8', 'av1'];
+
+// B2: module-level latch so the AV1-under-vaapi warning fires only once per
+// process (not once per source/track selection, which would spam logs).
+let av1Warned = false;
 const VCODEC_FOURCC_ALIAS = {
   avc1: 'h264', avc3: 'h264',
   hev1: 'h265', hvc1: 'h265',
@@ -440,14 +444,28 @@ function vcodecRank(format) {
   return idx === -1 ? VCODEC_PRIORITY.length : idx;
 }
 
+// B2: when the operator sets an AV1 source-height cap (av1CapHeight > 0), an
+// AV1 track taller than the cap is ranked as if it were AT the cap, so a
+// lower-height H.264/VP9 track wins. This avoids a 1080p AV1 source being
+// picked (and silently CPU-decoded) by an iGPU that cannot HW-decode AV1,
+// without downgrading anyone else's choice (the cap only demotes AV1).
+function av1CappedHeight(format, av1CapHeight) {
+  const h = Number.isFinite(format.height) ? format.height : 0;
+  if (Number.isFinite(av1CapHeight) && av1CapHeight > 0 &&
+      normalizeVcodec(format && format.vcodec) === 'av1' && h > av1CapHeight) {
+    return av1CapHeight;
+  }
+  return h;
+}
+
 // Comparator: better candidate first (returns negative when a wins).
 // vcodec priority, then higher height (null=0), then higher tbr.
-function compareFormats(a, b) {
+function compareFormats(a, b, av1CapHeight = 0) {
   const va = vcodecRank(a);
   const vb = vcodecRank(b);
   if (va !== vb) return va - vb;
-  const ha = Number.isFinite(a.height) ? a.height : 0;
-  const hb = Number.isFinite(b.height) ? b.height : 0;
+  const ha = av1CappedHeight(a, av1CapHeight);
+  const hb = av1CappedHeight(b, av1CapHeight);
   if (ha !== hb) return hb - ha;
   const ta = Number.isFinite(a.tbr) ? a.tbr : 0;
   const tb = Number.isFinite(b.tbr) ? b.tbr : 0;
@@ -507,7 +525,7 @@ function langRank(format, preferredLangs) {
 // more preferred; -1/absent = unknown, sorted last); then vcodec/height/
 // bitrate so video quality is still respected. Pure-video comparisons keep
 // using compareFormats (language must not distort video-track ordering).
-function compareAVFormats(a, b, preferredLangs) {
+function compareAVFormats(a, b, preferredLangs, av1CapHeight = 0) {
   const la = langRank(a, preferredLangs);
   const lb = langRank(b, preferredLangs);
   if (la !== lb) return la - lb;
@@ -522,7 +540,7 @@ function compareAVFormats(a, b, preferredLangs) {
       if (pb === Infinity) return -1;
     }
   }
-  return compareFormats(a, b);
+  return compareFormats(a, b, av1CapHeight);
 }
 
 // Select the best audio track. Semantics (desired behavior):
@@ -617,6 +635,10 @@ async function resolveYtdlp(raw, cfg) {
   const sourceMaxHeight = Number.isFinite(config.sourceMaxHeight) && config.sourceMaxHeight > 0
     ? Math.round(config.sourceMaxHeight)
     : 1080;
+  // B2: operator opt-in to demote oversized AV1 (e.g. SBOT_AV1_MAX_SOURCE_HEIGHT=720).
+  const av1CapHeight = Number.isFinite(config.av1MaxSourceHeight) && config.av1MaxSourceHeight > 0
+    ? Math.round(config.av1MaxSourceHeight)
+    : 0;
   // Prefer tracks at or below the output raster. If a provider exposes only
   // a larger rendition, retain it as a fallback instead of rejecting a
   // playable source outright.
@@ -655,11 +677,11 @@ async function resolveYtdlp(raw, cfg) {
     if (!isCombined(format)) continue;
     const hasManifest = typeof format.manifest_url === 'string' && format.manifest_url.length > 0;
     const hasDirect = typeof format.url === 'string' && format.url.length > 0;
-    if (hasManifest) {
-      if (!bestManifest || compareAVFormats(format, bestManifest, preferredLangs) < 0) bestManifest = format;
-    } else if (hasDirect && looksProgressive(format)) {
-      if (!bestDirect || compareAVFormats(format, bestDirect, preferredLangs) < 0) bestDirect = format;
-    }
+      if (hasManifest) {
+        if (!bestManifest || compareAVFormats(format, bestManifest, preferredLangs, av1CapHeight) < 0) bestManifest = format;
+      } else if (hasDirect && looksProgressive(format)) {
+        if (!bestDirect || compareAVFormats(format, bestDirect, preferredLangs, av1CapHeight) < 0) bestDirect = format;
+      }
   }
 
   const vodDuration = !isLive && Number.isFinite(data.duration) && data.duration > 0 ? Math.round(data.duration) : null;
@@ -735,7 +757,18 @@ async function resolveYtdlp(raw, cfg) {
   if (bestVideo && bestAudio) {
     if (config.verbose) {
       log('info', `video track selected: codec=${normalizeVcodec(bestVideo.vcodec)} ` +
-        `height=${bestVideo.height || '?'} tbr=${bestVideo.tbr || 'n/a'} maxHeight=${sourceMaxHeight}`);
+        `height=${bestVideo.height || '?'} tbr=${bestVideo.tbr || 'n/a'} maxHeight=${sourceMaxHeight}` +
+        (av1CapHeight ? ` av1Cap=${av1CapHeight}` : ''));
+    }
+    // B2 one-time warning: we picked an AV1 track while running a vaapi pipeline.
+    // Intel iGPUs commonly cannot HW-decode AV1, so ffmpeg may silently
+    // CPU-decode it — surfacing that assumption so operators can raise
+    // SBOT_AV1_MAX_SOURCE_HEIGHT to prefer an H.264/VP9 rendition.
+    if (config.videoEncoder === 'vaapi' && normalizeVcodec(bestVideo.vcodec) === 'av1' && !av1Warned) {
+      av1Warned = true;
+      console.warn(TAG,
+        `warning: AV1 video track selected (${bestVideo.height || '?'}) under a VAAPI pipeline; ` +
+        `if this box cannot HW-decode AV1 it may silently CPU-decode. Consider SBOT_AV1_MAX_SOURCE_HEIGHT=720 to prefer H.264/VP9.`);
     }
     return {
       kind: 'ytdlp',

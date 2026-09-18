@@ -115,6 +115,43 @@ function ensureTrackerInstalled() {
   return installPromise;
 }
 
+// Close a SPECIFIC instance if it is still tracked. Used by the per-piece
+// scoped close below and by closeAllDemuxers. Semantics preserved from the
+// original: a close() that THROWS rejects this promise (so the allSettled
+// callers count it as a failed close), an untracked instance resolves to
+// false (a no-op, not counted), and a successful close resolves to true.
+async function closeTracked(demuxer) {
+  if (!trackedDemuxers.has(demuxer)) return false;
+  if (typeof demuxer.close === 'function') await demuxer.close();
+  else if (typeof demuxer.closeSync === 'function') demuxer.closeSync();
+  return true;
+}
+
+// Scope a per-piece teardown to the demuxers THIS append opened.
+//
+// `baseline` is a snapshot array of the tracker set taken IMMEDIATELY before
+// `feeder.append()` ran. We close only demuxers present in the current set
+// but NOT in that snapshot (i.e. ones opened during this append) and leave
+// anything that pre-existed untouched. Pre-existing instances are typically
+// another live piece's demuxer, a shared muxer, or an orphaned-but-still
+// pipeline-owned instance that the operator expected to survive past a single
+// piece (the existing "orphan survives replacement" test invariant).
+//
+// The pump loop awaits one piece's iteration (including its finally) before
+// shifting the next, so no other code can be registering demuxers
+// concurrently with our close — the snapshot is stable for the call.
+//
+// Resolves to the number of newly-opened demuxers that were actually closed.
+async function closeOpenedDemuxers(baseline) {
+  const base = Array.isArray(baseline) ? new Set(baseline)
+    : (baseline instanceof Set ? baseline : new Set());
+  const opened = [...trackedDemuxers].filter((d) => !base.has(d));
+  if (opened.length === 0) return 0;
+  const results = await Promise.allSettled(opened.map(async (d) => closeTracked(d)));
+  for (const demuxer of opened) trackedDemuxers.delete(demuxer);
+  return results.filter((r) => r.status === 'fulfilled').length;
+}
+
 // Force-close every tracked Demuxer that is still open, then clear the set.
 // Best-effort: a throwing close() on one instance never prevents the others
 // from being closed. Resolves to the number of instances that were closed
@@ -123,13 +160,7 @@ async function closeAllDemuxers() {
   const all = [...trackedDemuxers];
   if (all.length === 0) return 0;
   const results = await Promise.allSettled(
-    all.map(async (d) => {
-      if (d && typeof d.close === 'function') {
-        await d.close();
-      } else if (d && typeof d.closeSync === 'function') {
-        d.closeSync();
-      }
-    })
+    all.map(async (d) => closeTracked(d))
   );
   // Delete only the snapshot we attempted. A timed-out cleanup may finish
   // after a replacement stream has already registered new demuxers; clearing
@@ -143,5 +174,7 @@ module.exports = {
   registerPersistentInput,
   installDemuxerTracker,
   ensureTrackerInstalled,
+  closeOpenedDemuxers,
+  closeTracked,
   closeAllDemuxers
 };
