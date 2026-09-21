@@ -1107,6 +1107,43 @@ test('webhook: missing channel_id -> 400 and yt-dlp is NOT invoked', async () =>
   }
 });
 
+test('webhook: preserves live classification and duration metadata from source resolution', async () => {
+  const crypto = require('crypto');
+  const { createWebhookServer } = require('../src/streambot/webhookServer');
+  const secret = 'wh-live-secret';
+  let started;
+  const server = createWebhookServer({
+    config: { webhookSecret: secret, streamChannelId: 'c1', guildId: 'g1', token: 't' },
+    streamManager: {
+      status: () => null,
+      start: async (args) => { started = args; return { ok: true }; }
+    },
+    sources: {
+      resolveSource: async () => ({
+        kind: 'sharetv', available: true, streamUrl: 'https://tv.example/live',
+        isLive: true, totalDurationSec: null
+      })
+    }
+  });
+  const port = await new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+  });
+  try {
+    const body = JSON.stringify({ share_slug: 'live-test' });
+    const sig = crypto.createHmac('sha256', secret).update(body).digest('hex');
+    const res = await fetch(`http://127.0.0.1:${port}/webhook/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-webhook-secret': sig },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(started.isLive, true);
+    assert.strictEqual(started.totalDurationSec, null);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 // ============================================================================
 // 11) VOD media-EOF close-race: fluent-ffmpeg emits 'error' with
 //     "Output stream closed" (processor.js emitEnd on output close), which

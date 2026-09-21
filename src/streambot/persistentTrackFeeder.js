@@ -92,6 +92,10 @@ class PersistentTrackFeeder {
     this.startAbort = null;
     this.closed = false;
     this.active = null;
+    // Encoded payload handed to a connected native WebRTC transport. The
+    // generic libdatachannel PeerConnection.bytesSent() counter remains zero
+    // for RTP media, so it cannot validate Go Live delivery.
+    this.rtcBytesSent = 0;
   }
 
   async start() {
@@ -148,8 +152,18 @@ class PersistentTrackFeeder {
       const media = await this.videoModule.demux(input, { format: 'nut' });
       signal?.throwIfAborted();
       if (!media.video || !media.audio) throw new Error('Content must contain normalized video and Opus audio');
-      const video = new TimedTrack((frame, ms) => connection.sendVideoFrame(frame, ms), 'video');
-      const audio = new TimedTrack((frame, ms) => connection.sendAudioFrame(frame, ms), 'audio');
+      const sendVideo = (frame, ms) => {
+        if (!connection.ready) return;
+        this.rtcBytesSent += frame.length;
+        connection.sendVideoFrame(frame, ms);
+      };
+      const sendAudio = (frame, ms) => {
+        if (!connection.ready) return;
+        this.rtcBytesSent += frame.length;
+        connection.sendAudioFrame(frame, ms);
+      };
+      const video = new TimedTrack(sendVideo, 'video');
+      const audio = new TimedTrack(sendAudio, 'audio');
       video.syncTrack = audio;
       active = { input, video, audio, videoSource: media.video.stream, audioSource: media.audio.stream };
       this.active = active;

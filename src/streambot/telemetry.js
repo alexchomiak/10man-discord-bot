@@ -6,6 +6,7 @@
 // payloads):
 //   el_p99_ms / el_max_ms   event-loop delay from monitorEventLoopDelay
 //   outBytes_1s / _total    byte counts seen on the session output stream
+//   rtcBytes_1s / _total    encoded bytes handed to a ready WebRTC transport
 //   ff_alive / ff_exit      child process state (fluent ffmpegProc/process)
 //   producer_buf            bytes queued before the NUT remuxer
 //   pipeline_buf            bytes queued for Discord / configured capacity
@@ -19,6 +20,7 @@ function createTelemetry(opts = {}) {
   const getVoiceConnection = typeof opts.getVoiceConnection === 'function' ? opts.getVoiceConnection : () => null;
   const getBufferState = typeof opts.getBufferState === 'function' ? opts.getBufferState : () => null;
   const getOutputBytes = typeof opts.getOutputBytes === 'function' ? opts.getOutputBytes : null;
+  const getRtcBytes = typeof opts.getRtcBytes === 'function' ? opts.getRtcBytes : null;
   const createMonitor = opts.createMonitor || (() => {
     const m = monitorEventLoopDelay({ resolution: 20 });
     m.resume();
@@ -42,6 +44,9 @@ function createTelemetry(opts = {}) {
   const wsState = { main: 'ok', data: 'ok' };
   let outBytesWindow = 0;
   let outBytesTotal = 0;
+  let rtcBytesWindow = 0;
+  let rtcBytesTotal = 0;
+  let previousRtcBytes = null;
   let monitor = null;
   let interval = null;
   let stopped = false;
@@ -98,6 +103,18 @@ function createTelemetry(opts = {}) {
         if (Number.isFinite(counts?.total)) outBytesTotal = counts.total;
       } catch { /* keep the last safe counters */ }
     }
+    if (getRtcBytes) {
+      try {
+        const current = getRtcBytes();
+        if (Number.isFinite(current) && current >= 0) {
+          rtcBytesWindow = previousRtcBytes === null || current < previousRtcBytes
+            ? 0
+            : current - previousRtcBytes;
+          rtcBytesTotal = current;
+          previousRtcBytes = current;
+        }
+      } catch { rtcBytesWindow = 0; }
+    }
     const producerBytes = Number.isFinite(buffers?.producerBytes) ? buffers.producerBytes : 0;
     const pipelineBytes = Number.isFinite(buffers?.pipelineBytes) ? buffers.pipelineBytes : 0;
     const pipelineCapacityBytes = Number.isFinite(buffers?.pipelineCapacityBytes) ? buffers.pipelineCapacityBytes : 0;
@@ -107,11 +124,13 @@ function createTelemetry(opts = {}) {
       `el_p99_ms=${p99 === null ? 'n/a' : p99} ` +
       `el_max_ms=${max === null ? 'n/a' : max} ` +
       `outBytes_1s=${outBytesWindow} outBytes_total=${outBytesTotal} ` +
+      `rtcBytes_1s=${rtcBytesWindow} rtcBytes_total=${rtcBytesTotal} ` +
       `producer_buf=${producerBytes} pipeline_buf=${pipelineBytes}/${pipelineCapacityBytes}(${fillPct}%) ` +
       `ff_alive=${alive} ff_exit=${exitCode === null ? 'not-exited' : exitCode} ` +
       `ws_main=${wsState.main} ws_data=${wsState.data}`;
     try { log('info', line); } catch { /* logger gone */ }
     outBytesWindow = 0;
+    rtcBytesWindow = 0;
   }
 
   function start() {

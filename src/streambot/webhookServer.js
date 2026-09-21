@@ -179,7 +179,9 @@ function createWebhookServer({ config, streamManager, sources }) {
         videoUrl: resolved.videoUrl || null,
         audioUrl: resolved.audioUrl || null,
         title,
-        startOffsetSec: resolved.startOffsetSec || null
+        startOffsetSec: resolved.startOffsetSec || null,
+        isLive: resolved.isLive === true,
+        totalDurationSec: resolved.totalDurationSec != null ? resolved.totalDurationSec : null
       });
       if (result && result.ok) {
         return send(res, 200, {

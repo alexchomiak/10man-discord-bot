@@ -1,2 +1,7 @@
 node_modules/
 .env
+tools/streambot-memory-sandbox/out/
+tools/sbx/out/
+tools/sbx/run.stdout
+tools/sendleak-sandbox/out/
+tools/sendleak-sandbox/tools/

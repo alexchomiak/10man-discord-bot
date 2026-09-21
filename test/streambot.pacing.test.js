@@ -155,6 +155,29 @@ test('single lavfi filler paces both synthetic inputs with -re', () => {
   assert.strictEqual(argvOf(command).filter((a) => a === '-re').length, 2);
 });
 
+test('combined VOD uses only its own A/V input and cannot queue behind realtime silence', () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    videoCodec: 'H264', streamBitrate: 5000, streamHeight: 1080,
+    streamFrameRate: 30, streamAudioBitrate: 128
+  });
+  const command = StreamManager.prototype._buildDashMerge.call(
+    mgr,
+    { Utils: { normalizeVideoCodec: (c) => c } },
+    'https://jellyfin.example/movie.mp4',
+    null,
+    0,
+    null,
+    { isLive: false }
+  ).command;
+  const argv = argvOf(command);
+  assert.strictEqual(argv.filter((a) => a === '-i').length, 1,
+    'combined media must not add a synthetic realtime audio input');
+  assert.ok(!argv.some((a) => a.includes('anullsrc')));
+  assert.strictEqual(argv.filter((a) => a === '-map').length, 2,
+    'combined media must emit exactly one video and one audio mapping');
+  assert.ok(argv.includes('0:a:0?'));
+});
+
 test('Arc mode uses VAAPI encode with the configured render device and 1080p/30 rate control', () => {
   const mgr = new StreamManager({ token: 't' }, 'c1', {
     videoCodec: 'H264', videoEncoder: 'vaapi', vaapiDevice: '/dev/dri/renderD129',
@@ -213,6 +236,8 @@ test('live Arc input automatically deinterlaces on GPU and emits constant 30fps'
   const argv = argvOf(command);
   assert.ok(argv.includes('deinterlace_vaapi=mode=motion_adaptive:rate=frame:auto=1,scale_vaapi=w=1920:h=1080:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12,pad_vaapi=w=1920:h=1080:x=(ow-iw)/2:y=(oh-ih)/2'));
   assert.deepStrictEqual(argv.slice(argv.indexOf('-fps_mode'), argv.indexOf('-fps_mode') + 2), ['-fps_mode', 'cfr']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-reconnect_at_eof'), argv.indexOf('-reconnect_at_eof') + 2),
+    ['-reconnect_at_eof', '1'], 'live HTTP inputs must reconnect after a clean proxy EOF');
 });
 
 test('video burst controls are configurable without reducing average or peak bitrate', () => {
@@ -540,6 +565,7 @@ test('telemetry: tick emits one line with the required fields and no URLs/tokens
   const log = (level, message) => { lines.push(String(message)); };
   const command = { process: { exitCode: null } };
   let byteTick = 0;
+  let rtcBytes = 1000;
 
   const ws = new EventEmitter();
   const dataWs = new EventEmitter();
@@ -564,6 +590,7 @@ test('telemetry: tick emits one line with the required fields and no URLs/tokens
     disposeMonitor: (m) => { m.pause(); },
     timerFactory,
     getOutputBytes: () => (++byteTick === 1 ? { window: 120, total: 120 } : { window: 0, total: 120 }),
+    getRtcBytes: () => { rtcBytes += 500; return rtcBytes; },
     getBufferState: () => ({ producerBytes: 1024, pipelineBytes: 4096, pipelineCapacityBytes: 8192 })
   });
   tel.start();
@@ -583,6 +610,8 @@ test('telemetry: tick emits one line with the required fields and no URLs/tokens
     assert.match(line, /el_max_ms=\d+/);
     assert.match(line, /outBytes_1s=\d+/);
     assert.match(line, /outBytes_total=\d+/);
+    assert.match(line, /rtcBytes_1s=\d+/);
+    assert.match(line, /rtcBytes_total=\d+/);
     assert.match(line, /producer_buf=1024/);
     assert.match(line, /pipeline_buf=4096\/8192\(50%\)/);
     assert.match(line, /ff_alive=true/);
@@ -592,10 +621,14 @@ test('telemetry: tick emits one line with the required fields and no URLs/tokens
   }
   assert.match(lines[0], /outBytes_1s=120/, 'first tick must include the data pushed before it');
   assert.match(lines[0], /outBytes_total=120/);
+  assert.match(lines[0], /rtcBytes_1s=0/);
+  assert.match(lines[0], /rtcBytes_total=1500/);
   assert.match(lines[0], /ws_main=ok/);
   assert.match(lines[1], /ws_main=closed:1000/, 'a closed ws must be reflected as closed:<code>');
   assert.match(lines[1], /outBytes_1s=0/, 'window resets after each tick');
   assert.match(lines[1], /outBytes_total=120/, 'total accumulates');
+  assert.match(lines[1], /rtcBytes_1s=500/, 'native WebRTC bytes must report transport progress');
+  assert.match(lines[1], /rtcBytes_total=2000/);
 
   tel.stop();
   assert.ok(unrefs >= 1, 'the interval must be unref()d');

@@ -365,17 +365,20 @@ class StreamManager {
       const timeoutUs = Math.max(1000, Math.round((cfg.ffmpegReadTimeoutMs || 15000) * 1000));
       command.inputOptions([
         // TimedTrack is the one realtime clock for outgoing Discord packets.
-        // Do not also apply -re to remote inputs: separate YouTube DASH audio
-        // and video downloads must be able to read ahead and refill the
-        // bounded producer buffer after a CDN or VPN stall.
+        // Remote inputs stay unpaced so they can fill the bounded jitter
+        // buffer and recover quickly after a CDN/VPN stall.
         '-thread_queue_size', '2048',
         '-rw_timeout', String(timeoutUs),
         '-user_agent', 'Mozilla/5.0'
       ]);
       if (!/m3u8?/i.test(url)) {
-        // Reconnect on transport failure, but not at clean EOF. That lets VOD
-        // pieces finish while continuous live HTTP inputs recover in place.
-        command.inputOptions(['-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5']);
+        // VOD must finish at clean EOF. Live HTTP proxies can rotate or close
+        // an otherwise healthy response at EOF, so reconnect those pieces in
+        // place without recreating the persistent Discord Go Live session.
+        const reconnect = ['-reconnect', '1', '-reconnect_streamed', '1'];
+        if (piece?.isLive) reconnect.push('-reconnect_at_eof', '1');
+        reconnect.push('-reconnect_delay_max', '5');
+        command.inputOptions(reconnect);
       }
     };
 
@@ -392,13 +395,18 @@ class StreamManager {
       ]);
     }
     configureInput(command, videoUrl, { localRealtime: piece?.inputFormat === 'lavfi' });
-    // Secondary input (audio). fluent-ffmpeg's input(source) only accepts a
-    // source arg — the second-arg options form is not a real API. Apply input
-    // options while this second input is current.
-    command.input(audioUrl || 'anullsrc=channel_layout=stereo:sample_rate=48000');
-    if (!audioUrl) command.inputOptions(['-f', 'lavfi']);
-    if (audioUrl && offset > 0) command.inputOptions(['-ss', String(offset)]);
-    configureInput(command, audioUrl, { localRealtime: !audioUrl });
+    // A second input is needed for split DASH audio and for the synthetic
+    // video-only filler. Do not attach a realtime anullsrc to ordinary
+    // combined A/V media: FFmpeg can decode that VOD far ahead of the paced
+    // synthetic track and retain every encoded video packet in its muxer,
+    // growing native RSS without bound (observed at >17 GiB in 26 seconds).
+    const needsSilentAudio = !audioUrl && piece?.inputFormat === 'lavfi';
+    if (audioUrl || needsSilentAudio) {
+      command.input(audioUrl || 'anullsrc=channel_layout=stereo:sample_rate=48000');
+      if (needsSilentAudio) command.inputOptions(['-f', 'lavfi']);
+      if (audioUrl && offset > 0) command.inputOptions(['-ss', String(offset)]);
+      configureInput(command, audioUrl, { localRealtime: needsSilentAudio });
+    }
 
     // fluent-ffmpeg's old `ffmpeg -formats` parser does not understand the
     // extra device flag in modern output (`D d lavfi ...`). It consequently
@@ -432,14 +440,11 @@ class StreamManager {
       .output(output)
       .outputFormat('nut')
       .addOutputOption('-map 0:v:0')
-      .addOutputOption(audioUrl ? '-map 1:a:0' : '-map 0:a:0?')
+      .addOutputOption((audioUrl || needsSilentAudio) ? '-map 1:a:0' : '-map 0:a:0?')
       .videoFilter(videoFilter)
       .fpsOutput(fps)
       .addOutputOption(['-fps_mode', 'cfr', '-b:v', `${bitrate}k`, '-maxrate:v', `${bitrateMax}k`, '-bufsize:v', `${vbvBufferKbps}k`, '-bf', '0', '-pix_fmt', 'yuv420p']);
 
-    // A second silent track supplies audio for video-only sources/placeholder.
-    // The remuxer selects real audio first when present and drops the spare.
-    if (!audioUrl) command.addOutputOption('-map 1:a:0');
     command.addOutputOption('-shortest')
       .addOutputOption('-force_key_frames', `expr:gte(t,n_forced*${keyframeIntervalSec})`);
 
@@ -975,6 +980,7 @@ class StreamManager {
           if (this.config.verbose === true) try {
             piece.telemetry = telemetry.createTelemetry({ command: result.command,
               getOutputBytes: () => result.output?.takeByteCounts?.(),
+              getRtcBytes: () => p.feeder.rtcBytesSent,
               getBufferState: () => ({
                 producerBytes: result.output?.readableLength || 0,
                 pipelineBytes: 0,
