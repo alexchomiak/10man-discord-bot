@@ -369,13 +369,15 @@ class StreamManager {
         // stay near realtime: otherwise FFmpeg can decode separate YouTube
         // video/audio inputs far ahead while the sender applies backpressure,
         // retaining gigabytes of frames before the 8 MiB output pipe.
-        '-thread_queue_size', '2048',
+        '-thread_queue_size', piece?.isLive ? '2048' : '256',
         '-rw_timeout', String(timeoutUs),
         '-user_agent', 'Mozilla/5.0'
       ]);
       if (!piece?.isLive) {
         const burstSec = Math.max(4, Math.ceil(Number(cfg.jitterBufferSec) || 4));
-        command.inputOptions(['-readrate', '1', '-readrate_initial_burst', String(burstSec)]);
+        // Leave headroom to refill after transient network/encoder stalls.
+        // The bounded input queue and output pipe prevent unlimited prefetch.
+        command.inputOptions(['-readrate', '1.15', '-readrate_initial_burst', String(burstSec)]);
       }
       if (!/m3u8?/i.test(url)) {
         // VOD must finish at clean EOF. Live HTTP proxies can rotate or close

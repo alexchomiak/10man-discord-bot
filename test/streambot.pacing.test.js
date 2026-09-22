@@ -123,6 +123,10 @@ test('dash merge: VOD inputs read at realtime after a startup burst', () => {
 
   assert.strictEqual(argv.filter((a) => a === '-re').length, 0, 'TimedTrack owns pacing; HTTP inputs must refill the buffer');
   assert.strictEqual(argv.filter((a) => a === '-readrate').length, 2, 'each YouTube DASH input must be paced');
+  assert.deepStrictEqual(argv.flatMap((a, i) => a === '-readrate' ? [argv[i + 1]] : []), ['1.15', '1.15'],
+    'each DASH input needs catch-up headroom after a stall');
+  assert.deepStrictEqual(argv.flatMap((a, i) => a === '-thread_queue_size' ? [argv[i + 1]] : []), ['256', '256'],
+    'VOD input queues must remain bounded');
   assert.strictEqual(argv.filter((a) => a === '-readrate_initial_burst').length, 2);
   assert.strictEqual(argv.filter((a) => a === '-thread_queue_size').length, 2);
   assert.strictEqual(argv.filter((a) => a === '-rw_timeout').length, 2);
