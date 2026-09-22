@@ -175,6 +175,7 @@ function createWebhookServer({ config, streamManager, sources }) {
       const result = await streamManager.start({
         guildId,
         channelId,
+        sourceInput: input,
         streamUrl: resolved.streamUrl || null,
         videoUrl: resolved.videoUrl || null,
         audioUrl: resolved.audioUrl || null,

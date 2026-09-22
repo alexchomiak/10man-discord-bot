@@ -15,6 +15,7 @@ class TimedTrack extends Writable {
     this.sleep = options.sleep || sleep;
     this.maxCatchupMs = Number.isFinite(options.maxCatchupMs) ? options.maxCatchupMs : 250;
     this.maxPtsJumpMs = Number.isFinite(options.maxPtsJumpMs) ? options.maxPtsJumpMs : 500;
+    this.maxSyncWaitMs = Number.isFinite(options.maxSyncWaitMs) ? options.maxSyncWaitMs : 250;
     this.pts = undefined;
     this.previousPts = undefined;
     this.syncTrack = null;
@@ -40,19 +41,34 @@ class TimedTrack extends Writable {
         this.startTime = started;
         this.startPts = packetPts;
       }
-      this.send(Buffer.from(data), frameMs);
-      const ended = this.now();
       this.pts = packetPts;
       this.previousPts = packetPts;
+      const other = this.syncTrack?.pts;
+      let waitedForAudio = false;
+      if (this.type === 'video' && !this.syncTrack?.writableEnded && Number.isFinite(other) && this.pts - other > 20) {
+        let waitedMs = 0;
+        while (!this.destroyed && !this.syncTrack?.writableEnded &&
+          Number.isFinite(this.syncTrack?.pts) && this.pts - this.syncTrack.pts > 20 &&
+          waitedMs < this.maxSyncWaitMs) {
+          const waitMs = Math.min(frameMs, this.maxSyncWaitMs - waitedMs);
+          await this.sleep(waitMs);
+          waitedMs += waitMs;
+        }
+        // Never send video indefinitely ahead of audio. The feeder will fail
+        // promptly so the manager can reopen both tracks at one VOD position.
+        if (!this.destroyed && !this.syncTrack?.writableEnded &&
+            Number.isFinite(this.syncTrack?.pts) && this.pts - this.syncTrack.pts > 20) {
+          const error = new Error('Audio/video synchronization lost');
+          error.code = 'AV_SYNC_LOST';
+          throw error;
+        }
+        waitedForAudio = true;
+      }
+      this.send(Buffer.from(data), frameMs);
+      const ended = this.now();
       this.startTime ??= started;
       this.startPts ??= this.pts;
-
-      const other = this.syncTrack?.pts;
-      if (this.type === 'video' && !this.syncTrack?.writableEnded && Number.isFinite(other) && this.pts - other > 20) {
-        while (!this.destroyed && !this.syncTrack?.writableEnded &&
-          Number.isFinite(this.syncTrack?.pts) && this.pts - this.syncTrack.pts > 20) {
-          await this.sleep(frameMs);
-        }
+      if (waitedForAudio) {
         this.startTime = this.startPts = undefined;
       } else {
         const mediaElapsed = this.pts - this.startPts + frameMs;
@@ -169,10 +185,13 @@ class PersistentTrackFeeder {
       this.active = active;
       active.videoSource.pipe(video);
       active.audioSource.pipe(audio);
-      const results = await Promise.allSettled([finished(video), finished(audio)]);
-      if (!signal?.aborted) {
-        const failure = results.find(result => result.status === 'rejected');
-        if (failure) throw failure.reason;
+      try {
+        await Promise.all([finished(video), finished(audio)]);
+      } catch (error) {
+        if (!signal?.aborted) {
+          cancel();
+          throw error;
+        }
       }
     } finally {
       signal?.removeEventListener('abort', cancel);

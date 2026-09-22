@@ -368,6 +368,7 @@ test('resolveDirect: accepts signed stream URL (viewer/vsig)', () => {
   assert.ok(res, 'signed stream_url is accepted as direct');
   assert.strictEqual(res.kind, 'direct');
   assert.strictEqual(res.streamUrl, SHARE_ORDINARY.stream_url);
+  assert.strictEqual(res.isLive, true, 'signed ShareTV MPEG-TS endpoint is a live feed');
 });
 
 test('resolveDirect: accepts signed stream URL (u/sig)', () => {
@@ -375,6 +376,7 @@ test('resolveDirect: accepts signed stream URL (u/sig)', () => {
   const res = resolveDirect(signed);
   assert.ok(res);
   assert.strictEqual(res.streamUrl, signed);
+  assert.strictEqual(res.isLive, true, 'legacy signed ShareTV endpoint is also live');
 });
 
 test('resolveDirect: rejects raw platform page (not direct; routes to yt-dlp)', () => {

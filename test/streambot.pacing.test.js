@@ -115,13 +115,15 @@ function argvOf(command) {
   return arr.map((p) => String(p));
 }
 
-test('dash merge: network inputs can read ahead and retain bounded reconnect/read options', () => {
+test('dash merge: VOD inputs read at realtime after a startup burst', () => {
   const command = buildDashCommand({ offset: 0 });
   const argv = argvOf(command);
   const inputs = argv.filter((a) => a === '-i').length;
   assert.strictEqual(inputs, 2, 'dash merge must keep exactly two -i inputs');
 
   assert.strictEqual(argv.filter((a) => a === '-re').length, 0, 'TimedTrack owns pacing; HTTP inputs must refill the buffer');
+  assert.strictEqual(argv.filter((a) => a === '-readrate').length, 2, 'each YouTube DASH input must be paced');
+  assert.strictEqual(argv.filter((a) => a === '-readrate_initial_burst').length, 2);
   assert.strictEqual(argv.filter((a) => a === '-thread_queue_size').length, 2);
   assert.strictEqual(argv.filter((a) => a === '-rw_timeout').length, 2);
   assert.strictEqual(argv.filter((a) => a === '-reconnect').length, 2);
@@ -554,6 +556,67 @@ test('producer end first (no error event) -> "video finished" (the drain path fi
   assert.strictEqual(t.alerts.filter((a) => a.event === 'stream-ended').length, 1);
   assert.strictEqual(t.alerts.filter((a) => a.event === 'stream-ended')[0].detail, M.STREAM_VOD_ENDED('Clean'), 'the drain path is the clean signal -> ENDED');
   t.restore();
+});
+
+test('live EOF retries on the existing voice link instead of reporting VOD ended', async () => {
+  const t = makeStreamManager('Live channel');
+  try {
+    const result = await t.mgr.start({ ...t.startArgs, isLive: true });
+    assert.equal(result.ok, true);
+    const link = t.mgr.voiceLink;
+    (result.session.command.listeners.end || []).forEach(resolve => resolve());
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.strictEqual(t.mgr.voiceLink, link);
+    assert.equal(link.pipeline.activeWriter?.recoveryAttempt, 1);
+    assert.equal(t.alerts.filter(a => a.event === 'stream-ended').length, 0);
+    assert.equal(link.graceTimer, null);
+    await t.mgr.stop();
+  } finally {
+    t.restore();
+  }
+});
+
+test('live recovery resolves a fresh URL before reopening the source', async () => {
+  const t = makeStreamManager('Scheduled live channel');
+  const sources = require('../src/streambot/sources');
+  const originalResolve = sources.resolveSource;
+  const inputs = [];
+  sources.resolveSource = async input => {
+    inputs.push(input);
+    return { available: true, isLive: true, streamUrl: 'https://example.com/fresh.ts' };
+  };
+  try {
+    const result = await t.mgr.start({ ...t.startArgs, isLive: true, sourceInput: 'scheduled-share' });
+    assert.equal(result.ok, true);
+    (result.session.command.listeners.end || []).forEach(resolve => resolve());
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    assert.deepStrictEqual(inputs, ['scheduled-share']);
+    assert.equal(t.mgr.voiceLink?.pipeline?.activeWriter?.streamUrl, 'https://example.com/fresh.ts');
+    assert.equal(t.alerts.filter(a => a.event === 'stream-ended').length, 0);
+    await t.mgr.stop();
+  } finally {
+    sources.resolveSource = originalResolve;
+    t.restore();
+  }
+});
+
+test('VOD audio/video sync failure reopens both tracks without reporting completion', async () => {
+  const t = makeStreamManager('YouTube VOD');
+  t.mgr._feederFactory = () => ({
+    start: async () => ({}),
+    append: async () => { const error = new Error('Audio/video synchronization lost'); error.code = 'AV_SYNC_LOST'; throw error; },
+    interrupt() {}, close: async () => {}
+  });
+  try {
+    const result = await t.mgr.start({ ...t.startArgs, sourceInput: 'https://www.youtube.com/watch?v=test', totalDurationSec: 1200 });
+    assert.equal(result.ok, true);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(t.mgr.voiceLink?.pipeline?.activeWriter?.recoveryAttempt, 1);
+    assert.equal(t.alerts.filter(a => a.event === 'stream-ended').length, 0);
+    await t.mgr.stop();
+  } finally {
+    t.restore();
+  }
 });
 
 // ============================================================================

@@ -52,6 +52,7 @@ printf 'elapsed_s\tmemory_bytes\tmemory_limit_bytes\tffmpeg_bytes_total\trtc_byt
 echo '[sandbox] starting one worker with a kernel-enforced 2 GiB memory ceiling'
 docker run -d --name "$CONTAINER" \
   --memory 2g --memory-swap 2g --pids-limit 256 --cpus 4 \
+  --tmpfs /tmp:rw,exec,size=512m,mode=1777 \
   --env-file "$ENV_FILE" \
   -e MODE=streambot -e STREAMBOT_IDS=memorytest -e STREAMBOT_DEFAULT_ID=memorytest \
   -e SBOT_CHAT_COMMANDS=false \

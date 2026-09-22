@@ -295,6 +295,7 @@ class CommandRegistry {
     const result = await this.streamManager.start({
       guildId,
       channelId,
+      sourceInput: raw,
       streamUrl: resolved.streamUrl || null,
       videoUrl: resolved.videoUrl || null,
       audioUrl: resolved.audioUrl || null,

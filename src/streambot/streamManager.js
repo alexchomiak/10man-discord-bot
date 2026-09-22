@@ -5,6 +5,7 @@ const { TAG, redactToken } = require('./config');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { PassThrough } = require('stream');
+const { setTimeout: sleep } = require('node:timers/promises');
 const { PersistentTrackFeeder } = require('./persistentTrackFeeder');
 // NOTE: module reference (not a destructure) so test harnesses can patch the
 // exported functions (demuxGuard.ensureTrackerInstalled) and have the manager
@@ -364,13 +365,18 @@ class StreamManager {
       if (!isHttpUrl(url)) return;
       const timeoutUs = Math.max(1000, Math.round((cfg.ffmpegReadTimeoutMs || 15000) * 1000));
       command.inputOptions([
-        // TimedTrack is the one realtime clock for outgoing Discord packets.
-        // Remote inputs stay unpaced so they can fill the bounded jitter
-        // buffer and recover quickly after a CDN/VPN stall.
+        // TimedTrack clocks outgoing Discord packets. A VOD input must also
+        // stay near realtime: otherwise FFmpeg can decode separate YouTube
+        // video/audio inputs far ahead while the sender applies backpressure,
+        // retaining gigabytes of frames before the 8 MiB output pipe.
         '-thread_queue_size', '2048',
         '-rw_timeout', String(timeoutUs),
         '-user_agent', 'Mozilla/5.0'
       ]);
+      if (!piece?.isLive) {
+        const burstSec = Math.max(4, Math.ceil(Number(cfg.jitterBufferSec) || 4));
+        command.inputOptions(['-readrate', '1', '-readrate_initial_burst', String(burstSec)]);
+      }
       if (!/m3u8?/i.test(url)) {
         // VOD must finish at clean EOF. Live HTTP proxies can rotate or close
         // an otherwise healthy response at EOF, so reconnect those pieces in
@@ -947,7 +953,24 @@ class StreamManager {
         this.session = piece; // compatibility: status/volume target active content
         let appendTask;
         let clean = false;
+        let recoverLive = false;
+        let recoverVodSync = false;
+        let liveError = null;
         try {
+          if (piece.recoveryAttempt) {
+            await sleep(piece.retryDelayMs, undefined, { signal: piece.control.signal });
+            if (piece.sourceInput) {
+              const resolved = await require('./sources').resolveSource(piece.sourceInput, this.config);
+              piece.control.signal.throwIfAborted();
+              if (!resolved?.available || resolved.isLive !== piece.isLive) {
+                throw new Error(resolved?.note || 'Source unavailable during recovery');
+              }
+              piece.streamUrl = resolved.streamUrl || null;
+              piece.videoUrl = resolved.videoUrl || null;
+              piece.audioUrl = resolved.audioUrl || null;
+              piece.isDash = !!(piece.videoUrl && piece.audioUrl);
+            }
+          }
           const result = piece.isDash
             ? this._buildDashMerge(videoModule, piece.videoUrl, piece.audioUrl, piece.startOffsetSec,
               this.setupStreamOptions(videoModule, piece.startOffsetSec), piece)
@@ -993,15 +1016,47 @@ class StreamManager {
           await this._prebuffer(result.output, piece);
           appendTask = p.feeder.append(result.output, piece.control.signal);
           await Promise.all([appendTask, completion]);
-          if (!piece.control.signal.aborted && !piece.isFiller) this._notifyEnded(piece, clean);
+          if (!piece.control.signal.aborted && piece.isLive) recoverLive = true;
+          else if (!piece.control.signal.aborted && !piece.isFiller) this._notifyEnded(piece, clean);
         } catch (error) {
-          if (!piece.control.signal.aborted && !p.closed) this._notifyError(`ffmpeg error: ${error.message}`);
+          if (!piece.control.signal.aborted && !p.closed) {
+            if (piece.isLive) { recoverLive = true; liveError = error; }
+            else if (error.code === 'AV_SYNC_LOST' && piece.sourceInput) recoverVodSync = true;
+            else this._notifyError(`ffmpeg error: ${error.message}`);
+          }
         } finally {
           this._cancelPiece(piece);
           await appendTask?.catch(() => {});
           await this._reapPiece(piece);
           if (this.session === piece) this.session = null;
           p.activeWriter = null;
+        }
+        if (recoverLive && !p.closed && !link.paused && p.enqueue.length === 0) {
+          const activeMs = Date.now() - piece.startedAt;
+          const attempt = activeMs >= 30000 ? 1 : (piece.recoveryAttempt || 0) + 1;
+          if (attempt <= 8) {
+            const retryDelayMs = Math.min(1000 * 2 ** (attempt - 1), 10000);
+            const retry = this._reopenSession(link, piece, { offsetSec: 0 });
+            retry.recoveryAttempt = attempt;
+            retry.retryDelayMs = retryDelayMs;
+            p.enqueue.unshift(retry);
+            log('warn', `live source interrupted; retry ${attempt}/8 in ${retryDelayMs}ms${liveError ? ' after ffmpeg error' : ' after EOF'}`);
+          } else {
+            this._notifyError('Live stream could not be recovered after 8 attempts');
+          }
+        }
+        if (recoverVodSync && !p.closed && !link.paused && p.enqueue.length === 0) {
+          const attempt = (piece.recoveryAttempt || 0) + 1;
+          const offsetSec = Math.round(this.positionOf(piece));
+          if (attempt <= 3 && (!piece.totalDurationSec || offsetSec < piece.totalDurationSec - 5)) {
+            const retry = this._reopenSession(link, piece, { offsetSec });
+            retry.recoveryAttempt = attempt;
+            retry.retryDelayMs = Math.min(attempt * 1000, 3000);
+            p.enqueue.unshift(retry);
+            log('warn', `audio/video sync lost; reopening both tracks at ${offsetSec}s (attempt ${attempt}/3)`);
+          } else {
+            this._notifyError('Audio/video synchronization could not be recovered');
+          }
         }
       }
     })().finally(() => {
@@ -1279,6 +1334,7 @@ class StreamManager {
       streamUrl: piece.streamUrl,
       videoUrl: piece.videoUrl,
       audioUrl: piece.audioUrl,
+      sourceInput: piece.sourceInput,
       inputFormat: piece.inputFormat,
       durationSec: piece.durationSec,
       title: piece.title,

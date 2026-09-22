@@ -314,6 +314,8 @@ function isLiveLikeUrl(raw) {
     const u = new URL(String(raw));
     const p = u.pathname.toLowerCase();
     if (/\.(m3u8|ts)$/.test(p)) return true;
+    // ShareTV's signed MPEG-TS endpoint has no media-file extension.
+    if (/^\/api\/public\/stream\/[a-z0-9_-]+\/?$/.test(p)) return true;
     // iptv-share HLS endpoints use a query flag rather than a .m3u8 extension.
     if (u.searchParams.has('hls')) return true;
     return false;

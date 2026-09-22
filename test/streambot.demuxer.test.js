@@ -315,3 +315,28 @@ test('timed track rebases a live timestamp discontinuity instead of sleeping for
   assert.ok(sleeps[1] > 30 && sleeps[1] < 35, `expected one frame sleep, got ${sleeps[1]}ms`);
   track.destroy();
 });
+
+test('video pacing fails a stalled audio clock before sending unsynced frames', async () => {
+  const { TimedTrack } = require('../src/streambot/persistentTrackFeeder');
+  const sleeps = [];
+  let sent = 0;
+  const track = new TimedTrack(() => { sent++; }, 'video', {
+    now: () => 0,
+    sleep: async ms => { sleeps.push(ms); },
+    maxSyncWaitMs: 100
+  });
+  track.on('error', () => {});
+  track.syncTrack = { pts: 0, writableEnded: false };
+  const packet = pts => ({
+    data: Buffer.from([1]), pts: BigInt(pts), duration: 1n,
+    timeBase: { num: 1, den: 30 }, free() {}
+  });
+  await assert.rejects(
+    new Promise((resolve, reject) => track.write(packet(30), error => error ? reject(error) : resolve())),
+    error => error?.code === 'AV_SYNC_LOST'
+  );
+  const firstWait = sleeps.reduce((sum, ms) => sum + ms, 0);
+  assert.equal(firstWait, 100);
+  assert.equal(sent, 0, 'do not send video while audio is behind');
+  track.destroy();
+});

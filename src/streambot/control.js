@@ -80,6 +80,7 @@ class StreamControl {
           : (resolved.streamUrl || resolved.videoUrl || input);
         const r = await this.streamManager.start({
           guildId, channelId,
+          sourceInput: input,
           streamUrl: resolved.streamUrl || null,
           videoUrl: resolved.videoUrl || null,
           audioUrl: resolved.audioUrl || null,
