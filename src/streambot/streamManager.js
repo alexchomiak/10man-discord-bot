@@ -960,8 +960,11 @@ class StreamManager {
         let appendTask;
         let clean = false;
         let recoverLive = false;
-        let recoverVodSync = false;
+        let recoverVod = false;
+        let vodRecoveryReason = null;
         let liveError = null;
+        let stallWatchdog = null;
+        let lastVideoFrameAt = 0;
         try {
           if (piece.recoveryAttempt) {
             await sleep(piece.retryDelayMs, undefined, { signal: piece.control.signal });
@@ -1020,17 +1023,51 @@ class StreamManager {
             piece.telemetry.start();
           } catch {}
           await this._prebuffer(result.output, piece);
-          appendTask = p.feeder.append(result.output, piece.control.signal);
+          appendTask = p.feeder.append(result.output, piece.control.signal, frameMs => {
+            if (Number.isFinite(frameMs) && frameMs > 0) {
+              piece.playedSec = (piece.playedSec || 0) + frameMs / 1000;
+              lastVideoFrameAt = Date.now();
+            }
+          });
+          if (!piece.isLive && !piece.isFiller && piece.sourceInput) {
+            const configuredMs = Number(this.config.vodStallTimeoutMs);
+            const timeoutMs = Number.isFinite(configuredMs) && configuredMs > 0 ? configuredMs : 8000;
+            stallWatchdog = setInterval(() => {
+              if (p.feeder.connection?.ready === false) {
+                if (lastVideoFrameAt) lastVideoFrameAt = Date.now();
+                return;
+              }
+              if (lastVideoFrameAt && !piece.control.signal.aborted &&
+                  Date.now() - lastVideoFrameAt >= timeoutMs) {
+                const error = new Error('VOD video stopped producing frames');
+                error.code = 'VIDEO_STALL';
+                failure(error);
+              }
+            }, Math.max(20, Math.min(1000, timeoutMs / 2)));
+            stallWatchdog.unref?.();
+          }
           await Promise.all([appendTask, completion]);
           if (!piece.control.signal.aborted && piece.isLive) recoverLive = true;
-          else if (!piece.control.signal.aborted && !piece.isFiller) this._notifyEnded(piece, clean);
+          else if (!piece.control.signal.aborted && !piece.isFiller) {
+            const remaining = Number(piece.totalDurationSec) - this.positionOf(piece);
+            if (piece.sourceInput && Number.isFinite(piece.totalDurationSec) &&
+                piece.totalDurationSec > 0 && remaining > 30) {
+              recoverVod = true;
+              vodRecoveryReason = 'early EOF';
+            } else this._notifyEnded(piece, clean);
+          }
         } catch (error) {
           if (!piece.control.signal.aborted && !p.closed) {
             if (piece.isLive) { recoverLive = true; liveError = error; }
-            else if (error.code === 'AV_SYNC_LOST' && piece.sourceInput) recoverVodSync = true;
+            else if (piece.sourceInput && !piece.isFiller) {
+              recoverVod = true;
+              vodRecoveryReason = error.code === 'AV_SYNC_LOST' ? 'audio/video sync lost'
+                : error.code === 'VIDEO_STALL' ? 'video stalled' : 'FFmpeg error';
+            }
             else this._notifyError(`ffmpeg error: ${error.message}`);
           }
         } finally {
+          if (stallWatchdog) clearInterval(stallWatchdog);
           this._cancelPiece(piece);
           await appendTask?.catch(() => {});
           await this._reapPiece(piece);
@@ -1051,17 +1088,18 @@ class StreamManager {
             this._notifyError('Live stream could not be recovered after 8 attempts');
           }
         }
-        if (recoverVodSync && !p.closed && !link.paused && p.enqueue.length === 0) {
-          const attempt = (piece.recoveryAttempt || 0) + 1;
+        if (recoverVod && !p.closed && !link.paused && p.enqueue.length === 0) {
+          const activeMs = Date.now() - piece.startedAt;
+          const attempt = activeMs >= 30000 ? 1 : (piece.recoveryAttempt || 0) + 1;
           const offsetSec = Math.round(this.positionOf(piece));
           if (attempt <= 3 && (!piece.totalDurationSec || offsetSec < piece.totalDurationSec - 5)) {
             const retry = this._reopenSession(link, piece, { offsetSec });
             retry.recoveryAttempt = attempt;
             retry.retryDelayMs = Math.min(attempt * 1000, 3000);
             p.enqueue.unshift(retry);
-            log('warn', `audio/video sync lost; reopening both tracks at ${offsetSec}s (attempt ${attempt}/3)`);
+            log('warn', `VOD ${vodRecoveryReason}; reopening at ${offsetSec}s (attempt ${attempt}/3)`);
           } else {
-            this._notifyError('Audio/video synchronization could not be recovered');
+            this._notifyError('VOD playback could not be recovered');
           }
         }
       }
@@ -1331,7 +1369,11 @@ class StreamManager {
   positionOf(piece) {
     if (!piece) return 0;
     const base = Number.isFinite(piece.startOffsetSec) && piece.startOffsetSec > 0 ? piece.startOffsetSec : 0;
-    const elapsed = Math.max(0, (Date.now() - (piece.startedAt || Date.now())) / 1000);
+    // A stalled encoder/source advances wall time without advancing the
+    // viewer's video. Once frames have been sent, seek from their duration.
+    const elapsed = Number.isFinite(piece.playedSec) && piece.playedSec > 0
+      ? piece.playedSec
+      : Math.max(0, (Date.now() - (piece.startedAt || Date.now())) / 1000);
     let pos = base + elapsed;
     if (pos < 0) pos = 0;
     if (Number.isFinite(piece.totalDurationSec) && piece.totalDurationSec > 0 && pos > piece.totalDurationSec) {

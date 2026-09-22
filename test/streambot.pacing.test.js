@@ -623,6 +623,73 @@ test('VOD audio/video sync failure reopens both tracks without reporting complet
   }
 });
 
+test('premature VOD EOF resumes from sent video time, not stalled wall time', async () => {
+  const t = makeStreamManager('Long YouTube VOD');
+  try {
+    const result = await t.mgr.start({ ...t.startArgs,
+      sourceInput: 'https://www.youtube.com/watch?v=test', totalDurationSec: 7200 });
+    assert.equal(result.ok, true);
+    result.session.playedSec = 12;
+    result.session.startedAt = Date.now() - 10 * 60 * 1000;
+    assert.equal(Math.round(t.mgr.positionOf(result.session)), 12);
+    (result.session.command.listeners.end || []).forEach(resolve => resolve());
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(t.mgr.voiceLink?.pipeline?.activeWriter?.startOffsetSec, 12);
+    assert.equal(t.alerts.filter(a => a.event === 'stream-ended').length, 0);
+    await t.mgr.stop();
+  } finally {
+    t.restore();
+  }
+});
+
+test('VOD frame stall reopens the source instead of freezing indefinitely', async () => {
+  const t = makeStreamManager('Stalled YouTube VOD');
+  t.mgr.config.vodStallTimeoutMs = 40;
+  t.mgr._feederFactory = () => ({
+    start: async () => ({}),
+    append: async (_input, signal, onVideoFrame) => {
+      onVideoFrame(1000 / 30);
+      await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    },
+    interrupt() {}, close: async () => {}
+  });
+  try {
+    const result = await t.mgr.start({ ...t.startArgs,
+      sourceInput: 'https://www.youtube.com/watch?v=test', totalDurationSec: 7200 });
+    assert.equal(result.ok, true);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(t.mgr.voiceLink?.pipeline?.activeWriter?.recoveryAttempt, 1);
+    assert.equal(t.alerts.filter(a => a.event === 'stream-ended').length, 0);
+    await t.mgr.stop();
+  } finally {
+    t.restore();
+  }
+});
+
+test('VOD stall watchdog does not restart the source while WebRTC is disconnected', async () => {
+  const t = makeStreamManager('Disconnected viewer');
+  t.mgr.config.vodStallTimeoutMs = 40;
+  t.mgr._feederFactory = () => ({
+    connection: { ready: false },
+    start: async () => ({}),
+    append: async (_input, signal, onVideoFrame) => {
+      onVideoFrame(1000 / 30);
+      await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    },
+    interrupt() {}, close: async () => {}
+  });
+  try {
+    const result = await t.mgr.start({ ...t.startArgs,
+      sourceInput: 'https://www.youtube.com/watch?v=test', totalDurationSec: 7200 });
+    assert.equal(result.ok, true);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(t.mgr.voiceLink?.pipeline?.activeWriter?.recoveryAttempt, undefined);
+    await t.mgr.stop();
+  } finally {
+    t.restore();
+  }
+});
+
 // ============================================================================
 // 5) Telemetry: one line per tick with the required fields; no URLs/tokens;
 //    stop() clears the timer (unref'd); zero-cost after stop

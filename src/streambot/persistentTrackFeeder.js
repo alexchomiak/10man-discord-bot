@@ -16,6 +16,8 @@ class TimedTrack extends Writable {
     this.maxCatchupMs = Number.isFinite(options.maxCatchupMs) ? options.maxCatchupMs : 250;
     this.maxPtsJumpMs = Number.isFinite(options.maxPtsJumpMs) ? options.maxPtsJumpMs : 500;
     this.maxSyncWaitMs = Number.isFinite(options.maxSyncWaitMs) ? options.maxSyncWaitMs : 250;
+    this.defaultDurationMs = Number.isFinite(options.defaultDurationMs) && options.defaultDurationMs > 0
+      ? options.defaultDurationMs : (type === 'video' ? 1000 / 30 : 20);
     this.pts = undefined;
     this.previousPts = undefined;
     this.syncTrack = null;
@@ -27,7 +29,14 @@ class TimedTrack extends Writable {
     try {
       const { data, pts, duration, timeBase } = packet;
       if (!data) return callback();
-      const frameMs = Number(duration) * timeBase.num * 1000 / timeBase.den;
+      const packetDurationMs = Number(duration) * timeBase.num * 1000 / timeBase.den;
+      // RTP timestamps must advance for every encoded frame. If a demuxer
+      // omits packet duration,
+      // forwarding zero would make Discord display a run of frames at one RTP
+      // timestamp. The output is CFR video and 20ms Opus, so use that clock
+      // only when the packet duration is absent or invalid.
+      const frameMs = Number.isFinite(packetDurationMs) && packetDurationMs > 0
+        ? packetDurationMs : this.defaultDurationMs;
       const started = this.now();
       const packetPts = Number(pts) * timeBase.num * 1000 / timeBase.den;
       const ptsStep = Number.isFinite(this.previousPts) ? packetPts - this.previousPts : frameMs;
@@ -150,7 +159,7 @@ class PersistentTrackFeeder {
     }
   }
 
-  async append(input, signal) {
+  async append(input, signal, onVideoFrame) {
     if (this.closed) throw new Error('Persistent track feeder is closed');
     if (this.active) throw new Error('Concurrent track feeders are not allowed');
     const connection = await this.start();
@@ -170,15 +179,16 @@ class PersistentTrackFeeder {
       if (!media.video || !media.audio) throw new Error('Content must contain normalized video and Opus audio');
       const sendVideo = (frame, ms) => {
         if (!connection.ready) return;
-        this.rtcBytesSent += frame.length;
         connection.sendVideoFrame(frame, ms);
+        this.rtcBytesSent += frame.length;
+        onVideoFrame?.(ms);
       };
       const sendAudio = (frame, ms) => {
         if (!connection.ready) return;
         this.rtcBytesSent += frame.length;
         connection.sendAudioFrame(frame, ms);
       };
-      const video = new TimedTrack(sendVideo, 'video');
+      const video = new TimedTrack(sendVideo, 'video', { defaultDurationMs: 1000 / this.frameRate });
       const audio = new TimedTrack(sendAudio, 'audio');
       video.syncTrack = audio;
       active = { input, video, audio, videoSource: media.video.stream, audioSource: media.audio.stream };

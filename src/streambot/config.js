@@ -200,6 +200,10 @@ function loadConfig() {
     // packet is handed to Discord. The persistent Go Live connection remains
     // open while it fills. Zero disables the jitter buffer.
     jitterBufferSec: parseNonNegativeNumber(process.env.SBOT_JITTER_BUFFER_SEC, 4),
+    // Re-resolve a seekable source if its video sender makes no progress after
+    // playback has started. Avoids leaving a live Discord session frozen when
+    // FFmpeg remains alive but the source/encoder stalls indefinitely.
+    vodStallTimeoutMs: parsePositiveInt(process.env.SBOT_VOD_STALL_TIMEOUT_MS, 8000),
     ffmpegReadTimeoutMs: parsePositiveInt(process.env.SBOT_FFMPEG_READ_TIMEOUT_MS, 15000),
     ffmpegPath: (process.env.FFMPEG_PATH || '').trim() || 'ffmpeg',
 

@@ -264,14 +264,16 @@ test('persistent track feeder creates one go-live connection across sequential c
   });
   // This is the production startup shape: pipeline startup and the first
   // append race one another. They must share one createStream() handshake.
+  let playedSec = 0;
   await Promise.all([
     feeder.start(),
-    feeder.append(new PassThrough(), new AbortController().signal)
+    feeder.append(new PassThrough(), new AbortController().signal, ms => { playedSec += ms / 1000; })
   ]);
   await feeder.append(new PassThrough(), new AbortController().signal);
   assert.equal(creates, 1, 'content changes must not recreate the Discord stream');
   assert.equal(videoFrames, 2); assert.equal(audioFrames, 2); assert.equal(frees, 4);
   assert.equal(feeder.rtcBytesSent, 4, 'count payload only after WebRTC reports ready');
+  assert.ok(playedSec > 0.03 && playedSec < 0.04, 'progress follows frames sent to WebRTC');
   await feeder.close();
 });
 
@@ -293,6 +295,20 @@ test('timed track rebases after starvation instead of bursting delayed frames', 
   assert.ok(sleeps[0] > 30 && sleeps[0] < 35, 'normal first frame uses 30fps pacing');
   assert.ok(sleeps[1] > 30 && sleeps[1] < 35, 'late frame resumes 30fps pacing instead of a zero-delay burst');
   track.destroy();
+});
+
+test('timed tracks advance RTP time when an encoder omits packet duration', async () => {
+  for (const [type, expectedMs] of [['video', 1000 / 30], ['audio', 20]]) {
+    const sent = [];
+    const track = new TimedTrack((_data, frameMs) => sent.push(frameMs), type, {
+      now: () => 0, sleep: async () => {}, defaultDurationMs: expectedMs
+    });
+    const packet = { data: Buffer.from([1]), pts: 0n, duration: 0n,
+      timeBase: { num: 1, den: 1000 }, free() {} };
+    await new Promise((resolve, reject) => track.write(packet, error => error ? reject(error) : resolve()));
+    assert.deepEqual(sent, [expectedMs]);
+    track.destroy();
+  }
 });
 
 test('timed track rebases a live timestamp discontinuity instead of sleeping for the jump', async () => {
