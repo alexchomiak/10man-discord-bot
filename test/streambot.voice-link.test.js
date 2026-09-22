@@ -407,6 +407,18 @@ test('$stop discards queued content, awaits writer cleanup and is idempotent', a
   assert.equal(fv.pieces.length,1);assert.equal(fv.calls.leaveVoice,1);
 });
 
+test('$stop leaves voice before a hung media writer reaches cleanup timeout', async t => {
+  const { mgr, fv, start } = fixture(t,
+    { streamBufferSec: 0, streamCleanupTimeoutMs: 100 }, { hangAppend: true });
+  await start('a');
+  const stopping = mgr.stop();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fv.calls.stopStream, 1);
+  assert.equal(fv.calls.leaveVoice, 1, 'voice leave must not wait for media cleanup');
+  assert.equal(mgr.voiceLink, null);
+  await stopping;
+});
+
 test('encoder error alerts and advances queue without another go-live', async t => {
   const {mgr,fv,start,alerts}=fixture(t,{streamBufferSec:0});await start('a');await start('b');
   fv.pieces[0].fail();await until(()=>fv.pieces.length===2);

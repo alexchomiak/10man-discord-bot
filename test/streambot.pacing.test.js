@@ -178,6 +178,8 @@ test('combined VOD uses only its own A/V input and cannot queue behind realtime 
   assert.strictEqual(argv.filter((a) => a === '-map').length, 2,
     'combined media must emit exactly one video and one audio mapping');
   assert.ok(argv.includes('0:a:0?'));
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-pix_fmt'), argv.indexOf('-pix_fmt') + 2),
+    ['-pix_fmt', 'yuv420p']);
 });
 
 test('Arc mode uses VAAPI encode with the configured render device and 1080p/30 rate control', () => {
@@ -192,6 +194,7 @@ test('Arc mode uses VAAPI encode with the configured render device and 1080p/30 
   ).command;
   const argv = argvOf(command);
   assert.ok(argv.includes('h264_vaapi'));
+  assert.ok(!argv.includes('-pix_fmt'), 'VAAPI input must remain hardware surfaces');
   assert.ok(argv.includes('/dev/dri/renderD129'));
   assert.ok(argv.includes('scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=nv12,hwupload'));
   assert.deepStrictEqual(argv.slice(argv.indexOf('-r'), argv.indexOf('-r') + 2), ['-r', '30']);
@@ -222,6 +225,7 @@ test('Arc hardware decode keeps decode, aspect-correct scale, pad and encode on 
   assert.deepStrictEqual(argv.slice(argv.indexOf('-hwaccel'), argv.indexOf('-hwaccel') + 6),
     ['-hwaccel', 'vaapi', '-hwaccel_device', '/dev/dri/renderD129', '-hwaccel_output_format', 'vaapi']);
   assert.ok(argv.includes('scale_vaapi=w=1920:h=1080:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12,pad_vaapi=w=1920:h=1080:x=(ow-iw)/2:y=(oh-ih)/2'));
+  assert.ok(!argv.includes('-pix_fmt'), 'hardware-decoded VAAPI frames must remain hardware surfaces');
   assert.ok(!argv.includes('format=nv12,hwupload'), 'hardware frames must not make a GPU -> CPU -> GPU round trip');
 });
 

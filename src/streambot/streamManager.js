@@ -449,7 +449,13 @@ class StreamManager {
       .addOutputOption((audioUrl || needsSilentAudio) ? '-map 1:a:0' : '-map 0:a:0?')
       .videoFilter(videoFilter)
       .fpsOutput(fps)
-      .addOutputOption(['-fps_mode', 'cfr', '-b:v', `${bitrate}k`, '-maxrate:v', `${bitrateMax}k`, '-bufsize:v', `${vbvBufferKbps}k`, '-bf', '0', '-pix_fmt', 'yuv420p']);
+      .addOutputOption([
+        '-fps_mode', 'cfr', '-b:v', `${bitrate}k`, '-maxrate:v', `${bitrateMax}k`,
+        '-bufsize:v', `${vbvBufferKbps}k`, '-bf', '0',
+        // h264_vaapi accepts VAAPI hardware frames. Requesting the software
+        // yuv420p output format conflicts with the hwupload/VAAPI filter path.
+        ...(cfg.videoEncoder === 'vaapi' ? [] : ['-pix_fmt', 'yuv420p'])
+      ]);
 
     command.addOutputOption('-shortest')
       .addOutputOption('-force_key_frames', `expr:gte(t,n_forced*${keyframeIntervalSec})`);
@@ -1090,9 +1096,23 @@ class StreamManager {
         p.resolveReady(false);
         p.control.abort(); // playStream's normal cleanup owns stopStream
         // Before its abort listener exists (demux/handshake), explicitly stop.
-        if (link.streamer.voiceConnection?.streamConnection) link.streamer.stopStream();
+        if (link.streamer.voiceConnection?.streamConnection) {
+          try { link.streamer.stopStream(); } catch (error) {
+            log('error', `voice: stopStream failed: ${error.message}`);
+          }
+        }
         this._cancelPiece(p.activeWriter);
         p.feeder.interrupt();
+      }
+      // Leaving voice must not depend on native demuxer/FFmpeg cleanup. A
+      // stalled writer can take the full cleanup timeout (or block in native
+      // code), while the user has already asked to leave the call.
+      if (this.session?.voiceLink === link) this.session = null;
+      try { link.streamer.leaveVoice(); } catch (error) {
+        log('error', `voice: leaveVoice failed: ${error.message}`);
+      }
+      if (this.voiceLink === link) this.voiceLink = null;
+      if (p) {
         // Start native demux cleanup BEFORE waiting for writerTask. The writer
         // can itself be blocked in demux(), so the old ordering deadlocked:
         // writer waited for demux close while teardown waited for writer.
@@ -1110,9 +1130,6 @@ class StreamManager {
           log('error', `voice: ${error.message}; continuing forced teardown`);
         }
       }
-      if (this.session?.voiceLink === link) this.session = null;
-      try { link.streamer.leaveVoice(); } catch {}
-      if (this.voiceLink === link) this.voiceLink = null;
     })();
     return link.closing;
   }
