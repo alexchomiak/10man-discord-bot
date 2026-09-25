@@ -34,7 +34,7 @@ ENV NODE_ENV=production
 # Intel Media Driver supports modern Intel graphics, including Arc. It is
 # x86-only, so installation is best-effort for arm64 development builds.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu ffmpeg libva2 vainfo curl jq openvpn wireguard-tools iproute2 unzip \
+  && apt-get install -y --no-install-recommends ca-certificates gosu ffmpeg fonts-dejavu-core libva2 vainfo curl jq openvpn wireguard-tools iproute2 unzip \
   && { apt-get install -y --no-install-recommends intel-media-va-driver \
        || echo "skip: Intel VAAPI drivers unavailable on this architecture"; } \
   && rm -rf /var/lib/apt/lists/*

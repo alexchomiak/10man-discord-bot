@@ -1321,7 +1321,7 @@ function makeFakeDashResult(settleBehavior) {
   };
 }
 
-test('RECLASSIFIED close-race: ffmpeg "Output stream closed" error -> INFO log (new ambiguous line), dash-merge promise RESOLVES, session cleared, teardown runs', async () => {
+test('RECLASSIFIED close-race: ffmpeg "Output stream closed" resolves and starts filler on the same session', async () => {
   const t = makeStreamManager({});
   // Mirror the production wiring: ambiguous pipe-close -> RESOLVE (not
   // reject); non-benign -> reject.
@@ -1345,7 +1345,8 @@ test('RECLASSIFIED close-race: ffmpeg "Output stream closed" error -> INFO log (
     t.sentLogs.info.some((j) => /stream ended: pipe closed/.test(j)),
     'the new unambiguous INFO line must surface here (replaces the old "completed cleanly" claim)'
   );
-  assert.strictEqual(t.mgr.session, null, 'session must be cleared');
+  assert.notStrictEqual(t.mgr.session, session, 'ended VOD must be cleared');
+  assert.strictEqual(t.mgr.session?.isFiller, true, 'filler follows the terminal VOD');
 
   await new Promise((resolveAwait, rejectAwait) => {
     const timer = setTimeout(() => rejectAwait(new Error('dash-merge promise must RESOLVE for a clean VOD end, but it stayed pending or rejected')), 100);
@@ -1435,7 +1436,7 @@ test('ended message falls back to the generic key when no title is set', async (
   t.restore();
 });
 
-test('missing channel cache -> no send, but no crash and session still cleared', async () => {
+test('missing channel cache -> no send, but no crash and VOD still falls back to filler', async () => {
   const t = makeStreamManager({});
   const result = await t.mgr.start(t.startArgs);
   assert.strictEqual(result.ok, true);
@@ -1445,6 +1446,6 @@ test('missing channel cache -> no send, but no crash and session still cleared',
   await new Promise((r) => setTimeout(r, 25));
   assert.strictEqual(t.channel.sent.length, 0, 'no channel send (restricted account, no crash)');
   assert.strictEqual(t.alerts.filter((a) => a.event === 'stream-ended').length, 1, 'the end alert still fires without a cached channel');
-  assert.strictEqual(t.mgr.session, null, 'session must still be cleared');
+  assert.strictEqual(t.mgr.session?.isFiller, true, 'filler must follow the ended VOD');
   t.restore();
 });

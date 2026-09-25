@@ -70,8 +70,27 @@ test('Discord stream commands expose every operation and player scrub buttons', 
   assert.deepStrictEqual(setName.options.map(option => option.name), ['name', 'bot']);
   const rows = playerComponents('primary').map(row => row.toJSON());
   const labels = rows.flatMap(row => row.components.map(component => component.label));
-  assert.deepStrictEqual(labels, ['Pause', 'Resume', '−1m', '−30s', '−5s', '+5s', '+30s', '+1m']);
+  assert.deepStrictEqual(labels, ['Pause', 'Resume', '−1m', '−30s', '−5s', '+5s', '+30s', '+1m', 'Progress: Off']);
+  assert.equal(playerComponents('primary', { progressOverlay: true })[3].toJSON().components[0].label, 'Progress: On');
   assert(rows.flatMap(row => row.components).every(component => component.custom_id.includes('primary')));
+});
+
+test('progress toggle is routed to one worker and returns its new state', async () => {
+  const calls = [];
+  const manager = {
+    progressOverlay: false,
+    status: () => null,
+    toggleProgressOverlay: async () => {
+      manager.progressOverlay = !manager.progressOverlay;
+      calls.push(manager.progressOverlay);
+      return { ok: true, enabled: manager.progressOverlay, available: false, restarted: false };
+    }
+  };
+  const control = new StreamControl({ streamManager: manager });
+  const result = await control.execute('toggle-overlay');
+  assert.deepStrictEqual(calls, [true]);
+  assert.equal(result.progressOverlay, true);
+  assert.match(result.message, /VOD with a known duration/);
 });
 
 test('broker offline errors identify connected worker IDs', async t => {

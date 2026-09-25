@@ -130,6 +130,21 @@ function createTelemetry(opts = {}) {
     const fillPct = pipelineCapacityBytes > 0 ? Math.round(pipelineBytes * 100 / pipelineCapacityBytes) : 0;
     const frameDelta = frames === null || previousFrames === null ? 'n/a' : Math.max(0, frames - previousFrames);
     previousFrames = frames;
+    let trackFields = '';
+    try {
+      const tracks = opts.getTrackDiagnostics?.();
+      if (tracks?.video && tracks?.audio) {
+        const number = value => Number.isFinite(value) ? Math.round(value) : 'n/a';
+        for (const [prefix, track] of [['v', tracks.video], ['a', tracks.audio]]) {
+          trackFields += `${prefix}_frames=${number(track.frames)} ${prefix}_bytes=${number(track.bytes)} ` +
+            `${prefix}_gap_ms=${number(track.maxGapMs)} ${prefix}_age_ms=${number(track.ageMs)} ` +
+            `${prefix}_clock_resets=${number(track.resets)} `;
+        }
+        const delta = Number.isFinite(tracks.video.lastPts) && Number.isFinite(tracks.audio.lastPts)
+          ? tracks.video.lastPts - tracks.audio.lastPts : null;
+        trackFields += `av_sent_pts_ms=${number(delta)} v_key_age_ms=${number(tracks.video.keyAgeMs)} `;
+      }
+    } catch { /* diagnostics must never interrupt playback */ }
     const line =
       `tel: ` +
       `el_p99_ms=${p99 === null ? 'n/a' : p99} ` +
@@ -140,7 +155,7 @@ function createTelemetry(opts = {}) {
       `ff_alive=${alive} ff_exit=${exitCode === null ? 'not-exited' : exitCode} ` +
       `ff_frames=${frames ?? 'n/a'} ff_frames_1s=${frameDelta} ` +
       `ff_progress_age_ms=${progressAt === null ? 'n/a' : Math.round(Math.max(0, now() - progressAt))} ` +
-      `ws_main=${wsState.main} ws_data=${wsState.data}`;
+      trackFields + `ws_main=${wsState.main} ws_data=${wsState.data}`;
     try { log('info', line); } catch { /* logger gone */ }
     outBytesWindow = 0;
     rtcBytesWindow = 0;

@@ -418,3 +418,51 @@ test('video pacing fails a stalled audio clock before sending unsynced frames', 
   assert.equal(sent, 0, 'do not send video while audio is behind');
   track.destroy();
 });
+
+test('track diagnostics expose video stalls without changing scheduling or retaining packets', async () => {
+  const runs = [];
+  for (const diagnostics of [false, true]) {
+    let now = 0; let frees = 0;
+    const sleeps = []; const sends = [];
+    const track = new TimedTrack((_data, ms) => { sends.push([now, ms]); }, 'video', {
+      diagnostics, now: () => now,
+      sleep: async ms => { sleeps.push(ms); now += ms; }
+    });
+    for (let i = 0; i < 3; i++) {
+      if (i === 2) now += 1000;
+      const packet = { data: Buffer.from([1, 2]), pts: BigInt(i), duration: 1n,
+        timeBase: { num: 1, den: 30 }, isKeyframe: i === 0, free() { frees++; } };
+      await new Promise((resolve, reject) => track.write(packet, e => e ? reject(e) : resolve()));
+    }
+    assert.equal(frees, 3);
+    const stats = track.takeDiagnostics();
+    if (diagnostics) {
+      assert.equal(stats.frames, 3);
+      assert.equal(stats.bytes, 6);
+      assert.equal(stats.resets, 1);
+      assert.ok(stats.maxGapMs > 1000);
+      assert.ok(stats.keyAgeMs > 1000);
+      now += 500;
+      const next = track.takeDiagnostics();
+      assert.equal(next.frames, 0);
+      assert.equal(next.bytes, 0);
+      assert.equal(next.resets, 0);
+      assert.ok(next.ageMs >= 500, 'ongoing stalls remain visible even without new frames');
+      assert.ok(Object.values(track.diagnostics).every(v => v === null || typeof v === 'number'));
+    } else assert.equal(stats, null);
+    runs.push({ sends, sleeps });
+    track.destroy();
+  }
+  assert.deepEqual(runs[0], runs[1], 'diagnostics must not alter send timing or sleeps');
+});
+
+test('track diagnostics do not count frames rejected by an unready connection', async () => {
+  const track = new TimedTrack(() => false, 'video', { diagnostics: true, now: () => 0, sleep: async () => {} });
+  await new Promise((resolve, reject) => track.write({
+    data: Buffer.from([1]), pts: 0n, duration: 1n, timeBase: { num: 1, den: 30 }, isKeyframe: true, free() {}
+  }, e => e ? reject(e) : resolve()));
+  const stats = track.takeDiagnostics();
+  assert.equal(stats.frames, 0);
+  assert.equal(stats.keyAgeMs, null);
+  track.destroy();
+});

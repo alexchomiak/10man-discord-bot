@@ -14,6 +14,7 @@ const demuxGuard = require('./demuxGuard');
 const telemetry = require('./telemetry');
 const { isYoutubeHlsUrl } = require('./sources');
 const { createAlertSink } = require('./alerts');
+const { progressOverlayFilter } = require('./progressOverlay');
 
 function log(level, ...parts) {
   if (level === 'error') console.error(TAG, ...parts);
@@ -90,6 +91,7 @@ class StreamManager {
       }
     }
     this.session = null;
+    this.progressOverlay = false;
     this._videoModule = null;
     this._vaapiReady = null;
     // A single shared Streamer for the manager's lifetime: `new Streamer()`
@@ -109,7 +111,8 @@ class StreamManager {
     this._operations = Promise.resolve();
     this._feederFactory = (streamer, videoModule) => new PersistentTrackFeeder({
       streamer, videoModule, width: this.config.streamWidth || 1920,
-      height: this.config.streamHeight || 1080, frameRate: this.config.streamFrameRate || 30
+      height: this.config.streamHeight || 1080, frameRate: this.config.streamFrameRate || 30,
+      diagnostics: this.config.verbose === true
     });
   }
 
@@ -356,6 +359,8 @@ class StreamManager {
     const output = new MeteredPassThrough({ highWaterMark: producerBufferBytes });
     const offset = Number.isFinite(startOffsetSec) && startOffsetSec > 0 ? Math.round(startOffsetSec) : 0;
     const useVaapiFrames = cfg.videoEncoder === 'vaapi' && cfg.hardwareDecode === true && piece?.inputFormat !== 'lavfi';
+    const showProgress = this.progressOverlay && !piece?.isLive && !piece?.isFiller &&
+      Number.isFinite(piece?.totalDurationSec) && piece.totalDurationSec > 0;
 
     const configureInput = (command, url, { localRealtime = false } = {}) => {
       if (localRealtime) {
@@ -445,11 +450,19 @@ class StreamManager {
           ? 'deinterlace_vaapi=mode=motion_adaptive:rate=frame:auto=1,'
           : 'bwdif=mode=send_frame:parity=auto:deint=interlaced,')
       : '';
-    const videoFilter = useVaapiFrames
+    const baseVideoFilter = useVaapiFrames
       ? `${deinterlaceFilter}scale_vaapi=w=${cfg.streamWidth || 1920}:h=${height}:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12,` +
         `pad_vaapi=w=${cfg.streamWidth || 1920}:h=${height}:x=(ow-iw)/2:y=(oh-ih)/2`
       : `${deinterlaceFilter}scale=${cfg.streamWidth || 1920}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
         `pad=${cfg.streamWidth || 1920}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+    // A GPU-to-CPU transfer is needed only while a finite VOD overlay is
+    // visible. With the preference off, retain the original all-VAAPI path.
+    const videoFilter = showProgress
+      ? progressOverlayFilter({
+          baseFilter: baseVideoFilter + (useVaapiFrames ? ',hwdownload,format=nv12' : ''),
+          durationSec: piece.totalDurationSec, offsetSec: offset
+        })
+      : baseVideoFilter;
     command
       .output(output)
       .outputFormat('nut')
@@ -478,7 +491,7 @@ class StreamManager {
     // encoder helper (mainly useful for compatibility with older releases).
     let encoderSettings = null;
     try {
-      const encoder = this._encoder(videoModule, useVaapiFrames);
+      const encoder = this._encoder(videoModule, useVaapiFrames && !showProgress);
       if (encoder) {
         if (typeof encoder === 'function') {
           const byCodec = encoder(bitrate, bitrateMax) || {};
@@ -975,6 +988,7 @@ class StreamManager {
         let recoverLive = false;
         let recoverVod = false;
         let vodRecoveryReason = null;
+        let resumeFiller = false;
         let liveError = null;
         let stallWatchdog = null;
         let lastVideoFrameAt = 0;
@@ -1026,6 +1040,7 @@ class StreamManager {
             piece.telemetry = telemetry.createTelemetry({ command: result.command,
               getOutputBytes: () => result.output?.takeByteCounts?.(),
               getRtcBytes: () => p.feeder.rtcBytesSent,
+              getTrackDiagnostics: () => p.feeder.takeDiagnostics?.(),
               getBufferState: () => ({
                 producerBytes: result.output?.readableLength || 0,
                 pipelineBytes: 0,
@@ -1081,6 +1096,7 @@ class StreamManager {
           }
         } finally {
           if (stallWatchdog) clearInterval(stallWatchdog);
+          resumeFiller = !piece.control.signal.aborted && !piece.isLive && !piece.isFiller;
           this._cancelPiece(piece);
           await appendTask?.catch(() => {});
           await this._reapPiece(piece);
@@ -1114,6 +1130,12 @@ class StreamManager {
           } else {
             this._notifyError('VOD playback could not be recovered');
           }
+        }
+        // A finished VOD must leave encoded frames on the persistent Go Live
+        // connection. Recovery and queued content take precedence; the
+        // placeholder is only used when nothing else will play next.
+        if (resumeFiller && !p.closed && !link.paused && p.enqueue.length === 0) {
+          p.enqueue.push(this._placeholder(link));
         }
       }
     })().finally(() => {
@@ -1301,7 +1323,31 @@ class StreamManager {
       alive: !link.closing, inChannel: true, isFiller: !!piece?.isFiller,
       queued: link.pipeline?.enqueue.length || 0,
       paused: !!link.paused, isLive: !!piece?.isLive,
+      progressOverlay: this.progressOverlay,
       positionSec: piece ? Math.round(this.positionOf(piece)) : null };
+  }
+
+  async toggleProgressOverlay() {
+    return this._serialize(async () => {
+      this.progressOverlay = !this.progressOverlay;
+      const { link, session } = this._activeRealSession();
+      const available = !!session && !session.isLive &&
+        Number.isFinite(session.totalDurationSec) && session.totalDurationSec > 0;
+      if (!available || link?.paused) {
+        return { ok: true, enabled: this.progressOverlay, available, restarted: false };
+      }
+      const piece = this._reopenSession(link, session, { offsetSec: this.positionOf(session) });
+      this._cancelPiece(session);
+      this.session = piece;
+      const p = link.pipeline;
+      // The current title stays ahead of items added to the queue.
+      p.enqueue.unshift(piece);
+      if (!p.writerTask) {
+        const videoModule = await this.preparePlayback(await this._video());
+        this._pump(link, videoModule);
+      }
+      return { ok: true, enabled: this.progressOverlay, available, restarted: true };
+    });
   }
 
   async start(args = {}) {

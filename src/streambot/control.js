@@ -10,7 +10,8 @@ class StreamControl {
   }
 
   _result(ok, message, extra = {}) {
-    return { ok, message, status: this.streamManager.status(), ...extra };
+    return { ok, message, status: this.streamManager.status(),
+      progressOverlay: this.streamManager.progressOverlay === true, ...extra };
   }
 
   // Broker responses cross a JSON boundary. StreamManager results also carry
@@ -30,9 +31,19 @@ class StreamControl {
     const channelId = payload.channelId || this.config.streamChannelId;
     switch (operation) {
       case 'ping': return this._result(true, M.PONG);
+      case 'toggle-overlay': {
+        const r = await this.streamManager.toggleProgressOverlay();
+        const state = r.enabled ? 'on' : 'off';
+        const note = r.enabled && r.available === false
+          ? ' It will appear on a VOD with a known duration.' : '';
+        return this._result(r.ok === true, `Progress overlay ${state}.${note}`, {
+          detail: this._detail(r, ['enabled', 'available', 'restarted'])
+        });
+      }
       case 'status': {
         const status = this.streamManager.status();
-        return { ok: true, message: status ? M.STREAM_STATUS(status) : M.STREAM_NOTHING, status };
+        return { ok: true, message: status ? M.STREAM_STATUS(status) : M.STREAM_NOTHING, status,
+          progressOverlay: this.streamManager.progressOverlay === true };
       }
       case 'join': {
         if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);

@@ -71,7 +71,8 @@ function formatTime(seconds) {
   return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}` : `${minutes}:${String(secs).padStart(2, '0')}`;
 }
 
-function playerComponents(workerId) {
+function playerComponents(workerId, result = null) {
+  const overlayEnabled = result?.progressOverlay ?? result?.status?.progressOverlay ?? result?.detail?.enabled ?? false;
   const button = (label, action, style = ButtonStyle.Secondary) => new ButtonBuilder()
     .setCustomId(`${BUTTON_PREFIX}|${workerId}|${action}`)
     .setLabel(label)
@@ -86,12 +87,16 @@ function playerComponents(workerId) {
     ),
     new ActionRowBuilder().addComponents(
       button('+5s', 'scrub:5'), button('+30s', 'scrub:30'), button('+1m', 'scrub:60')
+    ),
+    new ActionRowBuilder().addComponents(
+      button(`Progress: ${overlayEnabled ? 'On' : 'Off'}`, 'toggle-overlay')
     )
   ];
 }
 
 function playerText(workerId, result) {
   const status = result?.status;
+  const overlayEnabled = result?.progressOverlay ?? status?.progressOverlay ?? result?.detail?.enabled ?? false;
   const lines = [`**Stream player — \`${workerId}\`**`];
   if (!status) lines.push('Status: idle');
   else {
@@ -101,6 +106,7 @@ function playerText(workerId, result) {
     lines.push(`Queue: ${status.queued || 0}`);
     if (status.isLive) lines.push('Source: live');
   }
+  lines.push(`Progress overlay: ${overlayEnabled ? 'on' : 'off'}`);
   if (result?.message) lines.push('', result.message);
   return lines.join('\n').slice(0, 1900);
 }
@@ -152,7 +158,7 @@ async function handleCommand(interaction, broker, allowedUserIds) {
   try {
     if (interaction.commandName === PLAYER_COMMAND) {
       const result = await broker.request('status', { requestedBy: interaction.user.id }, workerId);
-      await interaction.editReply({ content: playerText(workerId, result), components: playerComponents(workerId) });
+      await interaction.editReply({ content: playerText(workerId, result), components: playerComponents(workerId, result) });
       return true;
     }
     if (interaction.commandName === SET_STREAM_NAME_COMMAND) {
@@ -207,7 +213,7 @@ async function handleButton(interaction, broker, allowedUserIds) {
   await interaction.deferUpdate();
   try {
     const result = await broker.request(operation, payload, workerId);
-    await interaction.editReply({ content: playerText(workerId, result), components: playerComponents(workerId) });
+    await interaction.editReply({ content: playerText(workerId, result), components: playerComponents(workerId, result) });
   } catch (error) {
     await interaction.editReply({ content: `**Stream player — \`${workerId}\`**\n${error.message}`, components: playerComponents(workerId) });
   }

@@ -253,7 +253,10 @@ test('one go-live call and strict shared-output order across N queued pieces', a
   fv.pieces[1].write('B'); fv.pieces[1].end();
   await until(()=>fv.pieces.length===3);
   fv.pieces[2].write('C'); fv.pieces[2].end();
-  await until(()=>mgr.session===null);
+  await until(()=>fv.pieces.length===4);
+  assert.deepEqual(fv.pieces.slice(0,3).map(piece=>piece.url),
+    ['https://example.com/a.mp4','https://example.com/b.mp4','https://example.com/c.mp4']);
+  assert.match(fv.pieces[3].url,/testsrc/,'filler resumes after queued real content');
   assert.equal(fv.collected.join(''),'ABC');
   assert.equal(f.maxWriters,1);
   assert.equal(fv.plays.length,1);
@@ -265,6 +268,23 @@ test('one go-live call and strict shared-output order across N queued pieces', a
   assert.equal(fv.calls.stopStream,1);
   assert.deepEqual(fv.calls.signalVideo,[]);
   assert.equal(f.closeCount,1);
+});
+
+test('natural VOD EOF resumes the placeholder on the same Go Live stream', async t => {
+  const {mgr,fv,start}=fixture(t,{streamBufferSec:0});
+  const first=await start('a');
+  const pipeline=mgr.voiceLink.pipeline;
+  fv.pieces[0].write('A'); fv.pieces[0].end();
+  await until(()=>fv.pieces.length===2);
+  assert.equal(mgr.voiceLink.pipeline,pipeline);
+  assert(mgr.session?.isFiller);
+  assert.match(fv.pieces[1].url,/testsrc/);
+  assert.equal(fv.streamer.createStreamCalls,1);
+  assert.equal(fv.calls.stopStream,0);
+  assert.equal(fv.calls.leaveVoice,0);
+  assert(!first.pipeline.closed);
+  fv.pieces[1].write('F');
+  await until(()=>fv.collected.join('')==='AF');
 });
 
 test('placeholder is content[0]; replacement never closes shared demuxers or track', async t => {
@@ -318,10 +338,11 @@ test('placeholder duration ends only the piece and starts grace; session stays a
   assert(!mgr.voiceLink.pipeline.closed);
 });
 
-test('grace expiration closes persistent session and leaves once', async t => {
+test('grace expiration after fallback filler closes persistent session and leaves once', async t => {
   const {mgr,fv,start}=fixture(t);
   let fire; mgr._timerFactory = () => ({then: fn=>{fire=fn;},clear(){}});
-  await start('a'); fv.pieces[0].end(); await until(()=>fire);
+  await start('a'); fv.pieces[0].end(); await until(()=>fv.pieces.length===2);
+  fv.pieces[1].end(); await until(()=>fire);
   await fire();
   assert.equal(mgr.voiceLink,null); assert.equal(fv.calls.leaveVoice,1);
   assert.equal(fv.calls.stopStream,1);
@@ -332,7 +353,8 @@ test('new content cancels grace and reuses original stream', async t => {
   let fire; let cleared=0;
   mgr._timerFactory=()=>({then:fn=>{fire=fn;},clear(){cleared++;}});
   await start('a'); const p=mgr.voiceLink.pipeline;
-  fv.pieces[0].end(); await until(()=>fire);
+  fv.pieces[0].end(); await until(()=>fv.pieces.length===2);
+  fv.pieces[1].end(); await until(()=>fire);
   await start('b'); assert(cleared>0); await fire();
   assert.equal(mgr.voiceLink.pipeline,p); assert.equal(fv.calls.leaveVoice,0);
   assert.equal(fv.plays.length,1);
@@ -340,6 +362,7 @@ test('new content cancels grace and reuses original stream', async t => {
 
 test('real grace timer is unrefed', async t => {
   const {mgr,fv,start}=fixture(t); await start('a');fv.pieces[0].end();
+  await until(()=>fv.pieces.length===2); fv.pieces[1].end();
   await until(()=>mgr.voiceLink.graceTimer);
   assert.equal(mgr.voiceLink.graceTimer.hasRef(),false);
 });
@@ -626,7 +649,8 @@ test('buffer disabled (streamBufferSec 0) inserts nothing between reals', async 
   fv.pieces[0].write('A'); fv.pieces[0].end();
   await until(()=>fv.pieces.length===2);
   fv.pieces[1].write('B'); fv.pieces[1].end();
-  await until(()=>mgr.session===null);
+  await until(()=>fv.pieces.length===3);
+  assert.match(fv.pieces[2].url,/testsrc/);
   const joined = fv.collected.join('');
   assert.equal(joined,'AB', 'no filler bytes between the two reals');
   await mgr.stop();
@@ -661,7 +685,8 @@ test('$skip advances to the next real piece (buffer in between)', async t => {
   const bIdx = fv.pieces.findIndex(p => /\/b\.mp4/.test(p.url));
   assert.ok(bIdx >= 0, 'the "b" piece must have started');
   fv.pieces[bIdx].write('B'); fv.pieces[bIdx].end();
-  await until(() => mgr.session === null);
+  await until(() => fv.pieces.length > bIdx + 1);
+  assert.match(fv.pieces.at(-1).url,/testsrc/);
   // The go-live session was NOT torn down.
   assert.equal(fv.plays.length, 1, 'exactly ONE go-live playStream for the link lifetime');
   assert.equal(fv.calls.stopStream, 0, 'skip must NOT call stopStream');

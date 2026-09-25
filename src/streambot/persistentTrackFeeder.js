@@ -24,6 +24,23 @@ class TimedTrack extends Writable {
     this.syncTrack = null;
     this.startTime = undefined;
     this.startPts = undefined;
+    // Fixed-size counters only: never retain encoded packets or frame history.
+    this.diagnostics = options.diagnostics ? {
+      frames: 0, bytes: 0, maxGapMs: 0, resets: 0,
+      lastAt: null, lastPts: null, keyAt: null
+    } : null;
+  }
+
+  takeDiagnostics() {
+    const d = this.diagnostics;
+    if (!d) return null;
+    const now = this.now();
+    const ageMs = d.lastAt === null ? null : Math.max(0, now - d.lastAt);
+    const snapshot = { ...d, ageMs,
+      maxGapMs: Math.max(d.maxGapMs, ageMs || 0),
+      keyAgeMs: d.keyAt === null ? null : Math.max(0, now - d.keyAt) };
+    d.frames = d.bytes = d.maxGapMs = d.resets = 0;
+    return snapshot;
   }
 
   async _write(packet, _encoding, callback) {
@@ -50,6 +67,7 @@ class TimedTrack extends Writable {
           (ptsStep < 0 || Math.abs(ptsStep - frameMs) > this.maxPtsJumpMs)) {
         this.startTime = started;
         this.startPts = packetPts;
+        if (this.diagnostics) this.diagnostics.resets++;
       }
       this.pts = packetPts;
       this.previousPts = packetPts;
@@ -74,8 +92,17 @@ class TimedTrack extends Writable {
         }
         waitedForAudio = true;
       }
-      this.send(Buffer.from(data), frameMs);
+      const accepted = this.send(Buffer.from(data), frameMs);
       const ended = this.now();
+      if (this.diagnostics && accepted !== false) {
+        const d = this.diagnostics;
+        if (d.lastAt !== null) d.maxGapMs = Math.max(d.maxGapMs, ended - d.lastAt);
+        d.frames++;
+        d.bytes += data.length;
+        d.lastAt = ended;
+        d.lastPts = packetPts;
+        if (packet.isKeyframe === true) d.keyAt = ended;
+      }
       this.startTime ??= started;
       this.startPts ??= this.pts;
       if (waitedForAudio) {
@@ -85,6 +112,7 @@ class TimedTrack extends Writable {
         const wallElapsed = ended - this.startTime;
         const lateBy = wallElapsed - mediaElapsed;
         if (lateBy > this.maxCatchupMs) {
+          if (this.diagnostics) this.diagnostics.resets++;
           // Both remote input stalls and a congested tunnel can leave this
           // sender far behind its original wall clock. Sending every delayed
           // frame with zero sleep creates an RTP burst and makes the freeze
@@ -107,12 +135,13 @@ class TimedTrack extends Writable {
 }
 
 class PersistentTrackFeeder {
-  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30 } = {}) {
+  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30, diagnostics = false } = {}) {
     this.streamer = streamer;
     this.videoModule = videoModule;
     this.width = width;
     this.height = height;
     this.frameRate = frameRate;
+    this.diagnostics = diagnostics;
     this.connection = null;
     this.startPromise = null;
     this.startAbort = null;
@@ -182,18 +211,18 @@ class PersistentTrackFeeder {
       signal?.throwIfAborted();
       if (!media.video || !media.audio) throw new Error('Content must contain normalized video and Opus audio');
       const sendVideo = (frame, ms) => {
-        if (!connection.ready) return;
+        if (!connection.ready) return false;
         connection.sendVideoFrame(frame, ms);
         this.rtcBytesSent += frame.length;
         onVideoFrame?.(ms);
       };
       const sendAudio = (frame, ms) => {
-        if (!connection.ready) return;
+        if (!connection.ready) return false;
         this.rtcBytesSent += frame.length;
         connection.sendAudioFrame(frame, ms);
       };
-      const video = new TimedTrack(sendVideo, 'video', { defaultDurationMs: 1000 / this.frameRate });
-      const audio = new TimedTrack(sendAudio, 'audio');
+      const video = new TimedTrack(sendVideo, 'video', { defaultDurationMs: 1000 / this.frameRate, diagnostics: this.diagnostics });
+      const audio = new TimedTrack(sendAudio, 'audio', { diagnostics: this.diagnostics });
       // The demuxer reads one interleaved stream and stops when either output
       // queue fills. On seekable VOD, waiting for an audio packet while the
       // video queue is full can prevent the demuxer from reading that audio.
@@ -215,6 +244,11 @@ class PersistentTrackFeeder {
       signal?.removeEventListener('abort', cancel);
       if (this.active === active) this.active = null;
     }
+  }
+
+  takeDiagnostics() {
+    if (!this.active || !this.diagnostics) return null;
+    return { video: this.active.video.takeDiagnostics(), audio: this.active.audio.takeDiagnostics() };
   }
 
   interrupt() {

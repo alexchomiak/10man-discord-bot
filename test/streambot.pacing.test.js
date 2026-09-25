@@ -115,6 +115,55 @@ function argvOf(command) {
   return arr.map((p) => String(p));
 }
 
+test('progress filter is absent by default and unknown/live media keep VAAPI frames on device', () => {
+  const config = { videoCodec: 'H264', videoEncoder: 'vaapi', hardwareDecode: true,
+    vaapiDevice: '/dev/dri/renderD128', streamWidth: 1920, streamHeight: 1080 };
+  const mgr = new StreamManager({ token: 't' }, 'c1', config);
+  const videoModule = { Utils: { normalizeVideoCodec: c => c } };
+  const command = piece => mgr._buildDashMerge(videoModule, 'https://cdn.example/v.mp4',
+    'https://cdn.example/a.m4a', 0, null, piece).command;
+  const finite = { totalDurationSec: 3600, isLive: false };
+  const off = argvOf(command(finite));
+  assert(off.some(arg => arg.includes('scale_vaapi=') && arg.includes('pad_vaapi=')));
+  assert(!off.some(arg => arg.includes('hwdownload') || arg.includes('geq=') || arg.includes('drawtext=')));
+  mgr.progressOverlay = true;
+  const unknown = argvOf(command({ isLive: false }));
+  const live = argvOf(command({ totalDurationSec: 3600, isLive: true }));
+  for (const args of [unknown, live]) {
+    assert(!args.some(arg => arg.includes('hwdownload') || arg.includes('geq=')));
+  }
+  const on = argvOf(command(finite));
+  const filter = on.find(arg => arg.includes('geq='));
+  assert(filter);
+  assert.match(filter, /scale_vaapi=.*pad_vaapi=.*hwdownload,format=nv12,split/);
+  assert.match(filter, /geq=.*overlay=.*drawtext=.*format=nv12,hwupload/);
+});
+
+test('toggling progress restarts finite VOD at its current position before queued media', async () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1');
+  const queued = { title: 'next' };
+  const link = { paused: false, pipeline: { enqueue: [queued], writerTask: Promise.resolve() } };
+  const active = { title: 'current', isLive: false, totalDurationSec: 3600,
+    startOffsetSec: 1800, playedSec: 12, voiceLink: link };
+  link.pipeline.activeWriter = active;
+  mgr.voiceLink = link;
+  mgr.session = active;
+  let cancelled = false;
+  mgr._cancelPiece = () => { cancelled = true; };
+  mgr._reopenSession = (_link, _session, args) => ({ title: 'current', startOffsetSec: args.offsetSec });
+  const result = await mgr.toggleProgressOverlay();
+  assert.equal(result.enabled, true);
+  assert.equal(result.restarted, true);
+  assert.equal(cancelled, true);
+  assert.equal(link.pipeline.enqueue[0].title, 'current');
+  assert.equal(link.pipeline.enqueue[0].startOffsetSec, 1812);
+  assert.strictEqual(link.pipeline.enqueue[1], queued);
+  link.paused = true;
+  const pausedResult = await mgr.toggleProgressOverlay();
+  assert.equal(pausedResult.enabled, false);
+  assert.equal(pausedResult.restarted, false);
+});
+
 test('dash merge: VOD inputs read at realtime after a startup burst', () => {
   const command = buildDashCommand({ offset: 0 });
   const argv = argvOf(command);
@@ -904,5 +953,19 @@ test('telemetry: does not crash when command/output/vc are missing', () => {
   assert.doesNotThrow(() => tel.start());
   assert.doesNotThrow(() => tel.tick());
   assert.strictEqual(lines.length >= 1, true, 'a line must still be emitted (fields may be n/a)');
+  tel.stop();
+});
+
+test('telemetry separates track handoff gaps and signed media timestamp skew', () => {
+  const lines = [];
+  const tel = createTelemetry({ log: (_level, line) => lines.push(line),
+    getTrackDiagnostics: () => ({
+      video: { frames: 0, bytes: 0, maxGapMs: 2000, ageMs: 2000, resets: 1, lastPts: 1000, keyAgeMs: 4000 },
+      audio: { frames: 50, bytes: 16000, maxGapMs: 21, ageMs: 5, resets: 0, lastPts: 2900 }
+    }) });
+  tel.tick();
+  assert.match(lines[0], /v_frames=0 v_bytes=0 v_gap_ms=2000 v_age_ms=2000 v_clock_resets=1/);
+  assert.match(lines[0], /a_frames=50 a_bytes=16000 a_gap_ms=21/);
+  assert.match(lines[0], /av_sent_pts_ms=-1900 v_key_age_ms=4000/);
   tel.stop();
 });

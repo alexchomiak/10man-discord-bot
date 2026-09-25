@@ -2,7 +2,7 @@
 
 const { WebSocket } = require('ws');
 
-const CAPABILITIES = ['play', 'join', 'stop', 'status', 'skip', 'scrub', 'pause', 'resume', 'catchup'];
+const CAPABILITIES = ['play', 'join', 'stop', 'status', 'skip', 'scrub', 'pause', 'resume', 'catchup', 'toggle-overlay'];
 
 class StreamBrokerClient {
   constructor({ url, secret, workerId, control, streamManager, log = console.log } = {}) {
