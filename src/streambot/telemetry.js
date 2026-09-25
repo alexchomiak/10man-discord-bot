@@ -23,10 +23,19 @@ function createTelemetry(opts = {}) {
   const getRtcBytes = typeof opts.getRtcBytes === 'function' ? opts.getRtcBytes : null;
   const createMonitor = opts.createMonitor || (() => {
     const m = monitorEventLoopDelay({ resolution: 20 });
-    m.resume();
+    m.enable();
     return m;
   });
-  const disposeMonitor = opts.disposeMonitor || ((m) => { try { m.pause(); } catch { /* ignore */ } });
+  const disposeMonitor = opts.disposeMonitor || ((m) => { try { m.disable(); } catch { /* ignore */ } });
+  const now = opts.now || (() => performance.now());
+  let progressAt = null;
+  let frames = null;
+  let previousFrames = null;
+  let progressAttached = false;
+  function onProgress(progress) {
+    progressAt = now();
+    if (Number.isFinite(progress?.frames)) frames = progress.frames;
+  }
   const defaultTimerFactory = (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return t; };
   // If a custom timerFactory is supplied (tests), the default is still used as
   // the underlying implementation — we wrap it so the contract (timer is
@@ -119,6 +128,8 @@ function createTelemetry(opts = {}) {
     const pipelineBytes = Number.isFinite(buffers?.pipelineBytes) ? buffers.pipelineBytes : 0;
     const pipelineCapacityBytes = Number.isFinite(buffers?.pipelineCapacityBytes) ? buffers.pipelineCapacityBytes : 0;
     const fillPct = pipelineCapacityBytes > 0 ? Math.round(pipelineBytes * 100 / pipelineCapacityBytes) : 0;
+    const frameDelta = frames === null || previousFrames === null ? 'n/a' : Math.max(0, frames - previousFrames);
+    previousFrames = frames;
     const line =
       `tel: ` +
       `el_p99_ms=${p99 === null ? 'n/a' : p99} ` +
@@ -127,6 +138,8 @@ function createTelemetry(opts = {}) {
       `rtcBytes_1s=${rtcBytesWindow} rtcBytes_total=${rtcBytesTotal} ` +
       `producer_buf=${producerBytes} pipeline_buf=${pipelineBytes}/${pipelineCapacityBytes}(${fillPct}%) ` +
       `ff_alive=${alive} ff_exit=${exitCode === null ? 'not-exited' : exitCode} ` +
+      `ff_frames=${frames ?? 'n/a'} ff_frames_1s=${frameDelta} ` +
+      `ff_progress_age_ms=${progressAt === null ? 'n/a' : Math.round(Math.max(0, now() - progressAt))} ` +
       `ws_main=${wsState.main} ws_data=${wsState.data}`;
     try { log('info', line); } catch { /* logger gone */ }
     outBytesWindow = 0;
@@ -136,6 +149,10 @@ function createTelemetry(opts = {}) {
   function start() {
     if (interval) return; // idempotent
     stopped = false;
+    if (!progressAttached && typeof command?.on === 'function') {
+      command.on('progress', onProgress);
+      progressAttached = true;
+    }
     try { monitor = createMonitor(); } catch { monitor = null; }
     sweepVoiceWs();
     interval = timerFactory(tick, 1000);
@@ -144,6 +161,10 @@ function createTelemetry(opts = {}) {
   function stop() {
     if (stopped) return;
     stopped = true;
+    if (progressAttached) {
+      command.removeListener('progress', onProgress);
+      progressAttached = false;
+    }
     if (interval) {
       try { clearInterval(interval); } catch { /* ignore */ }
       interval = null;

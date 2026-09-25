@@ -12,6 +12,7 @@ const { PersistentTrackFeeder } = require('./persistentTrackFeeder');
 // observe the patch.
 const demuxGuard = require('./demuxGuard');
 const telemetry = require('./telemetry');
+const { isYoutubeHlsUrl } = require('./sources');
 const { createAlertSink } = require('./alerts');
 
 function log(level, ...parts) {
@@ -363,6 +364,11 @@ class StreamManager {
         return;
       }
       if (!isHttpUrl(url)) return;
+      if (isYoutubeHlsUrl(url)) {
+        // YouTube's AAC segments use extensionless URLs. FFmpeg 7.1 otherwise
+        // rejects the valid AAC stream because its format and URL don't match.
+        command.inputOptions(['-extension_picky', '0']);
+      }
       const timeoutUs = Math.max(1000, Math.round((cfg.ffmpegReadTimeoutMs || 15000) * 1000));
       command.inputOptions([
         // TimedTrack clocks outgoing Discord packets. A VOD input must also

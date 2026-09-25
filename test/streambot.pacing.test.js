@@ -152,6 +152,18 @@ test('finite split VOD avoids shortest synchronization and infinite audio paddin
   }
 });
 
+test('YouTube HLS permits extensionless segments only on its manifest host', () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {});
+  for (const host of ['manifest.googlevideo.com', 'manifest.googlevideo.com.evil.example']) {
+    const url = `https://${host}/api/manifest/hls_playlist/audio/index.m3u8`;
+    const result = mgr._buildDashMerge({ Utils: { normalizeVideoCodec: c => c } }, url, null, 3600, null, { isLive: false });
+    const argv = argvOf(result.command);
+    assert.equal(argv.includes('-extension_picky'), host === 'manifest.googlevideo.com');
+    assert.ok(argv.includes('3600'), 'HLS VOD seeking is retained');
+    assert.ok(!argv.includes('-reconnect_at_eof'), 'finite playlist must reach EOF');
+  }
+});
+
 test('single lavfi filler paces both synthetic inputs with -re', () => {
   const mgr = new StreamManager({ token: 't' }, 'c1', {
     videoCodec: 'H264', streamBitrate: 5000, streamHeight: 1080,
@@ -808,6 +820,30 @@ test('telemetry: tick emits one line with the required fields and no URLs/tokens
   tel.stop();
   assert.ok(unrefs >= 1, 'the interval must be unref()d');
   assert.strictEqual(fakeMonitor.paused, true, 'monitor must be paused on stop()');
+});
+
+test('telemetry: real event-loop monitor and encoder progress survive a producer stall', async () => {
+  const command = new EventEmitter();
+  const lines = [];
+  let now = 0;
+  const tel = createTelemetry({ command, now: () => now,
+    log: (_level, line) => lines.push(line),
+    timerFactory: () => ({ unref() {} }) });
+  try {
+    tel.start();
+    await new Promise(resolve => setTimeout(resolve, 60));
+    command.emit('progress', { frames: 100, timemark: 'secret-ignored' });
+    tel.tick();
+    now = 2000;
+    tel.tick();
+    assert.match(lines[0], /el_p99_ms=\d+ el_max_ms=\d+/);
+    assert.match(lines[1], /ff_frames=100 ff_frames_1s=0 ff_progress_age_ms=2000/);
+    assert.ok(!lines[1].includes('secret-ignored'));
+    command.emit('progress', { frames: 130 });
+    tel.tick();
+    assert.match(lines[2], /ff_frames=130 ff_frames_1s=30 ff_progress_age_ms=0/);
+  } finally { tel.stop(); }
+  assert.equal(command.listenerCount('progress'), 0);
 });
 
 test('telemetry: stop() suppresses further ticks (zero-cost after session ends)', () => {

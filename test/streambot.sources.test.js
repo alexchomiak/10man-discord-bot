@@ -85,6 +85,17 @@ try { fs.appendFileSync(LOG, JSON.stringify({ argv }) + '\\n'); } catch {}
 let scenario = 'hls';
 try { scenario = (fs.readFileSync(SC, 'utf8').trim() || 'hls'); } catch {}
 const SCENARIOS = {
+  youtubeHls: {
+    duration: 8551,
+    formats: [
+      { protocol: 'https', vcodec: 'h264', acodec: 'none', height: 1080, url: 'https://cdn.example/video.mp4' },
+      { protocol: 'https', vcodec: 'none', acodec: 'opus', language: 'en', url: 'https://cdn.example/audio.webm' },
+      { protocol: 'm3u8_native', vcodec: 'h264', acodec: 'none', height: 1080, url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/video/index.m3u8' },
+      { protocol: 'm3u8_native', vcodec: 'h264', acodec: 'none', height: 2160, url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/4k/index.m3u8' },
+      { protocol: 'm3u8_native', vcodec: 'none', acodec: null, language: 'en', tbr: 128, url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/audio/index.m3u8' },
+      { protocol: 'm3u8_native', vcodec: 'none', acodec: null, language: 'ar', tbr: 256, url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/arabic/index.m3u8' }
+    ]
+  },
   hls: {
     duration: 3661,
     title: 'HLS VOD',
@@ -188,7 +199,15 @@ const SCENARIOS = {
   }
 };
 if (argv.includes('--dump-json')) {
-  const obj = SCENARIOS[scenario] || SCENARIOS.hls;
+  const obj = scenario.startsWith('youtubeHls') ? SCENARIOS.youtubeHls : (SCENARIOS[scenario] || SCENARIOS.hls);
+  if (scenario === 'youtubeHlsLive') obj.is_live = true;
+  if (scenario === 'youtubeHlsLow') obj.formats[2].height = 720;
+  if (scenario === 'youtubeHlsNoAudio') obj.formats = obj.formats.slice(0, 4);
+  if (scenario === 'youtubeHlsForeign') obj.formats.splice(4, 1);
+  if (scenario === 'youtubeHlsUnknown') {
+    obj.formats[4].tbr = null;
+    obj.formats.unshift({ ...obj.formats[4], url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/low-audio/index.m3u8' });
+  }
   process.stdout.write(JSON.stringify(obj) + '\\n');
   process.exit(0);
 }
@@ -643,6 +662,29 @@ test('dash: separate V+A -> streamType dash with progressive videoUrl+audioUrl, 
   assert.strictEqual(calls.length, 1, 'DASH: exactly ONE yt-dlp call (--dump-json)');
   assert.strictEqual(calls[0].mode, 'dump');
   assert.ok(!calls.some((c) => c.argv.includes('-o')), 'DASH: NO download (-o) must happen — core regression');
+});
+
+test('YouTube VOD uses capped segmented tracks with preferred audio and preserves seeking', async () => {
+  for (const scenario of ['youtubeHls', 'youtubeHlsUnknown']) {
+    setScenario(scenario);
+    const res = await resolveYtdlp('https://www.youtube.com/watch?v=VOD&t=3600', CfgPlain);
+    assert.equal(res.streamType, 'dash');
+    assert.match(res.videoUrl, /hls_playlist\/video\//);
+    assert.match(res.audioUrl, /hls_playlist\/audio\//);
+    assert.equal(res.isLive, false);
+    assert.equal(res.totalDurationSec, 8551);
+    assert.equal(res.startOffsetSec, 3600);
+    assert.equal(res.localFile, undefined);
+  }
+});
+
+test('YouTube HLS preference does not alter live or reduce resolution or lose audio', async () => {
+  for (const scenario of ['youtubeHlsLive', 'youtubeHlsLow', 'youtubeHlsNoAudio', 'youtubeHlsForeign']) {
+    setScenario(scenario);
+    const res = await resolveYtdlp('https://www.youtube.com/watch?v=VOD', CfgPlain);
+    assert.equal(res.videoUrl, 'https://cdn.example/video.mp4', scenario);
+    assert.equal(res.audioUrl, 'https://cdn.example/audio.webm', scenario);
+  }
 });
 
 test('live DASH: preserves live status and selects a 1080p H.264 track instead of 4K', async () => {

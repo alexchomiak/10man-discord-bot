@@ -14,6 +14,14 @@ function verboseLog(config, ...parts) {
   if (config?.verbose === true) log(...parts);
 }
 
+function isYoutubeHlsUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'manifest.googlevideo.com' &&
+      url.pathname.startsWith('/api/manifest/hls_playlist/');
+  } catch { return false; }
+}
+
 function stripTrailingSlash(value) {
   return String(value || '').replace(/\/+$/, '');
 }
@@ -680,6 +688,35 @@ async function resolveYtdlp(raw, cfg) {
     };
   }
 
+  // YouTube's direct files require bounded HTTP ranges to avoid throttling.
+  // FFmpeg 7.1 does not implement yt-dlp's http_chunk_size download setting.
+  // Prefer the provider's finite segmented rendition when both tracks exist,
+  // keeping FFmpeg's normal progressive reading and seeking (no local cache).
+  if (!isLive) {
+    const hls = selectableFormats.filter(f => isYoutubeHlsUrl(f?.url));
+    const videos = hls.filter(f => f.vcodec && f.vcodec !== 'none').sort(compareFormats);
+    // yt-dlp orders formats from worst to best. HLS audio often has no tbr;
+    // prefer the later rendition on a tie instead of the low-rate first one.
+    const audio = pickBestAudio(hls.filter(f => f.vcodec === 'none' && f.acodec !== 'none').reverse(), preferredLangs);
+    const preferredAudio = pickBestAudio(selectableFormats.filter(f =>
+      f?.vcodec === 'none' && f.acodec !== 'none' && f.url &&
+      (looksProgressive(f) || isYoutubeHlsUrl(f.url))), preferredLangs);
+    const video = videos[0];
+    const directHeight = Math.max(0, ...selectableFormats
+      .filter(f => f?.vcodec && f.vcodec !== 'none' && looksProgressive(f))
+      .map(f => Number(f.height) || 0));
+    if (video && audio && Number(video.height) >= directHeight &&
+        (!preferredAudio || langRank(audio, preferredLangs) <= langRank(preferredAudio, preferredLangs))) {
+      verboseLog(config, `YouTube VOD: segmented HLS ${video.height}p video + audio (progressive)`);
+      return {
+        kind: 'ytdlp', streamType: 'dash', videoUrl: video.url, audioUrl: audio.url,
+        title: data.title || null, available: true, startOffsetSec, isLive,
+        totalDurationSec: vodDuration,
+        note: 'separate YouTube HLS A+V merged in-memory (progressive, zero-disk)'
+      };
+    }
+  }
+
   if (bestDirect) {
     return {
       kind: 'ytdlp',
@@ -788,6 +825,7 @@ module.exports = {
   resolveShareTv,
   resolveDirect,
   resolveYtdlp,
+  isYoutubeHlsUrl,
   looksLikeShareTv,
   // primitives (used by tests and advanced consumers):
   spawnYtdlp,

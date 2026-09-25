@@ -15,10 +15,6 @@ RUN npm ci --omit=dev \
 FROM node:22-trixie-slim
 
 WORKDIR /app
-ARG BUILD_VERSION=dev
-ARG BUILD_DATE=unknown
-ENV BUILD_VERSION=$BUILD_VERSION
-ENV BUILD_DATE=$BUILD_DATE
 ENV NODE_ENV=production
 
 # ca-certificates + gosu are needed by the CS2 bot.
@@ -67,17 +63,23 @@ RUN case "$TARGETARCH" in \
   && chmod +x /usr/local/bin/yt-dlp \
   && yt-dlp --version
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY package.json ./
-COPY scripts ./scripts
-COPY src ./src
+COPY --from=deps --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node package.json ./
+COPY --chown=node:node scripts ./scripts
+COPY --chown=node:node src ./src
 COPY pia-ca.rsa.4096.crt /usr/local/share/pia/ca.rsa.4096.crt
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY docker-entrypoint-vpn.sh /usr/local/bin/docker-entrypoint-vpn.sh
-COPY run.sh /app/run.sh
+COPY --chown=node:node run.sh /app/run.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint-vpn.sh /app/run.sh \
   && mkdir -p /app/data \
-  && chown -R node:node /app
+  && chown node:node /app /app/data
+
+# Set commit-specific metadata after filesystem layers so releases can share them.
+ARG BUILD_VERSION=dev
+ARG BUILD_DATE=unknown
+ENV BUILD_VERSION=$BUILD_VERSION
+ENV BUILD_DATE=$BUILD_DATE
 
 # Default CMD runs the single launcher (run.sh) with MODE=bot, which preserves
 # the previous behavior (CS2 real-bot only, no selfbot token required).
