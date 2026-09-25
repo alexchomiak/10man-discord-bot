@@ -459,8 +459,13 @@ class StreamManager {
         ...(cfg.videoEncoder === 'vaapi' ? [] : ['-pix_fmt', 'yuv420p'])
       ]);
 
-    command.addOutputOption('-shortest')
-      .addOutputOption('-force_key_frames', `expr:gte(t,n_forced*${keyframeIntervalSec})`);
+    // Finite VOD tracks must drain to their own EOF. FFmpeg 7.1's -shortest
+    // synchronization can stall split paced inputs while FFmpeg memory grows
+    // upstream of this output pipe. Pair padding/shortest only on the
+    // existing live/filler path; endless apad would otherwise prevent VOD EOF.
+    const padAudio = !!(piece?.isLive || piece?.isFiller || piece?.inputFormat === 'lavfi');
+    if (padAudio) command.addOutputOption('-shortest');
+    command.addOutputOption('-force_key_frames', `expr:gte(t,n_forced*${keyframeIntervalSec})`);
 
     // Encoder settings use VAAPI on Intel when configured and libx264
     // otherwise. Fall back to ultrafast libx264 if the library exports no
@@ -538,7 +543,7 @@ class StreamManager {
       }
     } catch { /* zeromq not loadable — volume control will be off */ }
 
-    command.audioFilters('volume@internal_lib=1.0,apad');
+    command.audioFilters(`volume@internal_lib=1.0${padAudio ? ',apad' : ''}`);
     if (bindableEndpoint) {
       command.audioFilters(`azmq=b=${bindableEndpoint.replaceAll(':', '\\\\:')}`);
     } else {

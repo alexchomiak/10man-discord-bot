@@ -144,6 +144,14 @@ test('dash merge: with offset, ONE -ss per network input and no duplicate pacing
   assert.strictEqual(argv.filter((a) => a === '-re').length, 0);
 });
 
+test('finite split VOD avoids shortest synchronization and infinite audio padding', () => {
+  for (const piece of [null, { isLive: false }]) {
+    const argv = argvOf(buildDashCommand({ piece }));
+    assert.ok(!argv.includes('-shortest'), 'shortest stalls independently paced VOD inputs on FFmpeg 7.1');
+    assert.ok(!argv.some(a => /\bapad\b/.test(a)), 'finite VOD must reach natural EOF without endless silence');
+  }
+});
+
 test('single lavfi filler paces both synthetic inputs with -re', () => {
   const mgr = new StreamManager({ token: 't' }, 'c1', {
     videoCodec: 'H264', streamBitrate: 5000, streamHeight: 1080,
@@ -159,6 +167,8 @@ test('single lavfi filler paces both synthetic inputs with -re', () => {
     { isFiller: true, inputFormat: 'lavfi' }
   ).command;
   assert.strictEqual(argvOf(command).filter((a) => a === '-re').length, 2);
+  assert.ok(argvOf(command).includes('-shortest'));
+  assert.ok(argvOf(command).some(a => /\bapad\b/.test(a)));
 });
 
 test('combined VOD uses only its own A/V input and cannot queue behind realtime silence', () => {
@@ -182,6 +192,8 @@ test('combined VOD uses only its own A/V input and cannot queue behind realtime 
   assert.strictEqual(argv.filter((a) => a === '-map').length, 2,
     'combined media must emit exactly one video and one audio mapping');
   assert.ok(argv.includes('0:a:0?'));
+  assert.ok(!argv.includes('-shortest'));
+  assert.ok(!argv.some(a => /\bapad\b/.test(a)));
   assert.deepStrictEqual(argv.slice(argv.indexOf('-pix_fmt'), argv.indexOf('-pix_fmt') + 2),
     ['-pix_fmt', 'yuv420p']);
 });
@@ -245,6 +257,8 @@ test('live Arc input automatically deinterlaces on GPU and emits constant 30fps'
   ).command;
   const argv = argvOf(command);
   assert.ok(argv.includes('deinterlace_vaapi=mode=motion_adaptive:rate=frame:auto=1,scale_vaapi=w=1920:h=1080:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12,pad_vaapi=w=1920:h=1080:x=(ow-iw)/2:y=(oh-ih)/2'));
+  assert.ok(argv.includes('-shortest'));
+  assert.ok(argv.some(a => /\bapad\b/.test(a)));
   assert.deepStrictEqual(argv.slice(argv.indexOf('-fps_mode'), argv.indexOf('-fps_mode') + 2), ['-fps_mode', 'cfr']);
   assert.deepStrictEqual(argv.slice(argv.indexOf('-reconnect_at_eof'), argv.indexOf('-reconnect_at_eof') + 2),
     ['-reconnect_at_eof', '1'], 'live HTTP inputs must reconnect after a clean proxy EOF');
