@@ -243,6 +243,13 @@ test('persistent demux: disables opening-packet discard only on registered input
 
 test('persistent track feeder creates one go-live connection across sequential content', async () => {
   let creates = 0; let videoFrames = 0; let audioFrames = 0; let frees = 0;
+  const guard = require('../src/streambot/demuxGuard');
+  const demuxOptions = [];
+  class FakeDemuxer {
+    static async open(_input, options) { demuxOptions.push(options); return new FakeDemuxer(); }
+    close() {}
+  }
+  guard.installDemuxerTracker(FakeDemuxer);
   const connection = {
     ready: true,
     setPacketizer(codec) { assert.equal(codec, 'H264'); },
@@ -253,7 +260,9 @@ test('persistent track feeder creates one go-live connection across sequential c
     data: Buffer.from([1]), pts: BigInt(pts), duration: BigInt(duration),
     timeBase: { num: 1, den }, free() { frees++; }
   });
-  const videoModule = { demux: async () => {
+  const videoModule = { demux: async input => {
+    const demuxer = await FakeDemuxer.open(input, { format: 'nut', options: { fflags: 'nobuffer' } });
+    await demuxer.close();
     const video = new PassThrough({ objectMode: true });
     const audio = new PassThrough({ objectMode: true });
     queueMicrotask(() => { video.end(packet(0, 1, 30)); audio.end(packet(0, 960, 48000)); });
@@ -271,6 +280,11 @@ test('persistent track feeder creates one go-live connection across sequential c
   ]);
   await feeder.append(new PassThrough(), new AbortController().signal);
   assert.equal(creates, 1, 'content changes must not recreate the Discord stream');
+  assert.equal(demuxOptions.length, 2);
+  for (const options of demuxOptions) {
+    assert.equal(options.skipStreamInfo, true, 'each new content input must preserve its opening packets');
+    assert.equal(options.options.fflags, '0');
+  }
   assert.equal(videoFrames, 2); assert.equal(audioFrames, 2); assert.equal(frees, 4);
   assert.equal(feeder.rtcBytesSent, 4, 'count payload only after WebRTC reports ready');
   assert.ok(playedSec > 0.03 && playedSec < 0.04, 'progress follows frames sent to WebRTC');

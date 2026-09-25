@@ -3,6 +3,7 @@
 const { Writable } = require('node:stream');
 const { finished } = require('node:stream/promises');
 const { setTimeout: sleep } = require('node:timers/promises');
+const { registerPersistentInput } = require('./demuxGuard');
 
 // Same timestamp-driven sender used by discord-video-stream, kept here so a
 // new normalized input can be attached without calling createStream again.
@@ -174,6 +175,9 @@ class PersistentTrackFeeder {
     };
     signal?.addEventListener('abort', cancel, { once: true });
     try {
+      // Our normalized NUT header already describes both tracks. Preserve the
+      // opening packets instead of discarding them during format probing.
+      registerPersistentInput(input);
       const media = await this.videoModule.demux(input, { format: 'nut' });
       signal?.throwIfAborted();
       if (!media.video || !media.audio) throw new Error('Content must contain normalized video and Opus audio');
