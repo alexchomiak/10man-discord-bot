@@ -277,6 +277,54 @@ test('persistent track feeder creates one go-live connection across sequential c
   await feeder.close();
 });
 
+test('VOD feeder drains a full video queue to reach the next audio packet', async () => {
+  const packet = pts => ({
+    data: Buffer.from([1]), pts: BigInt(pts), duration: 1n,
+    timeBase: { num: 1, den: 1000 }, free() {}
+  });
+  let videoFrames = 0;
+  let audioFrames = 0;
+  const connection = {
+    ready: true, setPacketizer() {},
+    mediaConnection: { setSpeaking() {}, setVideoAttributes() {} },
+    sendVideoFrame() { videoFrames++; },
+    sendAudioFrame() { audioFrames++; }
+  };
+  const videoModule = { demux: async () => {
+    // The installed demuxer stops its single read loop when either 128-packet
+    // output queue fills. Put the next audio packet behind that much video.
+    const video = new PassThrough({ objectMode: true, writableHighWaterMark: 128 });
+    const audio = new PassThrough({ objectMode: true, writableHighWaterMark: 128 });
+    const packets = [{ target: audio, pts: 0 },
+      ...Array.from({ length: 130 }, (_, pts) => ({ target: video, pts })),
+      { target: audio, pts: 130 }];
+    let index = 0;
+    const read = () => {
+      while (index < packets.length) {
+        const next = packets[index++];
+        if (!next.target.write(packet(next.pts))) return;
+      }
+      video.end();
+      audio.end();
+    };
+    video.on('drain', read);
+    audio.on('drain', read);
+    queueMicrotask(read);
+    return { video: { stream: video }, audio: { stream: audio } };
+  } };
+  const feeder = new PersistentTrackFeeder({
+    streamer: { createStream: async () => connection }, videoModule
+  });
+  try {
+    await feeder.append(new PassThrough(), new AbortController().signal, undefined,
+      { syncVideoToAudio: false });
+    assert.equal(videoFrames, 130);
+    assert.equal(audioFrames, 2);
+  } finally {
+    await feeder.close();
+  }
+});
+
 test('timed track rebases after starvation instead of bursting delayed frames', async () => {
   const times = [0, 0, 1000, 1000];
   const sleeps = [];

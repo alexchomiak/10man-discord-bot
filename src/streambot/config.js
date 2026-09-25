@@ -199,9 +199,7 @@ function loadConfig() {
     // Real remote sources build this much media runway before their first
     // packet is handed to Discord. The persistent Go Live connection remains
     // open while it fills. Zero disables the jitter buffer.
-    // Ten seconds gives long VODs enough runway for periodic CDN/range-request
-    // stalls. The 8 MiB output queue remains the hard memory bound.
-    jitterBufferSec: parseNonNegativeNumber(process.env.SBOT_JITTER_BUFFER_SEC, 10),
+    jitterBufferSec: parseNonNegativeNumber(process.env.SBOT_JITTER_BUFFER_SEC, 4),
     // Re-resolve a seekable source if its video sender makes no progress after
     // playback has started. Avoids leaving a live Discord session frozen when
     // FFmpeg remains alive but the source/encoder stalls indefinitely.

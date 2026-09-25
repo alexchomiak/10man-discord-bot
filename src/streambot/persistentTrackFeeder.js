@@ -159,7 +159,7 @@ class PersistentTrackFeeder {
     }
   }
 
-  async append(input, signal, onVideoFrame) {
+  async append(input, signal, onVideoFrame, { syncVideoToAudio = true } = {}) {
     if (this.closed) throw new Error('Persistent track feeder is closed');
     if (this.active) throw new Error('Concurrent track feeders are not allowed');
     const connection = await this.start();
@@ -190,7 +190,11 @@ class PersistentTrackFeeder {
       };
       const video = new TimedTrack(sendVideo, 'video', { defaultDurationMs: 1000 / this.frameRate });
       const audio = new TimedTrack(sendAudio, 'audio');
-      video.syncTrack = audio;
+      // The demuxer reads one interleaved stream and stops when either output
+      // queue fills. On seekable VOD, waiting for an audio packet while the
+      // video queue is full can prevent the demuxer from reading that audio.
+      // Both tracks still pace their packets from media timestamps.
+      if (syncVideoToAudio) video.syncTrack = audio;
       active = { input, video, audio, videoSource: media.video.stream, audioSource: media.audio.stream };
       this.active = active;
       active.videoSource.pipe(video);

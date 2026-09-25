@@ -115,7 +115,7 @@ function argvOf(command) {
   return arr.map((p) => String(p));
 }
 
-test('dash merge: VOD inputs stay bounded with catch-up headroom after a startup burst', () => {
+test('dash merge: VOD inputs read at realtime after a startup burst', () => {
   const command = buildDashCommand({ offset: 0 });
   const argv = argvOf(command);
   const inputs = argv.filter((a) => a === '-i').length;
@@ -123,9 +123,9 @@ test('dash merge: VOD inputs stay bounded with catch-up headroom after a startup
 
   assert.strictEqual(argv.filter((a) => a === '-re').length, 0, 'TimedTrack owns pacing; HTTP inputs must refill the buffer');
   assert.strictEqual(argv.filter((a) => a === '-readrate').length, 2, 'each YouTube DASH input must be paced');
-  assert.deepStrictEqual(argv.flatMap((a, i) => a === '-readrate' ? [argv[i + 1]] : []), ['1.5', '1.5'],
+  assert.deepStrictEqual(argv.flatMap((a, i) => a === '-readrate' ? [argv[i + 1]] : []), ['1.15', '1.15'],
     'each DASH input needs catch-up headroom after a stall');
-  assert.deepStrictEqual(argv.flatMap((a, i) => a === '-thread_queue_size' ? [argv[i + 1]] : []), ['512', '512'],
+  assert.deepStrictEqual(argv.flatMap((a, i) => a === '-thread_queue_size' ? [argv[i + 1]] : []), ['256', '256'],
     'VOD input queues must remain bounded');
   assert.strictEqual(argv.filter((a) => a === '-readrate_initial_burst').length, 2);
   assert.strictEqual(argv.filter((a) => a === '-thread_queue_size').length, 2);
@@ -581,6 +581,29 @@ test('live EOF retries on the existing voice link instead of reporting VOD ended
     await t.mgr.stop();
   } finally {
     t.restore();
+  }
+});
+
+test('manager avoids VOD sync waits while retaining live track sync', async () => {
+  for (const isLive of [false, true]) {
+    const t = makeStreamManager(isLive ? 'Live source' : 'VOD source');
+    let syncVideoToAudio;
+    t.mgr._feederFactory = () => ({
+      start: async () => ({}),
+      append: async (_output, _signal, _onVideoFrame, options) => {
+        syncVideoToAudio = options.syncVideoToAudio;
+      },
+      interrupt() {}, close: async () => {}
+    });
+    try {
+      const result = await t.mgr.start({ ...t.startArgs, isLive });
+      assert.equal(result.ok, true);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(syncVideoToAudio, isLive);
+      await t.mgr.stop();
+    } finally {
+      t.restore();
+    }
   }
 });
 

@@ -369,16 +369,15 @@ class StreamManager {
         // stay near realtime: otherwise FFmpeg can decode separate YouTube
         // video/audio inputs far ahead while the sender applies backpressure,
         // retaining gigabytes of frames before the 8 MiB output pipe.
-        '-thread_queue_size', piece?.isLive ? '2048' : '512',
+        '-thread_queue_size', piece?.isLive ? '2048' : '256',
         '-rw_timeout', String(timeoutUs),
         '-user_agent', 'Mozilla/5.0'
       ]);
       if (!piece?.isLive) {
-        const burstSec = Math.max(4, Math.ceil(Number(cfg.jitterBufferSec) || 10));
-        // Leave enough headroom to rebuild the bounded runway promptly after
-        // transient CDN/range-request stalls in long VODs.
+        const burstSec = Math.max(4, Math.ceil(Number(cfg.jitterBufferSec) || 4));
+        // Leave headroom to refill after transient network/encoder stalls.
         // The bounded input queue and output pipe prevent unlimited prefetch.
-        command.inputOptions(['-readrate', '1.5', '-readrate_initial_burst', String(burstSec)]);
+        command.inputOptions(['-readrate', '1.15', '-readrate_initial_burst', String(burstSec)]);
       }
       if (!/m3u8?/i.test(url)) {
         // VOD must finish at clean EOF. Live HTTP proxies can rotate or close
@@ -863,7 +862,7 @@ class StreamManager {
   _jitterBufferSec(piece) {
     if (!piece || piece.isFiller || piece.inputFormat === 'lavfi') return 0;
     const seconds = Number(this.config.jitterBufferSec);
-    return Number.isFinite(seconds) && seconds >= 0 ? seconds : 10;
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : 4;
   }
 
   // FFmpeg's output PassThrough used to be described as an 8 MiB stall
@@ -1031,7 +1030,7 @@ class StreamManager {
               piece.playedSec = (piece.playedSec || 0) + frameMs / 1000;
               lastVideoFrameAt = Date.now();
             }
-          });
+          }, { syncVideoToAudio: piece.isLive || piece.isFiller });
           if (!piece.isLive && !piece.isFiller && piece.sourceInput) {
             const configuredMs = Number(this.config.vodStallTimeoutMs);
             const timeoutMs = Number.isFinite(configuredMs) && configuredMs > 0 ? configuredMs : 8000;
