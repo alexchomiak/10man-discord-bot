@@ -581,7 +581,7 @@ test('config: stream and jitter buffer defaults are stable', () => {
   try {
     const cfg = require('../src/streambot/config').loadConfig();
     assert.equal(cfg.streamBufferSec, Number(process.env.SBOT_STREAM_BUFFER_SEC) || 15);
-    assert.equal(cfg.jitterBufferSec, 4);
+    assert.equal(cfg.jitterBufferSec, 10);
     process.env.SBOT_JITTER_BUFFER_SEC = '0';
     assert.equal(require('../src/streambot/config').loadConfig().jitterBufferSec, 0);
   } finally {
