@@ -437,7 +437,12 @@ function ytdlpDumpJson(cfg, url, useCookies = false) {
   // player challenges so format discovery does not silently return a reduced
   // set with the "no supported JavaScript runtime" warning.
   const args = ['--js-runtimes', 'node', '--dump-json', '--no-playlist'];
-  if (useCookies && cfg.ytdlpCookiesFile) args.push('--cookies', cfg.ytdlpCookiesFile);
+  if (useCookies && cfg.ytdlpCookiesFile) {
+    // Authenticated default clients can expose only format 18 (360p) for
+    // age-restricted videos. web_safari exposes their HLS renditions instead.
+    args.push('--extractor-args', 'youtube:player_client=web_safari');
+    args.push('--cookies', cfg.ytdlpCookiesFile);
+  }
   args.push(url);
   return spawnYtdlp(cfg, args, timeoutMs);
 }
@@ -698,10 +703,16 @@ async function resolveYtdlp(raw, cfg) {
   const thumbnail = thumbnailUrl(data.thumbnail || data.thumbnails?.at(-1)?.url);
 
   if (bestManifest) {
+    // YouTube gives every HLS rendition the same master manifest_url. Its
+    // format.url is the rendition-specific playlist; use that so FFmpeg gets
+    // the resolution selected above rather than adapting from the master.
+    const streamUrl = isYoutubeHlsUrl(bestManifest.url)
+      ? bestManifest.url
+      : bestManifest.manifest_url;
     return {
       kind: 'ytdlp',
       streamType: 'single',
-      streamUrl: bestManifest.manifest_url,
+      streamUrl,
       title: data.title || null,
       thumbnail,
       available: true,

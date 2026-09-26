@@ -506,6 +506,44 @@ test('$stop leaves voice before a hung media writer reaches cleanup timeout', as
   await stopping;
 });
 
+test('$stop retries a guild-scoped leave when Discord still reports the bot in voice', async t => {
+  const { mgr, fv, start } = fixture(t, { voiceLeaveAckTimeoutMs: 15 });
+  await start('a');
+  const events = new EventEmitter();
+  mgr.client.on = events.on.bind(events);
+  mgr.client.off = events.off.bind(events);
+  const state = { channelId: 'c1' };
+  mgr.client.guilds = { cache: { get: () => ({ voiceStates: { cache: { get: () => state } } }) } };
+  const sendOpcode = fv.streamer.sendOpcode;
+  let clears = 0;
+  fv.streamer.sendOpcode = (op, data) => {
+    sendOpcode(op, data);
+    if (op === 4 && data.channel_id === null && ++clears === 2) {
+      state.channelId = null;
+      events.emit('raw', { t: 'VOICE_STATE_UPDATE', d: { guild_id: 'g1', user_id: 'u1', channel_id: null } });
+    }
+  };
+  assert.equal(await mgr.stop(), true);
+  assert.equal(clears, 2);
+  assert.equal(mgr.voiceLink, null);
+});
+
+test('$stop reports an unconfirmed leave and permits a second Stop attempt', async t => {
+  const { mgr, start } = fixture(t, { voiceLeaveAckTimeoutMs: 10 });
+  await start('a');
+  const events = new EventEmitter();
+  mgr.client.on = events.on.bind(events);
+  mgr.client.off = events.off.bind(events);
+  const state = { channelId: 'c1', disconnect: async () => { throw new Error('forbidden'); } };
+  mgr.client.guilds = { cache: { get: () => ({ voiceStates: { cache: { get: () => state } } }) } };
+  assert.equal(await mgr.stop(), false);
+  assert.equal(mgr.status().alive, false);
+  assert.equal(mgr.voiceLink.channelId, 'c1');
+  state.channelId = null;
+  assert.equal(await mgr.stop(), true);
+  assert.equal(mgr.voiceLink, null);
+});
+
 test('encoder error alerts and advances queue without another go-live', async t => {
   const {mgr,fv,start,alerts}=fixture(t,{streamBufferSec:0});await start('a');await start('b');
   fv.pieces[0].fail();await until(()=>fv.pieces.length===2);

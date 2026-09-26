@@ -141,6 +141,18 @@ const SCENARIOS = {
       { protocol: 'https', vcodec: 'none', acodec: 'mp4a.40.2', url: 'https://cdn.example/audio.m4a' }
     ]
   },
+  ageSafari: {
+    duration: 5658,
+    formats: [
+      { format_id: '18', protocol: 'https', vcodec: 'avc1.42001E', acodec: 'mp4a.40.2', height: 360, url: 'https://cdn.example/age-360.mp4' },
+      { format_id: '95', protocol: 'm3u8_native', vcodec: 'avc1.4D401F', acodec: 'mp4a.40.2', height: 720,
+        manifest_url: 'https://manifest.googlevideo.com/api/manifest/hls_variant/master/index.m3u8',
+        url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/720/index.m3u8' },
+      { format_id: '96', protocol: 'm3u8_native', vcodec: 'avc1.640028', acodec: 'mp4a.40.2', height: 1080,
+        manifest_url: 'https://manifest.googlevideo.com/api/manifest/hls_variant/master/index.m3u8',
+        url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/1080/index.m3u8' }
+    ]
+  },
   liveDash4k: {
     is_live: true,
     live_status: 'is_live',
@@ -209,7 +221,7 @@ const SCENARIOS = {
   }
 };
 if (argv.includes('--dump-json')) {
-  if (scenario === 'authRequired' && !argv.includes('--cookies')) {
+  if ((scenario === 'authRequired' || scenario === 'ageSafari') && !argv.includes('--cookies')) {
     process.stderr.write('ERROR: Sign in to confirm your age\\n');
     process.exit(1);
   }
@@ -575,6 +587,19 @@ test('yt-dlp retries with cookies when public lookup requires sign-in', async ()
   assert.strictEqual(calls.length, 2);
   assert.ok(!calls[0].argv.includes('--cookies'));
   assert.deepStrictEqual(calls[1].argv.slice(-3), ['--cookies', '/app/data/youtube cookies.txt', url]);
+});
+
+test('age-restricted YouTube uses Safari HLS and its selected 1080p playlist', async () => {
+  setScenario('ageSafari');
+  const before = readFakeLog().length;
+  const res = await resolveYtdlp('https://www.youtube.com/watch?v=AGEHLS', {
+    ...CfgPlain, ytdlpCookiesFile: '/app/data/youtube-cookies.txt'
+  });
+  const calls = readFakeLog().slice(before);
+  assert.strictEqual(res.available, true);
+  assert.strictEqual(res.streamType, 'single');
+  assert.strictEqual(res.streamUrl, 'https://manifest.googlevideo.com/api/manifest/hls_playlist/1080/index.m3u8');
+  assert.ok(calls[1].argv.includes('youtube:player_client=web_safari'));
 });
 
 // ============================================================================

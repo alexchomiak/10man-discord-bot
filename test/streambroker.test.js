@@ -93,6 +93,17 @@ test('progress toggle is routed to one worker and returns its new state', async 
   assert.match(result.message, /VOD with a known duration/);
 });
 
+test('control reports a failed Stop when Discord voice leave is unconfirmed', async () => {
+  const control = new StreamControl({ streamManager: {
+    stop: async () => false,
+    status: () => ({ inChannel: true, alive: false })
+  } });
+  const result = await control.execute('stop');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /still shows this account in voice/);
+  assert.equal(result.status.inChannel, true);
+});
+
 test('broker offline errors identify connected worker IDs', async t => {
   const broker = new StreamBroker({ host: '127.0.0.1', port: 0, secret: 'test-secret', defaultWorkerId: 'one', log: () => {} });
   const server = broker.start();

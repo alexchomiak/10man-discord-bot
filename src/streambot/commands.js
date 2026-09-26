@@ -155,8 +155,8 @@ class CommandRegistry {
   }
 
   async cmdStop(message) {
-    await this.streamManager.stop();
-    await this.reply(message, M.STREAM_STOPPED);
+    const left = await this.streamManager.stop();
+    await this.reply(message, left === false ? M.STREAM_LEAVE_FAILED : M.STREAM_STOPPED);
   }
 
   async cmdStatus(message) {

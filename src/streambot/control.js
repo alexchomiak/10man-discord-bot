@@ -79,9 +79,10 @@ class StreamControl {
           detail: this._detail(r, ['reused', 'fillerStarted'])
         });
       }
-      case 'stop':
-        await this.streamManager.stop();
-        return this._result(true, M.STREAM_STOPPED);
+      case 'stop': {
+        const left = await this.streamManager.stop();
+        return this._result(left !== false, left === false ? M.STREAM_LEAVE_FAILED : M.STREAM_STOPPED);
+      }
       case 'skip': {
         const r = await this.streamManager.skip();
         const message = !r?.ok ? M.STREAM_START_FAILED : r.noOp ? M.SKIP_NONE : r.fellBackToFiller ? M.SKIP_FILLER : M.SKIP_NEXT(r.skippedTo);

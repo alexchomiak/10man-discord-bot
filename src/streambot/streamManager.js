@@ -773,6 +773,65 @@ class StreamManager {
     }
   }
 
+  _selfVoiceState(guildId) {
+    const userId = this.client.user?.id;
+    return this.client.guilds?.cache?.get(guildId)?.voiceStates?.cache?.get(userId) ||
+      this.client.voiceStates?.cache?.get(userId) || null;
+  }
+
+  _waitForVoiceLeave(guildId, timeoutMs) {
+    const state = this._selfVoiceState(guildId);
+    if (state && !state.channelId) return Promise.resolve(true);
+    if (typeof this.client.on !== 'function') return Promise.resolve(false);
+    return new Promise(resolve => {
+      let timer;
+      const finish = left => {
+        clearTimeout(timer);
+        this.client.off?.('raw', onRaw);
+        resolve(left);
+      };
+      const onRaw = packet => {
+        if (packet?.t === 'VOICE_STATE_UPDATE' && packet.d?.guild_id === guildId &&
+            packet.d?.user_id === this.client.user?.id && !packet.d.channel_id) finish(true);
+      };
+      this.client.on('raw', onRaw);
+      timer = setTimeout(() => {
+        const latest = this._selfVoiceState(guildId);
+        finish(Boolean(latest && !latest.channelId));
+      }, timeoutMs);
+      // The gateway event can arrive between the first cache check and the
+      // listener registration. Recheck after subscribing to close that gap.
+      const latest = this._selfVoiceState(guildId);
+      if (latest && !latest.channelId) finish(true);
+    });
+  }
+
+  async _confirmVoiceLeave(link) {
+    // Minimal test clients cannot observe an ACK. Real clients must either
+    // report a cleared cache entry or send a self VOICE_STATE_UPDATE.
+    if (typeof this.client.on !== 'function') return true;
+    const initialState = this._selfVoiceState(link.guildId);
+    if (initialState && !initialState.channelId) return true;
+    const timeoutMs = Number(this.config.voiceLeaveAckTimeoutMs) > 0
+      ? Number(this.config.voiceLeaveAckTimeoutMs) : 1200;
+    if (await this._waitForVoiceLeave(link.guildId, timeoutMs)) return true;
+    log('warn', `voice: leave not confirmed for guild=${link.guildId}; retrying guild-scoped clear`);
+    this._sendGuildVoiceClear(link.streamer, link.guildId);
+    if (await this._waitForVoiceLeave(link.guildId, timeoutMs)) return true;
+    const state = this._selfVoiceState(link.guildId);
+    if (state?.channelId && typeof state.disconnect === 'function') {
+      try {
+        await this._raceWithTimeout(Promise.resolve(state.disconnect()), timeoutMs,
+          `voice REST disconnect timed out after ${timeoutMs}ms`);
+      } catch (error) {
+        log('error', `voice: REST disconnect failed: ${error.message}`);
+      }
+      if (await this._waitForVoiceLeave(link.guildId, timeoutMs)) return true;
+    }
+    log('error', `voice: stop could not confirm Discord disconnect for guild=${link.guildId} channel=${link.channelId}`);
+    return false;
+  }
+
   _clearGraceTimer(link) {
     if (!link?.graceTimer) return;
     if (typeof link.graceTimer.clear === 'function') link.graceTimer.clear();
@@ -1239,7 +1298,7 @@ class StreamManager {
   async _leaveVoiceLink(link) {
     if (!link) return;
     if (link.closing) return link.closing;
-    link.closing = (async () => {
+    const closing = (async () => {
       this._clearGraceTimer(link);
       const p = link.pipeline;
       if (p) {
@@ -1262,11 +1321,19 @@ class StreamManager {
       // stalled writer can take the full cleanup timeout (or block in native
       // code), while the user has already asked to leave the call.
       if (this.session?.voiceLink === link) this.session = null;
+      log('info', `voice: leave requested guild=${link.guildId} channel=${link.channelId}`);
       try { link.streamer.leaveVoice(); } catch (error) {
         log('error', `voice: leaveVoice failed: ${error.message}`);
       }
       this._sendGuildVoiceClear(link.streamer, link.guildId);
-      if (this.voiceLink === link) this.voiceLink = null;
+      const leaveConfirmation = this._confirmVoiceLeave(link).then(left => {
+        link.disconnectFailed = !left;
+        if (left) {
+          log('info', `voice: leave confirmed guild=${link.guildId}`);
+          if (this.voiceLink === link) this.voiceLink = null;
+        }
+        return left;
+      });
       if (p) {
         // Start native demux cleanup BEFORE waiting for writerTask. The writer
         // can itself be blocked in demux(), so the old ordering deadlocked:
@@ -1285,13 +1352,16 @@ class StreamManager {
           log('error', `voice: ${error.message}; continuing forced teardown`);
         }
       }
+      return leaveConfirmation;
     })();
-    return link.closing;
+    link.closing = closing;
+    try { return await closing; }
+    finally { if (link.closing === closing) link.closing = null; }
   }
 
   async stop() {
     return this._serialize(async () => {
-      if (this.voiceLink) await this._leaveVoiceLink(this.voiceLink);
+      if (this.voiceLink) return this._leaveVoiceLink(this.voiceLink);
       else if (this.session) await this.teardown(this.session);
       return true;
     });
@@ -1415,7 +1485,7 @@ class StreamManager {
       streamUrl: piece?.videoUrl || piece?.streamUrl || null, title: piece?.title || null,
       startedAt: piece?.startedAt || link.joinedAt,
       elapsedMs: Date.now() - (piece?.startedAt || link.joinedAt),
-      alive: !link.closing, inChannel: true, isFiller: !!piece?.isFiller,
+      alive: !link.closing && !link.disconnectFailed, inChannel: true, isFiller: !!piece?.isFiller,
       queued: link.pipeline?.enqueue.length || 0,
       paused: !!link.paused, isLive: !!piece?.isLive,
       progressOverlay: this.progressOverlay,

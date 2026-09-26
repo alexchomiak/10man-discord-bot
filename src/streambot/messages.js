@@ -21,6 +21,7 @@ const M = Object.freeze({
   STREAM_VOD_ENDED: (title) => (title ? `Video finished: ${title}` : 'Video finished (VOD ended).'),
   STREAM_VOD_STOPPED: 'Stream stopped.',
   STREAM_STOPPED: 'Stopped.',
+  STREAM_LEAVE_FAILED: 'Stream stopped, but Discord still shows this account in voice. Try Stop again or disconnect it manually; check the worker logs.',
   STREAM_NOTHING: 'Nothing is currently streaming.',
   SKIP_NEXT: (label) => `Skipping → ${label}`,
   SKIP_NONE: 'Nothing to skip — no content playing or queued.',
