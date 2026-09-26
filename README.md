@@ -287,7 +287,7 @@ The primary worker keeps these legacy cross-server commands enabled by default. 
 
 ### Age-restricted YouTube videos
 
-yt-dlp needs an authenticated YouTube cookie file to resolve videos that require sign-in. Export **YouTube-only cookies** in Netscape format from an age-verified account. Follow [yt-dlp's YouTube cookie instructions](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies): sign in using a fresh private browser window, visit `https://www.youtube.com/robots.txt` in that same tab, export the `youtube.com` cookies, and close the private window. The file's first line should be `# Netscape HTTP Cookie File` or `# HTTP Cookie File`. Treat it like a password.
+yt-dlp needs an authenticated YouTube cookie file to resolve videos that require sign-in. The bot first tries URLs without cookies and retries with this file only if that lookup fails, so public videos keep their public format selection. Export **YouTube-only cookies** in Netscape format from an age-verified account. Follow [yt-dlp's YouTube cookie instructions](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies): sign in using a fresh private browser window, visit `https://www.youtube.com/robots.txt` in that same tab, export the `youtube.com` cookies, and close the private window. The file's first line should be `# Netscape HTTP Cookie File` or `# HTTP Cookie File`. Treat it like a password.
 
 Place the file in the existing persistent data directory on the Docker host, for example `/path/on/host/10man-bot-data/youtube-cookies.txt`, and restrict it with `chmod 600`. Add this to the container's env file, then restart the container:
 

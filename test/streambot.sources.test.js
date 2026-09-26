@@ -134,6 +134,13 @@ const SCENARIOS = {
       { format_id: '140', vcodec: 'none', acodec: 'mp4a.40.2', tbr: 129, url: 'https://cdn.example/fake/audio.m4a' }
     ]
   },
+  dashMixedCodecs: {
+    formats: [
+      { protocol: 'https', vcodec: 'avc1.4d401e', acodec: 'none', height: 360, url: 'https://cdn.example/video-360-h264.mp4' },
+      { protocol: 'https', vcodec: 'vp9', acodec: 'none', height: 1080, url: 'https://cdn.example/video-1080-vp9.webm' },
+      { protocol: 'https', vcodec: 'none', acodec: 'mp4a.40.2', url: 'https://cdn.example/audio.m4a' }
+    ]
+  },
   liveDash4k: {
     is_live: true,
     live_status: 'is_live',
@@ -202,6 +209,10 @@ const SCENARIOS = {
   }
 };
 if (argv.includes('--dump-json')) {
+  if (scenario === 'authRequired' && !argv.includes('--cookies')) {
+    process.stderr.write('ERROR: Sign in to confirm your age\\n');
+    process.exit(1);
+  }
   const obj = scenario.startsWith('youtubeHls') ? SCENARIOS.youtubeHls : (SCENARIOS[scenario] || SCENARIOS.hls);
   if (scenario === 'youtubeHlsLive') obj.is_live = true;
   if (scenario === 'youtubeHlsLow') obj.formats[2].height = 720;
@@ -544,14 +555,26 @@ test('yt-dlp failure (ENOENT) -> clean reject note', async () => {
   assert.match(ytdlp.note, /yt-dlp/i);
 });
 
-test('yt-dlp passes an optional cookies file as one argument', async () => {
+test('yt-dlp leaves cookies out of successful public lookups', async () => {
   setScenario('hls');
   const before = readFakeLog().length;
-  const url = 'https://www.youtube.com/watch?v=AGEGATE';
+  const url = 'https://www.youtube.com/watch?v=PUBLIC';
   await resolveYtdlp(url, { ...CfgPlain, ytdlpCookiesFile: '/app/data/youtube cookies.txt' });
   const calls = readFakeLog().slice(before);
   assert.strictEqual(calls.length, 1);
-  assert.deepStrictEqual(calls[0].argv.slice(-3), ['--cookies', '/app/data/youtube cookies.txt', url]);
+  assert.ok(!calls[0].argv.includes('--cookies'));
+});
+
+test('yt-dlp retries with cookies when public lookup requires sign-in', async () => {
+  setScenario('authRequired');
+  const before = readFakeLog().length;
+  const url = 'https://www.youtube.com/watch?v=AGEGATE';
+  const res = await resolveYtdlp(url, { ...CfgPlain, ytdlpCookiesFile: '/app/data/youtube cookies.txt' });
+  const calls = readFakeLog().slice(before);
+  assert.strictEqual(res.available, true);
+  assert.strictEqual(calls.length, 2);
+  assert.ok(!calls[0].argv.includes('--cookies'));
+  assert.deepStrictEqual(calls[1].argv.slice(-3), ['--cookies', '/app/data/youtube cookies.txt', url]);
 });
 
 // ============================================================================
@@ -706,6 +729,12 @@ test('dash: separate V+A -> streamType dash with progressive videoUrl+audioUrl, 
   assert.strictEqual(calls.length, 1, 'DASH: exactly ONE yt-dlp call (--dump-json)');
   assert.strictEqual(calls[0].mode, 'dump');
   assert.ok(!calls.some((c) => c.argv.includes('-o')), 'DASH: NO download (-o) must happen — core regression');
+});
+
+test('dash: higher resolution wins even when the lower track is H.264', async () => {
+  setScenario('dashMixedCodecs');
+  const res = await resolveYtdlp('https://www.youtube.com/watch?v=MIXED', CfgPlain);
+  assert.strictEqual(res.videoUrl, 'https://cdn.example/video-1080-vp9.webm');
 });
 
 test('YouTube VOD uses capped segmented tracks with preferred audio and preserves seeking', async () => {
@@ -872,15 +901,14 @@ test('langRank: preferred < unknown/original < non-preferred (by list position)'
   assert.strictEqual(langRank({}, ['en']), 1000, 'absent language = unknown rank');
 });
 
-test('compareAVFormats: preferred language beats height, but within a language vcodec/height still order (video regression guard)', () => {
+test('compareAVFormats: preferred language beats height, but within a language height wins before codec', () => {
   const { compareAVFormats } = require('../src/streambot/sources');
-  // Same language: the vcodec rank must dominate (h264 beats h265) even if the
-  // h265 is much larger.
+  // Same language: a sharper source wins even if it uses a less preferred codec.
   const sameLangA = { alang: 'en', vcodec: 'h265', height: 2160, tbr: 5000 };
   const sameLangB = { alang: 'en', vcodec: 'h264', height: 1080, tbr: 4000 };
   assert.ok(
-    compareAVFormats(sameLangB, sameLangA, ['en']) < 0,
-    'within a language, the better vcodec (h264) must win over weaker (h265)'
+    compareAVFormats(sameLangA, sameLangB, ['en']) < 0,
+    'within a language, higher resolution must win before codec preference'
   );
   // Same language + same codec: higher height wins.
   const hiHeight = { alang: 'en', vcodec: 'h264', height: 1080 };

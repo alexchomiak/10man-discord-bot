@@ -431,13 +431,13 @@ function parseSignedDuration(raw) {
 
 // --dump-json probe: returns the raw spawn result; parsing happens in
 // resolveYtdlp so tests can stub stdout.
-function ytdlpDumpJson(cfg, url) {
+function ytdlpDumpJson(cfg, url, useCookies = false) {
   const timeoutMs = Number.isFinite(cfg.ytdlpTimeoutMs) && cfg.ytdlpTimeoutMs > 0 ? cfg.ytdlpTimeoutMs : 20000;
   // The image already includes Node. Let current yt-dlp use it for YouTube's
   // player challenges so format discovery does not silently return a reduced
   // set with the "no supported JavaScript runtime" warning.
   const args = ['--js-runtimes', 'node', '--dump-json', '--no-playlist'];
-  if (cfg.ytdlpCookiesFile) args.push('--cookies', cfg.ytdlpCookiesFile);
+  if (useCookies && cfg.ytdlpCookiesFile) args.push('--cookies', cfg.ytdlpCookiesFile);
   args.push(url);
   return spawnYtdlp(cfg, args, timeoutMs);
 }
@@ -466,14 +466,15 @@ function vcodecRank(format) {
 }
 
 // Comparator: better candidate first (returns negative when a wins).
-// vcodec priority, then higher height (null=0), then higher tbr.
+// Resolution matters more than codec preference because every source is
+// re-encoded for Discord. Prefer the codec only at the same resolution.
 function compareFormats(a, b) {
-  const va = vcodecRank(a);
-  const vb = vcodecRank(b);
-  if (va !== vb) return va - vb;
   const ha = Number.isFinite(a.height) ? a.height : 0;
   const hb = Number.isFinite(b.height) ? b.height : 0;
   if (ha !== hb) return hb - ha;
+  const va = vcodecRank(a);
+  const vb = vcodecRank(b);
+  if (va !== vb) return va - vb;
   const ta = Number.isFinite(a.tbr) ? a.tbr : 0;
   const tb = Number.isFinite(b.tbr) ? b.tbr : 0;
   return tb - ta;
@@ -601,7 +602,13 @@ async function resolveYtdlp(raw, cfg) {
   let preferredLangs = config.audioLang;
   if (typeof preferredLangs === 'string') preferredLangs = [preferredLangs];
   if (!Array.isArray(preferredLangs)) preferredLangs = ['en'];
-  const res = await ytdlpDumpJson(cfg, raw);
+  // Public YouTube formats can differ from logged-in formats. Use the public
+  // set when available, and authenticate only for videos that require it.
+  let res = await ytdlpDumpJson(config, raw);
+  if (!res.ok && !res.spawnErr && !res.timedOut && config.ytdlpCookiesFile) {
+    verboseLog(config, 'public yt-dlp lookup failed; retrying with cookies');
+    res = await ytdlpDumpJson(config, raw, true);
+  }
 
   if (res.spawnErr) {
     if (res.spawnErr.code === 'ENOENT') return { kind: 'ytdlp', available: false, note: M.YTDLP_BINARY_MISSING };
