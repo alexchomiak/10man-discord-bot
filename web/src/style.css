@@ -79,3 +79,33 @@
   .worker-card.expanded>.add-form{padding:15px 16px 0}
   .worker-card.expanded>.channel-controls{padding:15px 16px 0}
 }
+
+/* The dedicated player reads top-to-bottom: playback first, queue below it. */
+.detail-intro{align-items:center;padding:20px 0}
+.back-link{margin-bottom:10px}
+.worker-card.expanded{display:flex;flex-direction:column;gap:0;padding-bottom:24px}
+.worker-card.expanded>.worker-header{padding:18px 28px}
+.worker-card.expanded>.now-playing{order:1;margin:24px 28px 0;padding:22px 24px}
+.worker-card.expanded .playing-thumb{width:100%;aspect-ratio:21/9;max-height:420px;object-fit:cover;margin-top:18px}
+.worker-card.expanded .playing-title{font-size:clamp(24px,2.2vw,34px);margin-top:16px}
+.worker-card.expanded .progress-row{margin-top:20px}
+.worker-card.expanded>.transport{order:2;padding:18px 28px 0}
+.worker-card.expanded>.channel-controls{order:3;padding:14px 28px 22px}
+.worker-card.expanded>.card-divider{display:block;order:4;margin:0 28px}
+.worker-card.expanded>.queue-title{order:5;padding:24px 28px 13px}
+.worker-card.expanded>.queue-list{order:6;min-height:0;max-height:410px;padding:0 28px}
+.worker-card.expanded .queue-item{margin-bottom:8px}
+.worker-card.expanded>.add-form{order:7;padding:16px 28px 0}
+@media(max-width:740px){
+  .detail-intro{padding:16px 0}
+  .detail-intro .guild-picker{margin-top:16px}
+  .worker-card.expanded>.worker-header{padding:18px}
+  .worker-card.expanded>.now-playing{margin:16px 16px 0;padding:17px}
+  .worker-card.expanded .playing-thumb{aspect-ratio:16/9;max-height:300px}
+  .worker-card.expanded>.transport{padding:16px 16px 0}
+  .worker-card.expanded>.channel-controls{padding:14px 16px 18px}
+  .worker-card.expanded>.card-divider{margin:0 16px}
+  .worker-card.expanded>.queue-title{padding:20px 16px 12px}
+  .worker-card.expanded>.queue-list{padding:0 16px}
+  .worker-card.expanded>.add-form{padding:14px 16px 0}
+}

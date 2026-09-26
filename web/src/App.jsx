@@ -306,9 +306,7 @@ export default function App() {
     <main className={`main-content ${selectedWorkerId ? 'detail-mode' : ''}`}><div className="topbar"><div className="eyebrow">DASHBOARD / {selectedWorkerId ? `WORKER / ${selectedWorkerId.toUpperCase()}` : 'CONTROL ROOM'}</div><button className="icon-button" title="Refresh" onClick={() => void refresh()}><Icon name="refresh" /></button></div>
       <nav className="mobile-nav" aria-label="Stream workers"><a href="#/" className={!selectedWorkerId ? 'active' : ''}>All workers</a>{workers.map(worker => <a key={worker.id} href={`#/worker/${worker.id}`} className={selectedWorkerId === worker.id ? 'active' : ''}>{worker.profile?.displayName || worker.id}</a>)}</nav>
       {selectedWorkerId ? <div className="detail-view">
-        <section className="detail-intro"><div><a href="#/" className="back-link">← All workers</a><div className="eyebrow highlight">DEDICATED PLAYER · {selectedWorkerId.toUpperCase()}</div>
-          <h1>{selectedWorker?.profile?.displayName || selectedWorkerId}<span className="heading-period">.</span></h1>
-          <p>Playback, queue, and voice controls for this stream worker.</p></div>
+        <section className="detail-intro"><div><a href="#/" className="back-link">← All workers</a><div className="eyebrow highlight">PLAYER · {selectedWorkerId.toUpperCase()}</div></div>
           <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
         </section>
         {!state ? <div className="empty-fleet">Connecting to stream workers…</div>
