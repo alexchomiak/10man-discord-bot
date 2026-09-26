@@ -1,4 +1,5 @@
 node_modules/
+web/dist/
 .env
 tools/streambot-memory-sandbox/out/
 tools/sbx/out/

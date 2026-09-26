@@ -68,9 +68,10 @@ function makeStreamerInstance() {
 }
 
 function makeStreamerBase() {
-  const calls = { joinVoice: 0, leaveVoice: 0, stopStream: 0, signalVideo: [] };
+  const calls = { joinVoice: 0, leaveVoice: 0, stopStream: 0, signalVideo: [], opcodes: [] };
   const s = {
     calls,
+    sendOpcode: (op, data) => calls.opcodes.push({ op, data }),
     createStreamCalls: 0,
     voiceConnection: null,
     joinVoice: async (g, c) => {
@@ -393,9 +394,48 @@ test('external Discord voice move reopens Go Live and preserves active content p
   assert.equal(fv.streamer.createStreamCalls,2,'Go Live must reopen in the destination call');
   assert.equal(fv.calls.leaveVoice,1);
   assert.equal(fv.calls.stopStream,1);
+  assert(fv.calls.opcodes.some(call => call.op === 4 && call.data.guild_id === 'g1' && call.data.channel_id === null),
+    'a guild-scoped voice leave must precede joining the destination');
   assert.equal(mgr.session.title,'a');
   assert(mgr.session.startOffsetSec>=11,'seekable content resumes near its previous position');
   assert.deepEqual(mgr.voiceLink.pipeline.enqueue.map(piece=>piece.title),['b']);
+});
+
+test('paused media and its held position remain visible in status', async t => {
+  const {mgr,start}=fixture(t,{streamBufferSec:0});
+  await start('a');
+  await mgr.pause();
+  const status = mgr.status();
+  assert.equal(status.paused,true);
+  assert.equal(status.current.title,'a');
+  assert(Number.isFinite(status.positionSec));
+});
+
+test('dashboard channel move restarts Go Live at the current position and keeps queued videos', async t => {
+  const {mgr,fv,start}=fixture(t,{streamBufferSec:0});
+  await start('a'); await start('b');
+  const old = mgr.voiceLink.pipeline;
+  mgr.session.startedAt = Date.now() - 8000;
+  const moved = await mgr.moveChannel('g1','c2');
+  assert(moved.ok && moved.moved);
+  assert(old.closed);
+  assert.equal(mgr.voiceLink.channelId,'c2');
+  assert.equal(fv.streamer.createStreamCalls,2);
+  assert.equal(mgr.session.title,'a');
+  assert(mgr.session.startOffsetSec >= 7);
+  assert.deepEqual(mgr.status().queue.filter(item=>!item.isFiller).map(item=>item.title),['b']);
+});
+
+test('queue reorder keeps each transition filler attached and rejects stale order', async t => {
+  const {mgr,start}=fixture(t);
+  await start('a'); await start('b'); await start('c');
+  const before = mgr.status().queue.filter(item=>!item.isFiller);
+  assert.deepEqual(before.map(item=>item.title), ['b','c']);
+  const changed = await mgr.reorderQueue([before[1].id, before[0].id]);
+  assert.equal(changed.ok,true);
+  assert.deepEqual(mgr.voiceLink.pipeline.enqueue.map(item=>item.title), ['buffer','c','buffer','b']);
+  assert.deepEqual(mgr.status().queue.filter(item=>!item.isFiller).map(item=>item.id),[before[1].id,before[0].id]);
+  assert.equal((await mgr.reorderQueue([before[0].id])).ok,false);
 });
 
 test('external move cannot wedge stop/play commands when the old media writer never exits', async t => {

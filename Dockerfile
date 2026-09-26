@@ -12,6 +12,13 @@ COPY scripts ./scripts
 RUN npm ci --omit=dev \
   && npm cache clean --force
 
+FROM node:22-trixie-slim AS dashboard-build
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web ./
+RUN npm run build
+
 FROM node:22-trixie-slim
 
 WORKDIR /app
@@ -67,6 +74,7 @@ COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json ./
 COPY --chown=node:node scripts ./scripts
 COPY --chown=node:node src ./src
+COPY --from=dashboard-build --chown=node:node /web/dist ./web/dist
 COPY pia-ca.rsa.4096.crt /usr/local/share/pia/ca.rsa.4096.crt
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY docker-entrypoint-vpn.sh /usr/local/bin/docker-entrypoint-vpn.sh

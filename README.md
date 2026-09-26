@@ -244,6 +244,10 @@ This image ships the CS2 app bot (`src/index.js`) and one or more TV streaming w
 
 The app bot accepts `/stream` and `/player`, then sends authenticated WebSocket commands to the selected worker. Workers initiate the connection, so workers in the same container need no extra published port. Set one shared `STREAM_BROKER_SECRET`; the local broker URL defaults to `ws://127.0.0.1:8090`.
 
+The optional React control room runs in the CS app bot process when `STREAM_BROKER_SECRET` and `SECRET_ANSWER` are set. Set `SECRET_QUESTION` to the prompt shown at login (for example, `What is Alex's nickname?`), and `SECRET_ANSWER` to the answer. Answers are case-insensitive. `STREAM_DASHBOARD_TOKEN` remains supported as a legacy password when `SECRET_ANSWER` is unset. Publish `-p 8082:8082` (or your chosen `STREAM_DASHBOARD_PORT`) and open `http://<server>:8082`. After answering, you can see all configured workers, current media, queue, voice channels, and playback stats. You can play, pause, seek, stop, drag queued videos to reorder, join or switch voice channels, and change a worker's name. Name changes try the account's global display name, then fall back to a server nickname through the CS bot. Use HTTPS when accessing it outside a trusted LAN. The dashboard is disabled when neither answer nor legacy password is set.
+
+The Docker build bundles the React app automatically. For a local non-Docker run, build it once with `npm ci --prefix web && npm run build --prefix web` before starting the CS bot.
+
 For multiple workers in one container, set:
 
 ```dotenv

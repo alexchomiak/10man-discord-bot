@@ -7,6 +7,7 @@ class StreamControl {
   constructor({ streamManager, config, client }) {
     this.streamManager = streamManager;
     this.config = config || {};
+    this.client = client;
   }
 
   _result(ok, message, extra = {}) {
@@ -44,6 +45,28 @@ class StreamControl {
         const status = this.streamManager.status();
         return { ok: true, message: status ? M.STREAM_STATUS(status) : M.STREAM_NOTHING, status,
           progressOverlay: this.streamManager.progressOverlay === true };
+      }
+      case 'reorder': {
+        const r = await this.streamManager.reorderQueue(payload.ids);
+        return this._result(r.ok === true, r.message || 'Queue reordered.');
+      }
+      case 'move': {
+        if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);
+        const r = await this.streamManager.moveChannel(guildId, channelId);
+        return this._result(r.ok === true, r.ok ? `Moved to voice channel ${channelId}.` : (r.message || M.STREAM_JOIN_FAILED));
+      }
+      case 'set-global-name': {
+        const name = String(payload.name || '').trim();
+        if (name.length < 1 || name.length > 32) return this._result(false, 'Display name must be 1–32 characters.');
+        if (typeof this.client?.user?.setGlobalName !== 'function') {
+          return this._result(false, 'This account cannot change its global display name.');
+        }
+        try {
+          await this.client.user.setGlobalName(name);
+          return this._result(true, `Global display name changed to ${name}.`);
+        } catch (error) {
+          return this._result(false, `Global display name change failed: ${error?.message || 'Discord rejected it.'}`);
+        }
       }
       case 'join': {
         if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);

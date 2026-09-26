@@ -3,6 +3,7 @@
 const { M } = require('./messages');
 const { TAG, redactToken } = require('./config');
 const fs = require('fs');
+const crypto = require('node:crypto');
 const { spawn } = require('child_process');
 const { PassThrough } = require('stream');
 const { setTimeout: sleep } = require('node:timers/promises');
@@ -109,6 +110,9 @@ class StreamManager {
     // Test seam for the grace window (node:test has no fake timers).
     this._timerFactory = null;
     this._operations = Promise.resolve();
+    this._requestedMove = null;
+    this._statusRateSample = null;
+    this._statusRtcKbps = null;
     this._feederFactory = (streamer, videoModule) => new PersistentTrackFeeder({
       streamer, videoModule, width: this.config.streamWidth || 1920,
       height: this.config.streamHeight || 1080, frameRate: this.config.streamFrameRate || 30,
@@ -753,6 +757,16 @@ class StreamManager {
     return link?.guildId === guildId && link.channelId === channelId ? link : null;
   }
 
+  _sendGuildVoiceClear(streamer, guildId) {
+    if (!guildId || typeof streamer?.sendOpcode !== 'function') return;
+    try {
+      streamer.sendOpcode(4, { guild_id: guildId, channel_id: null,
+        self_mute: false, self_deaf: true, self_video: false });
+    } catch (error) {
+      log('warn', `voice: guild-scoped clear failed: ${error?.message || error}`);
+    }
+  }
+
   _clearGraceTimer(link) {
     if (!link?.graceTimer) return;
     if (typeof link.graceTimer.clear === 'function') link.graceTimer.clear();
@@ -821,18 +835,21 @@ class StreamManager {
     // A prior container instance that died mid-voice leaves Discord believing
     // this selfbot user is still in a voice channel; in that state the
     // re-sent JOIN voice-state is a server no-op, so VOICE_STATE_UPDATE /
-    // VOICE_SERVER_UPDATE never arrive and joinVoice hangs. Streamer.leaveVoice()
-    // (Streamer.js:134-140 -> signalLeaveVoice:178-186, no truthiness guard)
-    // broadcasts a null-channel VOICE_STATE_UPDATE (gateway op 4) UNCONDITIONALLY
-    // — even when this process has no voiceConnection — so it clears the stale
-    // server state. It is a gateway opcode via client.ws.broadcast, not a chat
-    // REST call, so it is permitted for this restricted selfbot. Idempotent.
+    // VOICE_SERVER_UPDATE never arrive and joinVoice hangs. Clear the old
+    // library connection and send a guild-scoped null-channel gateway state
+    // before joining. These gateway operations are ordered on one WebSocket.
     try {
       streamer.leaveVoice();
       this._verbose(`voice: sent null-channel voice-state clear before fresh join guild=${guildId} channel=${channelId}`);
     } catch (clearError) {
       log('warn', `voice: pre-join clear send failed (continuing): ${clearError && clearError.message}`);
     }
+    // discord-video-stream sends guild_id:null when leaving voice. Discord's
+    // guild voice-state opcode needs the actual guild id; otherwise a drag to
+    // another channel can leave the account there and make the subsequent
+    // joinVoice(newChannel) a no-op with no VOICE_SERVER_UPDATE. Send the
+    // guild-scoped leave on the same ordered gateway before joining.
+    this._sendGuildVoiceClear(streamer, guildId);
     // NOTE: no sleep between the clear and joinVoice — both voice-state ops
     // travel the SAME ordered gateway WebSocket (client.ws.broadcast), so the
     // null-channel clear is always processed by Discord before the join's
@@ -1215,6 +1232,7 @@ class StreamManager {
       try { link.streamer.leaveVoice(); } catch (error) {
         log('error', `voice: leaveVoice failed: ${error.message}`);
       }
+      this._sendGuildVoiceClear(link.streamer, link.guildId);
       if (this.voiceLink === link) this.voiceLink = null;
       if (p) {
         // Start native demux cleanup BEFORE waiting for writerTask. The writer
@@ -1309,7 +1327,8 @@ class StreamManager {
     const sourceUrl = isFiller
       ? (args.streamUrl || null)
       : (args.videoUrl || args.audioUrl || args.streamUrl || null);
-    return { ...args, guildId: link.guildId, channelId: link.channelId,
+    return { ...args, queueId: args.queueId || crypto.randomUUID(),
+      guildId: link.guildId, channelId: link.channelId,
       streamer: link.streamer, voiceLink: link, control: new AbortController(),
       startedAt: Date.now(), isFiller, isDash: !!(args.videoUrl && args.audioUrl),
       playType: 'go-live', isLive, totalDurationSec, sourceUrl };
@@ -1346,7 +1365,18 @@ class StreamManager {
   status() {
     const link = this.voiceLink;
     if (!link) return null;
-    const piece = this.session;
+    const piece = link.paused ? link.pausedSession || this.session : this.session;
+    const rtcBytesSent = link.pipeline?.feeder?.rtcBytesSent || 0;
+    const now = Date.now();
+    const previous = this._statusRateSample;
+    if (!previous || previous.link !== link) this._statusRtcKbps = null;
+    if (previous && previous.link === link && now - previous.at >= 1000) {
+      this._statusRtcKbps = rtcBytesSent >= previous.bytes
+        ? Math.round((rtcBytesSent - previous.bytes) * 8 / (now - previous.at)) : null;
+    }
+    if (!previous || previous.link !== link || now - previous.at >= 1000) {
+      this._statusRateSample = { link, at: now, bytes: rtcBytesSent };
+    }
     return { guildId: link.guildId, channelId: link.channelId,
       streamUrl: piece?.videoUrl || piece?.streamUrl || null, title: piece?.title || null,
       startedAt: piece?.startedAt || link.joinedAt,
@@ -1355,7 +1385,46 @@ class StreamManager {
       queued: link.pipeline?.enqueue.length || 0,
       paused: !!link.paused, isLive: !!piece?.isLive,
       progressOverlay: this.progressOverlay,
-      positionSec: piece ? Math.round(this.positionOf(piece)) : null };
+      positionSec: piece ? Math.round(link.paused && Number.isFinite(link.pausedPositionSec)
+        ? link.pausedPositionSec : this.positionOf(piece)) : null,
+      current: piece ? this._queueItem(piece) : null,
+      queue: (link.pipeline?.enqueue || []).map(item => this._queueItem(item)),
+      stats: {
+        videoCodec: this._outputCodec(), videoEncoder: this.config.videoEncoder || 'software',
+        targetBitrateKbps: this.config.streamBitrate || 5000,
+        width: this.config.streamWidth || 1920, height: this.config.streamHeight || 1080,
+        fps: this.config.streamFrameRate || 30,
+        rtcBytesSent, rtcBitrateKbps: this._statusRtcKbps
+      } };
+  }
+
+  _queueItem(piece) {
+    return { id: piece.queueId, title: piece.title || (piece.isFiller ? 'Filler' : 'Untitled video'),
+      isFiller: !!piece.isFiller, isLive: !!piece.isLive,
+      durationSec: Number.isFinite(piece.totalDurationSec) ? piece.totalDurationSec : null };
+  }
+
+  async reorderQueue(ids) {
+    return this._serialize(async () => {
+      const queue = this.voiceLink?.pipeline?.enqueue;
+      if (!queue || !Array.isArray(ids)) return { ok: false, message: 'No queue to reorder.' };
+      const groups = [];
+      let before = [];
+      for (const piece of queue) {
+        if (piece.isFiller) before.push(piece);
+        else { groups.push({ piece, before }); before = []; }
+      }
+      const byId = new Map(groups.map(group => [group.piece.queueId, group]));
+      if (ids.length !== groups.length || new Set(ids).size !== groups.length ||
+          ids.some(id => !byId.has(id))) {
+        return { ok: false, message: 'Queue changed; refresh and try again.' };
+      }
+      queue.splice(0, queue.length, ...ids.flatMap(id => {
+        const group = byId.get(id);
+        return [...group.before, group.piece];
+      }), ...before);
+      return { ok: true, queued: groups.length };
+    });
   }
 
   async toggleProgressOverlay() {
@@ -1487,6 +1556,7 @@ class StreamManager {
       inputFormat: piece.inputFormat,
       durationSec: piece.durationSec,
       title: piece.title,
+      queueId: piece.queueId,
       startOffsetSec: off,
       isLive: isLive !== undefined ? isLive : piece.isLive,
       totalDurationSec: totalDurationSec !== undefined ? totalDurationSec : piece.totalDurationSec
@@ -1500,7 +1570,8 @@ class StreamManager {
         inputFormat: piece.inputFormat,
         durationSec: piece.durationSec,
         isFiller: true,
-        title: piece.title
+        title: piece.title,
+        queueId: piece.queueId
       });
     }
     return this._reopenSession(link, piece, {
@@ -1519,11 +1590,30 @@ class StreamManager {
       return { ok: true, ignored: true };
     }
 
-    return this._serialize(async () => {
+    const requested = this._requestedMove;
+    if (requested && Date.now() < requested.until && state.channel_id !== requested.channelId) {
+      return { ok: true, ignored: true };
+    }
+    return this._serialize(() => this._moveVoiceLinkLocked(state.guild_id || this.voiceLink?.guildId, state.channel_id, 'external'));
+  }
+
+  async moveChannel(guildId, channelId) {
+    if (!guildId || !channelId) return { ok: false, message: M.STREAM_NEED_CHANNEL };
+    const channel = this.client.channels.cache.get(channelId) || await this.client.channels.fetch(channelId).catch(() => null);
+    if (!channel || channel.guildId && channel.guildId !== guildId ||
+        channel.type != null && channel.type !== 2 && channel.type !== 13) {
+      return { ok: false, message: M.STREAM_NO_CHANNEL };
+    }
+    if (!this.voiceLink) return this.ensureChannel(guildId, channelId);
+    const requested = { channelId, until: Date.now() + 30000 };
+    this._requestedMove = requested;
+    try { return await this._serialize(() => this._moveVoiceLinkLocked(guildId, channelId, 'dashboard')); }
+    finally { if (this._requestedMove === requested) this._requestedMove = null; }
+  }
+
+  async _moveVoiceLinkLocked(guildId, channelId, reason) {
       const oldLink = this.voiceLink;
-      const guildId = state.guild_id || oldLink?.guildId;
-      const channelId = state.channel_id;
-      if (!oldLink || oldLink.closing || oldLink.guildId !== guildId || oldLink.channelId === channelId) {
+      if (!oldLink || oldLink.closing || oldLink.channelId === channelId && oldLink.guildId === guildId) {
         return { ok: true, ignored: true };
       }
 
@@ -1537,7 +1627,7 @@ class StreamManager {
         ? oldLink.pausedPositionSec
         : (pausedSession && !pausedSession.isLive ? this.positionOf(pausedSession) : 0);
 
-      log('info', `voice: moved externally ${oldLink.channelId} -> ${channelId}; reopening Go Live session`);
+      log('info', `voice: ${reason} move ${oldLink.channelId} -> ${channelId}; reopening Go Live session`);
       const videoModule = await this.preparePlayback(await this._video());
       const joined = await this._ensureVoiceLink(guildId, channelId, videoModule);
       if (!joined.ok) return joined;
@@ -1561,9 +1651,9 @@ class StreamManager {
       }
       for (const piece of queued) pipeline.enqueue.push(this._copyQueuedPiece(newLink, piece));
       if (!wasPaused) this._pump(newLink, videoModule);
-      log('info', `voice: move recovery reopened Go Live in ${channelId}; restored=${active?.title || (wasPaused ? pausedSession?.title : 'filler') || 'filler'} queued=${queued.length}`);
+      if (!await pipeline.ready) return { ok: false, message: M.STREAM_PLAY_STREAM_HANG };
+      log('info', `voice: move recovery ready in ${channelId}; restored=${active?.title || (wasPaused ? pausedSession?.title : 'filler') || 'filler'} queued=${queued.length}`);
       return { ok: true, moved: true, voiceLink: newLink, pipeline };
-    });
   }
 
   // Resolve the active real (non-filler) writer for the current voice link,

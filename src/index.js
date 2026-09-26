@@ -17,6 +17,7 @@ const { PlayerManager, summarizeError: summarizePlayerError } = require('./playe
 const { COMMANDS, DRAFT_TYPE_CHOICES } = require('./commands.ts');
 const { DISCORD_MESSAGES } = require('./messages.ts');
 const { StreamBroker } = require('./streamBroker');
+const { createStreamDashboard } = require('./streamDashboard');
 const {
   streamCommand,
   playerCommand,
@@ -76,6 +77,11 @@ const config = {
   streamBrokerPort: Number.parseInt(process.env.STREAM_BROKER_PORT || '8090', 10),
   streamBrokerSecret: process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET || '',
   defaultStreambotId: process.env.STREAMBOT_DEFAULT_ID || 'primary',
+  streamDashboardToken: process.env.STREAM_DASHBOARD_TOKEN || '',
+  streamDashboardQuestion: process.env.SECRET_QUESTION || '',
+  streamDashboardAnswer: process.env.SECRET_ANSWER || '',
+  streamDashboardHost: process.env.STREAM_DASHBOARD_HOST || '0.0.0.0',
+  streamDashboardPort: Number.parseInt(process.env.STREAM_DASHBOARD_PORT || '8082', 10),
   streamAllowedUserIds: parseDiscordIdList(
     process.env.STREAM_ALLOWED_USER_IDS,
     'STREAM_ALLOWED_USER_IDS'
@@ -256,6 +262,13 @@ streamBroker.start();
 if (!streamBroker.enabled) {
   console.warn('[stream-broker] disabled: STREAM_BROKER_SECRET is not set');
 }
+const streamDashboard = streamBroker.enabled && (config.streamDashboardAnswer || config.streamDashboardToken)
+  ? createStreamDashboard({ broker: streamBroker, client, token: config.streamDashboardToken,
+    secretQuestion: config.streamDashboardQuestion, secretAnswer: config.streamDashboardAnswer,
+    configuredWorkerIds: (process.env.STREAMBOT_IDS || '').split(',').map(id => id.trim()).filter(Boolean),
+    host: config.streamDashboardHost, port: config.streamDashboardPort })
+  : null;
+streamDashboard?.listen();
 
 const teamDraftCommand = new SlashCommandBuilder()
   .setName(COMMANDS.TEAM_DRAFT.name)
@@ -843,6 +856,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 client.login(token);
 
 async function shutdown() {
+  await streamDashboard?.close().catch(() => {});
   await streamBroker.close().catch(() => {});
   client.destroy();
 }
