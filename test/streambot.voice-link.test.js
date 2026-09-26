@@ -474,6 +474,19 @@ test('unrelated and duplicate self voice-state updates do not reopen Go Live', a
   assert.equal(fv.streamer.createStreamCalls,1);
 });
 
+test('manual Discord disconnect tears down the stale session and leaves stop safe', async t => {
+  const { mgr, fv, start } = fixture(t, { streamBufferSec: 0 });
+  await start('a');
+  const result = await mgr.handleVoiceStateUpdate({
+    t: 'VOICE_STATE_UPDATE', d: { user_id: 'u1', guild_id: 'g1', channel_id: null }
+  });
+  assert.equal(result.disconnected, true);
+  assert.equal(mgr.voiceLink, null);
+  assert.equal(mgr.session, null);
+  await mgr.stop();
+  assert.equal(fv.calls.leaveVoice, 1);
+});
+
 test('$stop discards queued content, awaits writer cleanup and is idempotent', async t => {
   const {mgr,fv,start}=fixture(t);await start('a');await start('b');
   await Promise.all([mgr.stop(),mgr.leaveChannel()]);

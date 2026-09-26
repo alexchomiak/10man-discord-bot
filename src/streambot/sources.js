@@ -436,7 +436,10 @@ function ytdlpDumpJson(cfg, url) {
   // The image already includes Node. Let current yt-dlp use it for YouTube's
   // player challenges so format discovery does not silently return a reduced
   // set with the "no supported JavaScript runtime" warning.
-  return spawnYtdlp(cfg, ['--js-runtimes', 'node', '--dump-json', '--no-playlist', url], timeoutMs);
+  const args = ['--js-runtimes', 'node', '--dump-json', '--no-playlist'];
+  if (cfg.ytdlpCookiesFile) args.push('--cookies', cfg.ytdlpCookiesFile);
+  args.push(url);
+  return spawnYtdlp(cfg, args, timeoutMs);
 }
 
 // vcodec preference: lower index = better; unknown vcodec codes sort last.

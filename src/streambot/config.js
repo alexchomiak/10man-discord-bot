@@ -211,6 +211,7 @@ function loadConfig() {
     shareTvBase: normalizeBase(process.env.SHARETV_BASE),
     shareTvAllowHosts: parseHostList(process.env.SHARETV_ALLOW_HOSTS),
     ytdlpPath: (process.env.YTDLP_PATH || 'yt-dlp').trim() || 'yt-dlp',
+    ytdlpCookiesFile: (process.env.YTDLP_COOKIES_FILE || '').trim(),
     // Format selection hint for yt-dlp (--dump-json resolution). Kept for
     // backward-compat; resolution is progressive and never downloads.
     ytdlpFormat: (process.env.YTDLP_FORMAT || 'bv*+ba/b').trim() || 'bv*+ba/b',

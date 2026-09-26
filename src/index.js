@@ -1,3 +1,4 @@
+require('./processHeartbeat');
 require('dotenv').config();
 
 const {

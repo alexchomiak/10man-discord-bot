@@ -147,6 +147,8 @@ Build image:
 docker build -t cs2-team-draft-bot:latest .
 ```
 
+For a code-only change, build with `docker build --progress=plain -t cs2-team-draft-bot:latest .` to see that the dependency, dashboard, and OS package steps are cached. The build needs the same Docker builder and cache as the previous build; GitHub Actions shares its build cache between runs. Check the final local size with `docker image inspect cs2-team-draft-bot:latest --format '{{.Size}}'` (bytes).
+
 Run container:
 
 ```bash
@@ -242,6 +244,8 @@ This image ships the CS2 app bot (`src/index.js`) and one or more TV streaming w
 - `MODE=streambot` — run the streaming worker supervisor only. Requires one Discord **user** token per worker and a `libzmq`-capable `ffmpeg` on the container's `$PATH`.
 - `MODE=all` — run the app bot and streaming workers concurrently.
 
+The launcher supervises the CS app bot and each streaming worker independently. A crashed or unresponsive process restarts with bounded backoff without stopping its siblings; a deliberate container stop shuts them all down. Keep a Docker restart policy such as `--restart unless-stopped` for recovery if the launcher or container itself exits.
+
 The app bot accepts `/stream` and `/player`, then sends authenticated WebSocket commands to the selected worker. Workers initiate the connection, so workers in the same container need no extra published port. Set one shared `STREAM_BROKER_SECRET`; the local broker URL defaults to `ws://127.0.0.1:8090`.
 
 The optional React control room runs in the CS app bot process when `STREAM_BROKER_SECRET` and `SECRET_ANSWER` are set. Set `SECRET_QUESTION` to the prompt shown at login (for example, `What is Alex's nickname?`), and `SECRET_ANSWER` to the answer. Answers are case-insensitive. `STREAM_DASHBOARD_TOKEN` remains supported as a legacy password when `SECRET_ANSWER` is unset. Publish `-p 8082:8082` (or your chosen `STREAM_DASHBOARD_PORT`) and open `http://<server>:8082`. After answering, you can see all configured workers, current media, queue, voice channels, and playback stats. You can play, pause, seek, stop, drag queued videos to reorder, join or switch voice channels, and change a worker's name. Name changes try the account's global display name, then fall back to a server nickname through the CS bot. Use HTTPS when accessing it outside a trusted LAN. The dashboard is disabled when neither answer nor legacy password is set.
@@ -280,6 +284,26 @@ The primary worker keeps these legacy cross-server commands enabled by default. 
 - `$stream stop` / `$stop` — stop and leave voice.
 - `$stream status` / `$status` — current stream summary.
 - `$ping` — liveness echo.
+
+### Age-restricted YouTube videos
+
+yt-dlp needs an authenticated YouTube cookie file to resolve videos that require sign-in. Export **YouTube-only cookies** in Netscape format from an age-verified account. Follow [yt-dlp's YouTube cookie instructions](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies): sign in using a fresh private browser window, visit `https://www.youtube.com/robots.txt` in that same tab, export the `youtube.com` cookies, and close the private window. The file's first line should be `# Netscape HTTP Cookie File` or `# HTTP Cookie File`. Treat it like a password.
+
+Place the file in the existing persistent data directory on the Docker host, for example `/path/on/host/10man-bot-data/youtube-cookies.txt`, and restrict it with `chmod 600`. Add this to the container's env file, then restart the container:
+
+```dotenv
+YTDLP_COOKIES_FILE=/app/data/youtube-cookies.txt
+```
+
+The existing `/path/on/host/10man-bot-data:/app/data` mount makes the file available to the bot; no image rebuild is needed when you refresh the cookies. The entrypoint sets ownership of `/app/data` for the `node` user. Check that the mounted file works without downloading a video:
+
+```bash
+docker exec --user node cs2-team-draft-bot yt-dlp --js-runtimes node \
+  --cookies /app/data/youtube-cookies.txt --dump-json --no-playlist \
+  'https://www.youtube.com/watch?v=qOqYIVKfV-U' >/dev/null
+```
+
+If yt-dlp still asks you to sign in, re-export the cookies from an account that can play the video in a browser. YouTube may rotate active-session cookies, so close the private window after exporting. Keep the cookie file out of Git and out of the Docker build context.
 
 ### Inbound webhook (for IPTV-Share / ShareTV to POST a trigger)
 - `POST /webhook/stream` on `:8081` (per `STREAMBOT_WEBHOOK_PORT`), with body (structured or legacy Discord-webhook shape — both accepted) and HMAC header:

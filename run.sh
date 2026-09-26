@@ -1,83 +1,24 @@
 #!/bin/sh
 set -e
 
-# Single-launcher entrypoint. Boots both the CS2 real-bot ("bot") and the
-# TV streaming selfbot ("streambot") in the SAME container/entrypoint so the
-# repo stays one deployable unit.
-#
-# MODE (env): all (default) | bot | streambot
-#   - "bot"       → only the CS2 real-bot (existing behavior)
-#   - "streambot" → one or more TV streaming workers
-#   - "all"       → both when SELF_BOT_TOKEN or STREAMBOT_IDS is set
-#   - "help"      → print usage and exit
-
 MODE="${MODE:-all}"
-
-log() { printf '[launcher] %s\n' "$*"; }
-die() { printf '[launcher] ERROR: %s\n' "$1" >&2; exit 1; }
-
-usage() {
-  cat <<'EOF'
-Usage: MODE=all|bot|streambot run.sh
-
-MODE=all (default)     run the CS2 real-bot AND the TV streaming selfbot.
-MODE=bot               run only the CS2 real-bot (legacy behavior).
-MODE=streambot         run TV streaming worker(s); configure STREAMBOT_IDS for multiple.
-EOF
-}
-
 case "$MODE" in
   help|-h|--help)
-    usage
+    cat <<'USAGE'
+Usage: MODE=all|bot|streambot run.sh
+
+MODE=all (default)     run the CS2 real-bot AND configured TV streaming workers.
+MODE=bot               run only the CS2 real-bot.
+MODE=streambot         run TV streaming worker(s).
+USAGE
     exit 0
     ;;
-  bot)
-    log "MODE=bot → starting CS2 real-bot only"
-    exec node src/index.js
-    ;;
-  streambot)
-    log "MODE=streambot → starting TV streaming selfbot only"
-    exec node src/streambot/supervisor.js
-    ;;
-  all)
-    log "MODE=all → running CS2 real-bot + TV streaming selfbot concurrently"
-    log "  - bot:         node src/index.js"
-    if [ -n "${SELF_BOT_TOKEN:-}" ] || [ -n "${STREAMBOT_IDS:-}" ]; then
-      log "  - streambot:   node src/streambot/supervisor.js"
-      # Both foreground, one process each. The container's main process is
-      # this script. Monitor both so an early stream-supervisor failure is not
-      # hidden while the long-running CS bot remains healthy.
-      (
-        node src/index.js &
-        PID_BOT=$!
-        node src/streambot/supervisor.js &
-        PID_SBOT=$!
-        trap 'kill $PID_BOT $PID_SBOT 2>/dev/null' INT TERM EXIT
-        while kill -0 "$PID_BOT" 2>/dev/null && kill -0 "$PID_SBOT" 2>/dev/null; do
-          sleep 1
-        done
-        RC=0
-        if ! kill -0 "$PID_BOT" 2>/dev/null; then
-          wait "$PID_BOT" || RC=$?
-          log "CS bot exited (status $RC); stopping stream supervisor"
-          kill "$PID_SBOT" 2>/dev/null || :
-          wait "$PID_SBOT" 2>/dev/null || :
-        else
-          wait "$PID_SBOT" || RC=$?
-          log "stream supervisor exited (status $RC); stopping CS bot"
-          kill "$PID_BOT" 2>/dev/null || :
-          wait "$PID_BOT" 2>/dev/null || :
-        fi
-        exit $RC
-      )
-      exit $?
-    else
-      log "SELF_BOT_TOKEN and STREAMBOT_IDS unset → streambot not started; running CS2 bot only"
-      exec node src/index.js
-    fi
+  all|bot|streambot)
+    export MODE
+    exec node src/processSupervisor.js
     ;;
   *)
-    usage
-    die "unknown MODE '$MODE' (expected: all | bot | streambot)"
+    printf '[launcher] ERROR: unknown MODE %s\n' "$MODE" >&2
+    exit 1
     ;;
 esac

@@ -1,6 +1,7 @@
 node_modules/
 web/dist/
 .env
+*cookies*.txt
 tools/streambot-memory-sandbox/out/
 tools/sbx/out/
 tools/sbx/run.stdout

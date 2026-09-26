@@ -2,16 +2,25 @@ FROM node:22-trixie-slim AS deps
 
 WORKDIR /app
 ENV NODE_ENV=production
+ARG TARGETARCH
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-COPY scripts ./scripts
+COPY scripts/patch-node-av.js ./scripts/patch-node-av.js
 # Both bundled FFmpeg CLIs duplicate the system binary in the runtime.
 RUN SKIP_FFMPEG=true npm ci --omit=dev \
   && rm -rf node_modules/ffmpeg-static node_modules/node-av/binary/ffmpeg \
+  && rm -rf node_modules/better-sqlite3/deps node_modules/fluent-ffmpeg/coverage \
+  && find node_modules/better-sqlite3/build -type f ! -name better_sqlite3.node -delete \
+  && case "$TARGETARCH" in amd64) zmq_arch=x64 ;; arm64) zmq_arch=arm64 ;; *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; esac \
+  && zmq_abi="$(node -p 'process.versions.modules')" \
+  && zmq_addon="node_modules/zeromq/build/linux/$zmq_arch/node/glibc-$zmq_abi-Release/addon.node" \
+  && test -f "$zmq_addon" \
+  && find node_modules/zeromq/build -name addon.node ! -path "$zmq_addon" -delete \
+  && node -e "require('better-sqlite3'); require('zeromq'); import('node-av')" \
   && npm cache clean --force
 
 FROM node:22-trixie-slim AS dashboard-build
@@ -74,7 +83,6 @@ RUN case "$TARGETARCH" in \
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json ./
 COPY --chown=node:node scripts ./scripts
-COPY --chown=node:node src ./src
 COPY --from=dashboard-build --chown=node:node /web/dist ./web/dist
 COPY pia-ca.rsa.4096.crt /usr/local/share/pia/ca.rsa.4096.crt
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -83,6 +91,10 @@ COPY --chown=node:node run.sh /app/run.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint-vpn.sh /app/run.sh \
   && mkdir -p /app/data \
   && chown node:node /app /app/data
+
+# Keep frequently edited app code last so a code-only rebuild reuses all
+# package installation, dashboard, OS, VPN and permission layers.
+COPY --chown=node:node src ./src
 
 # Set commit-specific metadata after filesystem layers so releases can share them.
 ARG BUILD_VERSION=dev

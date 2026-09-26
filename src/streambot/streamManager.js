@@ -1638,13 +1638,21 @@ class StreamManager {
   async handleVoiceStateUpdate(packet) {
     if (packet?.t !== 'VOICE_STATE_UPDATE') return { ok: true, ignored: true };
     const state = packet.d;
-    if (!state || state.user_id !== this.client.user?.id || !state.channel_id) {
+    if (!state || state.user_id !== this.client.user?.id) {
       return { ok: true, ignored: true };
     }
 
     const requested = this._requestedMove;
     if (requested && Date.now() < requested.until && state.channel_id !== requested.channelId) {
       return { ok: true, ignored: true };
+    }
+    if (!state.channel_id) {
+      return this._serialize(async () => {
+        const link = this.voiceLink;
+        if (!link || link.guildId !== state.guild_id) return { ok: true, ignored: true };
+        await this._leaveVoiceLink(link);
+        return { ok: true, disconnected: true };
+      });
     }
     return this._serialize(() => this._moveVoiceLinkLocked(state.guild_id || this.voiceLink?.guildId, state.channel_id, 'external'));
   }

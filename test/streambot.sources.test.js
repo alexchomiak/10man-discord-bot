@@ -544,6 +544,16 @@ test('yt-dlp failure (ENOENT) -> clean reject note', async () => {
   assert.match(ytdlp.note, /yt-dlp/i);
 });
 
+test('yt-dlp passes an optional cookies file as one argument', async () => {
+  setScenario('hls');
+  const before = readFakeLog().length;
+  const url = 'https://www.youtube.com/watch?v=AGEGATE';
+  await resolveYtdlp(url, { ...CfgPlain, ytdlpCookiesFile: '/app/data/youtube cookies.txt' });
+  const calls = readFakeLog().slice(before);
+  assert.strictEqual(calls.length, 1);
+  assert.deepStrictEqual(calls[0].argv.slice(-3), ['--cookies', '/app/data/youtube cookies.txt', url]);
+});
+
 // ============================================================================
 // 6b) SHARETV_BASE unset: /s/<slug> links must get a friendly "set SHARETV_BASE"
 //     note and must NEVER fall through to yt-dlp (which would produce a

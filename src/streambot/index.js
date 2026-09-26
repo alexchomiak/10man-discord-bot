@@ -1,5 +1,6 @@
 'use strict';
 
+require('../processHeartbeat');
 require('dotenv').config();
 
 const { Client } = require('discord.js-selfbot-v13');
@@ -185,6 +186,7 @@ client.on('shardResume', (shardId, replayedEvents) => {
 });
 client.on('invalidated', () => {
   log('Discord session invalidated; a fresh login is required');
+  void shutdown('discord-session-invalidated', 1).catch(() => process.exit(1));
 });
 
 function closeWebhook() {
@@ -198,6 +200,8 @@ function closeWebhook() {
 async function shutdown(reason, exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  const deadline = setTimeout(() => process.exit(exitCode || 1), 10000);
+  deadline.unref();
   log('shutting down:', reason || 'signal');
   try {
     await closeWebhook();
@@ -219,7 +223,10 @@ async function shutdown(reason, exitCode = 0) {
 });
 
 process.on('unhandledRejection', (reason) => {
-  log('unhandledRejection:', safe(reason && reason.message));
+  logError('unhandledRejection:', safe(reason && reason.message));
+  // Unknown async state is unsafe to keep using for a Discord voice session.
+  // The supervisor will restart only this worker after cleanup.
+  void shutdown('unhandled-rejection', 1).catch(() => process.exit(1));
 });
 
 void (async () => {
