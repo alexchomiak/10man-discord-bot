@@ -211,11 +211,11 @@ class StreamManager {
 
   _outputCodec() {
     const codec = String(this.config.videoCodec || 'H264').trim().toUpperCase();
-    if (codec !== 'H264' && codec !== 'AV1') {
-      throw new Error(`VIDEO_CODEC=${codec} is unsupported by the persistent stream; use H264 or AV1`);
+    if (codec !== 'H264' && codec !== 'H265' && codec !== 'AV1') {
+      throw new Error(`VIDEO_CODEC=${codec} is unsupported by the persistent stream; use H264, H265, or AV1`);
     }
-    if (codec === 'AV1' && this.config.videoEncoder !== 'vaapi') {
-      throw new Error('VIDEO_CODEC=AV1 requires STREAMBOT_VIDEO_ENCODER=vaapi');
+    if (codec !== 'H264' && this.config.videoEncoder !== 'vaapi') {
+      throw new Error(`VIDEO_CODEC=${codec} requires STREAMBOT_VIDEO_ENCODER=vaapi`);
     }
     return codec;
   }
@@ -228,7 +228,7 @@ class StreamManager {
       '-vaapi_device', device,
       '-f', 'lavfi', '-i', 'color=c=black:s=320x180:r=30',
       '-frames:v', '1', '-vf', 'format=nv12,hwupload',
-      '-c:v', codec === 'AV1' ? 'av1_vaapi' : 'h264_vaapi',
+      '-c:v', { H264: 'h264_vaapi', H265: 'hevc_vaapi', AV1: 'av1_vaapi' }[codec],
       ...(codec === 'H264' ? ['-profile:v', 'constrained_baseline'] : []),
       '-f', 'null', '-'
     ];
@@ -296,7 +296,7 @@ class StreamManager {
         const result = await this._probeVaapiDevice(device);
         if (result.ok) {
           this.config.vaapiDevice = device;
-          log('info', `VAAPI ready: ${this._outputCodec() === 'AV1' ? 'av1_vaapi' : 'h264_vaapi'} on ${device}`);
+          log('info', `VAAPI ready: ${{ H264: 'h264_vaapi', H265: 'hevc_vaapi', AV1: 'av1_vaapi' }[this._outputCodec()]} on ${device}`);
           return device;
         }
         failures.push(`${device}: ${String(result.detail || 'initialization failed').replace(/\s+/g, ' ').trim()}`);
@@ -305,7 +305,7 @@ class StreamManager {
         failures.push(`diagnostic: ${await this._probeVaapiInfo(this._vaapiCandidates()[0])}`);
       }
       this._vaapiReady = null;
-      throw new Error(`VAAPI ${this._outputCodec() === 'H264' ? 'H.264' : 'AV1'} initialization failed for every render device. ${failures.join(' | ')}`);
+      throw new Error(`VAAPI ${{ H264: 'H.264', H265: 'H.265', AV1: 'AV1' }[this._outputCodec()]} initialization failed for every render device. ${failures.join(' | ')}`);
     })();
     return this._vaapiReady;
   }
@@ -339,13 +339,15 @@ class StreamManager {
           '-maxrate:v', `${Math.round(bitrateMax)}k`
         ]
       });
-      if (this._outputCodec() === 'AV1') {
+      if (this._outputCodec() !== 'H264') {
+        const codec = this._outputCodec();
         return (bitrate, bitrateMax) => ({
-          AV1: {
-            name: 'av1_vaapi',
+          [codec]: {
+            name: codec === 'H265' ? 'hevc_vaapi' : 'av1_vaapi',
             outFilters: inputOnVaapi ? [] : ['format=nv12', 'hwupload'],
             globalOptions: ['-vaapi_device', device],
             options: [
+              ...(codec === 'H265' ? ['-profile:v', 'main'] : []),
               '-g', String(keyframeFrames),
               '-bf', '0',
               '-b:v', `${Math.round(bitrate)}k`,
@@ -511,7 +513,7 @@ class StreamManager {
     if (padAudio) command.addOutputOption('-shortest');
     command.addOutputOption('-force_key_frames', `expr:gte(t,n_forced*${keyframeIntervalSec})`);
 
-    // An AV1 sender must never receive H.264 packets through a silent codec
+    // An H.265/AV1 sender must never receive H.264 packets through a silent codec
     // fallback. H.264 retains the legacy software fallback.
     let encoderSettings = null;
     try {
@@ -523,10 +525,10 @@ class StreamManager {
         }
       }
     } catch (error) {
-      if (codec === 'AV1') throw error;
+      if (codec !== 'H264') throw error;
     }
-    if (codec === 'AV1' && !encoderSettings) {
-      throw new Error('AV1 VAAPI encoder settings are unavailable; refusing to send H.264 as AV1');
+    if (codec !== 'H264' && !encoderSettings) {
+      throw new Error(`${codec} VAAPI encoder settings are unavailable; refusing to send H.264 as ${codec}`);
     }
     if (encoderSettings) {
       command
