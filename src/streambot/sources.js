@@ -34,6 +34,15 @@ function hostOf(value) {
   }
 }
 
+function thumbnailUrl(value, base) {
+  if (!value) return null;
+  try {
+    const url = new URL(String(value), base);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+    return url.toString();
+  } catch { return null; }
+}
+
 function extractSlug(path) {
   const p = String(path || '').trim();
   if (!p) return null;
@@ -180,6 +189,7 @@ async function resolveShareTv(raw, cfg) {
 
   const title = typeof share.title === 'string' ? share.title : null;
   const channel = typeof share.channel_name === 'string' ? share.channel_name : null;
+  const thumbnail = thumbnailUrl(share.background_image_url || share.icon_url, base);
 
   // Platform share: media_url is the ORIGINAL platform page URL (e.g.
   // https://twitch.tv/example). Not playable by ffmpeg, and the bot owns
@@ -194,6 +204,7 @@ async function resolveShareTv(raw, cfg) {
       const out = {
         kind: 'sharetv',
         title,
+        thumbnail: thumbnail || ytdlp.thumbnail || null,
         channel,
         available: true,
         startOffsetSec: ytdlp.startOffsetSec || null,
@@ -226,6 +237,7 @@ async function resolveShareTv(raw, cfg) {
     kind: 'sharetv',
     streamUrl,
     title,
+    thumbnail,
     channel,
     available: true,
     isLive: true,
@@ -673,6 +685,7 @@ async function resolveYtdlp(raw, cfg) {
   }
 
   const vodDuration = !isLive && Number.isFinite(data.duration) && data.duration > 0 ? Math.round(data.duration) : null;
+  const thumbnail = thumbnailUrl(data.thumbnail || data.thumbnails?.at(-1)?.url);
 
   if (bestManifest) {
     return {
@@ -680,6 +693,7 @@ async function resolveYtdlp(raw, cfg) {
       streamType: 'single',
       streamUrl: bestManifest.manifest_url,
       title: data.title || null,
+      thumbnail,
       available: true,
       startOffsetSec,
       isLive,
@@ -711,6 +725,7 @@ async function resolveYtdlp(raw, cfg) {
       return {
         kind: 'ytdlp', streamType: 'dash', videoUrl: video.url, audioUrl: audio.url,
         title: data.title || null, available: true, startOffsetSec, isLive,
+        thumbnail,
         totalDurationSec: vodDuration,
         note: 'separate YouTube HLS A+V merged in-memory (progressive, zero-disk)'
       };
@@ -723,6 +738,7 @@ async function resolveYtdlp(raw, cfg) {
       streamType: 'single',
       streamUrl: bestDirect.url,
       title: data.title || null,
+      thumbnail,
       available: true,
       startOffsetSec,
       isLive,
@@ -782,6 +798,7 @@ async function resolveYtdlp(raw, cfg) {
       videoUrl: bestVideo.url,
       audioUrl: bestAudio.url,
       title: data.title || null,
+      thumbnail,
       available: true,
       startOffsetSec,
       isLive,

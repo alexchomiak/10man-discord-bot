@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from '@dnd-kit/core';
+import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 const TIMEOUT_MS = 65000;
 const fmt = seconds => {
@@ -41,6 +44,19 @@ function Icon({ name, size = 17 }) {
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
+function SortableQueueItem({ item, index, canControl }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: !canControl });
+  return <div ref={setNodeRef} className={`queue-item ${isDragging ? 'dragging' : ''}`}
+    style={{ transform: CSS.Transform.toString(transform), transition }}>
+    <button type="button" className="drag-handle" title="Drag to reorder" aria-label={`Reorder ${item.title}`}
+      disabled={!canControl} {...attributes} {...listeners}>⠿</button>
+    <span className="queue-index">{String(index + 1).padStart(2, '0')}</span>
+    {item.thumbnail && <img className="queue-thumb" src={item.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer"
+      onError={event => { event.currentTarget.style.display = 'none'; }} />}
+    <div className="queue-copy"><strong>{item.title}</strong><small>{item.isLive ? 'Live' : item.durationSec ? fmt(item.durationSec) : 'Video'}</small></div>
+  </div>;
+}
+
 function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy }) {
   const status = worker.status;
   const queue = status?.queue || [];
@@ -51,7 +67,23 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy }
   const [source, setSource] = useState('');
   const [channelId, setChannelId] = useState('');
   const [seek, setSeek] = useState(null);
-  const [drag, setDrag] = useState(null);
+  const [previewIds, setPreviewIds] = useState(null);
+  const [seeking, setSeeking] = useState(false);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  const displayQueue = useMemo(() => {
+    if (!previewIds) return realQueue;
+    const byId = new Map(realQueue.map(item => [item.id, item]));
+    return [...previewIds.map(id => byId.get(id)).filter(Boolean),
+      ...realQueue.filter(item => !previewIds.includes(item.id))];
+  }, [realQueue, previewIds]);
+  const actualQueueIds = realQueue.map(item => item.id).join(',');
+  useEffect(() => {
+    if (!previewIds) return;
+    if (previewIds.join(',') === actualQueueIds) { setPreviewIds(null); return; }
+    const timer = setTimeout(() => setPreviewIds(null), 10000);
+    return () => clearTimeout(timer);
+  }, [actualQueueIds, previewIds]);
   const preferred = channelId || (status?.guildId === guildId ? status?.channelId : '');
   const selected = channels.some(channel => channel.id === preferred) ? preferred : channels[0]?.id || '';
   const canControl = worker.online && !busy;
@@ -66,14 +98,25 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy }
       : destination();
     if (await send('play', { ...where, source: source.trim() })) setSource('');
   };
-  const reorder = async targetId => {
-    if (!drag || drag === targetId) return;
-    const ids = realQueue.map(item => item.id);
-    const from = ids.indexOf(drag), to = ids.indexOf(targetId);
+  const reorder = async ({ active, over }) => {
+    if (!over || active.id === over.id) return;
+    const ids = displayQueue.map(item => item.id);
+    const from = ids.indexOf(active.id), to = ids.indexOf(over.id);
     if (from < 0 || to < 0) return;
-    ids.splice(to, 0, ids.splice(from, 1)[0]);
-    setDrag(null);
-    await send('reorder', { ids });
+    const next = arrayMove(ids, from, to);
+    setPreviewIds(next);
+    if (!await send('reorder', { ids: next })) setPreviewIds(null);
+  };
+  const commitSeek = async value => {
+    if (seeking || !canControl) return;
+    const target = Number(value);
+    if (!Number.isFinite(target)) return;
+    const deltaSec = Math.round(target - position);
+    if (!deltaSec) { setSeek(null); return; }
+    setSeek(target);
+    setSeeking(true);
+    try { await send('scrub', { deltaSec }); }
+    finally { setSeeking(false); setSeek(null); }
   };
   return <article className={`worker-card ${worker.online ? '' : 'offline'}`}>
     <header className="worker-header">
@@ -108,14 +151,18 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy }
 
     <div className="now-playing">
       <div className="section-topline"><span className="live-dot" /> NOW PLAYING <span className="stage-state">{status?.paused ? 'PAUSED' : status?.isFiller ? 'FILLER' : status?.isLive ? 'LIVE' : current ? 'PLAYING' : 'IDLE'}</span></div>
+      {current?.thumbnail && <img className="playing-thumb" src={current.thumbnail} alt="" referrerPolicy="no-referrer"
+        onError={event => { event.currentTarget.style.display = 'none'; }} />}
       <div className="playing-title">{current?.title || 'Nothing on air'}</div>
       <div className="playing-meta">{current ? current.isFiller ? 'Ready for the next video' : current.isLive ? 'Live source' : 'Video on demand' : 'Join a voice channel to get started'}</div>
-      <div className="progress-row"><span>{fmt(position)}</span><span>{duration ? fmt(duration) : status?.isLive ? 'LIVE' : '—:—'}</span></div>
-      <div className="visual-progress"><span style={{ width: duration ? `${Math.min(100, position / duration * 100)}%` : '0%' }} /></div>
-      {duration && !current?.isFiller && <div className="seek-row">
-        <input aria-label="Seek playback position" type="range" min="0" max={duration} value={seek ?? position} onChange={event => setSeek(Number(event.target.value))} disabled={!canControl} />
-        <button className="text-button" disabled={seek === null || !canControl} onClick={async () => { await send('scrub', { deltaSec: Math.round(seek - position) }); setSeek(null); }}>Seek to {fmt(seek ?? position)}</button>
-      </div>}
+      <div className="progress-row"><span>{fmt(seek ?? position)}</span><span>{duration ? fmt(duration) : status?.isLive ? 'LIVE' : '—:—'}</span></div>
+      {duration && !current?.isFiller ? <input className="seek-slider" aria-label="Seek playback position" type="range"
+        min="0" max={duration} value={seek ?? position} onChange={event => setSeek(Number(event.target.value))}
+        onPointerUp={event => void commitSeek(event.currentTarget.value)}
+        onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) void commitSeek(event.currentTarget.value); }}
+        disabled={!canControl || seeking}
+        style={{ '--seek-percent': `${Math.min(100, (seek ?? position) / duration * 100)}%` }} />
+        : <div className="visual-progress"><span style={{ width: '0%' }} /></div>}
     </div>
 
     <div className="transport">
@@ -129,13 +176,15 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy }
 
     <div className="card-divider" />
     <div className="queue-title"><span>UP NEXT</span><span className="queue-count">{realQueue.length}</span></div>
-    <div className="queue-list">
-      {realQueue.length ? realQueue.map((item, index) => <div key={item.id} className={`queue-item ${drag === item.id ? 'dragging' : ''}`} draggable={canControl}
-        onDragStart={() => setDrag(item.id)} onDragEnd={() => setDrag(null)} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); void reorder(item.id); }}>
-        <span className="drag-handle" title="Drag to reorder">⠿</span><span className="queue-index">{String(index + 1).padStart(2, '0')}</span>
-        <div className="queue-copy"><strong>{item.title}</strong><small>{item.isLive ? 'Live' : item.durationSec ? fmt(item.durationSec) : 'Video'}</small></div>
-      </div>) : <div className="queue-empty">No videos in the queue yet.</div>}
-    </div>
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={event => void reorder(event)}>
+      <SortableContext items={displayQueue.map(item => item.id)} strategy={verticalListSortingStrategy}>
+        <div className="queue-list">
+          {displayQueue.length ? displayQueue.map((item, index) =>
+            <SortableQueueItem key={item.id} item={item} index={index} canControl={canControl} />)
+            : <div className="queue-empty">No videos in the queue yet.</div>}
+        </div>
+      </SortableContext>
+    </DndContext>
 
     <form className="add-form" onSubmit={play}>
       <label htmlFor={`source-${worker.id}`}>ADD TO QUEUE</label>

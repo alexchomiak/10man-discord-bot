@@ -1400,6 +1400,7 @@ class StreamManager {
 
   _queueItem(piece) {
     return { id: piece.queueId, title: piece.title || (piece.isFiller ? 'Filler' : 'Untitled video'),
+      thumbnail: piece.thumbnail || null,
       isFiller: !!piece.isFiller, isLive: !!piece.isLive,
       durationSec: Number.isFinite(piece.totalDurationSec) ? piece.totalDurationSec : null };
   }
@@ -1556,6 +1557,7 @@ class StreamManager {
       inputFormat: piece.inputFormat,
       durationSec: piece.durationSec,
       title: piece.title,
+      thumbnail: piece.thumbnail,
       queueId: piece.queueId,
       startOffsetSec: off,
       isLive: isLive !== undefined ? isLive : piece.isLive,

@@ -99,6 +99,7 @@ const SCENARIOS = {
   hls: {
     duration: 3661,
     title: 'HLS VOD',
+    thumbnail: 'https://i.ytimg.com/vi/HLSVOD/hqdefault.jpg',
     formats: [
       { format_id: 'hls1', vcodec: 'h264', acodec: 'mp4a', height: 1080, tbr: 1000, manifest_url: 'https://manifest.example/hls/master.m3u8' },
       { format_id: 'dashV', vcodec: 'h264', acodec: 'none', height: 1080 },
@@ -618,6 +619,7 @@ test('hls: manifest_url present -> streamType single, stream the manifest URL (n
   assert.strictEqual(res.available, true);
   assert.strictEqual(res.streamType, 'single');
   assert.strictEqual(res.streamUrl, 'https://manifest.example/hls/master.m3u8');
+  assert.strictEqual(res.thumbnail, 'https://i.ytimg.com/vi/HLSVOD/hqdefault.jpg');
   assert.strictEqual(res.localFile, undefined, 'no local-file fields anymore (zero-disk)');
   assert.strictEqual(res.localDir, undefined);
   assert.strictEqual(res.startOffsetSec, null, 'no &t= on the URL -> no offset');

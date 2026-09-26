@@ -82,6 +82,8 @@ const config = {
   streamDashboardAnswer: process.env.SECRET_ANSWER || '',
   streamDashboardHost: process.env.STREAM_DASHBOARD_HOST || '0.0.0.0',
   streamDashboardPort: Number.parseInt(process.env.STREAM_DASHBOARD_PORT || '8082', 10),
+  streamDashboardChannelIds: (process.env.STREAM_DASHBOARD_CHANNEL_IDS || '')
+    .split(',').map(id => id.trim()).filter(Boolean),
   streamAllowedUserIds: parseDiscordIdList(
     process.env.STREAM_ALLOWED_USER_IDS,
     'STREAM_ALLOWED_USER_IDS'
@@ -265,6 +267,7 @@ if (!streamBroker.enabled) {
 const streamDashboard = streamBroker.enabled && (config.streamDashboardAnswer || config.streamDashboardToken)
   ? createStreamDashboard({ broker: streamBroker, client, token: config.streamDashboardToken,
     secretQuestion: config.streamDashboardQuestion, secretAnswer: config.streamDashboardAnswer,
+    channelIds: config.streamDashboardChannelIds,
     configuredWorkerIds: (process.env.STREAMBOT_IDS || '').split(',').map(id => id.trim()).filter(Boolean),
     host: config.streamDashboardHost, port: config.streamDashboardPort })
   : null;

@@ -119,6 +119,7 @@ class StreamControl {
           videoUrl: resolved.videoUrl || null,
           audioUrl: resolved.audioUrl || null,
           title: resolved.title || null,
+          thumbnail: resolved.thumbnail || null,
           startOffsetSec: resolved.startOffsetSec || null,
           isLive: resolved.isLive === true,
           totalDurationSec: resolved.totalDurationSec ?? null

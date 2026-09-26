@@ -25,6 +25,7 @@ function sameAnswer(expected, actual) {
 function publicStatus(status) {
   if (!status) return null;
   const item = value => value && ({ id: value.id, title: value.title,
+    thumbnail: value.thumbnail || null,
     isFiller: !!value.isFiller, isLive: !!value.isLive,
     durationSec: Number.isFinite(value.durationSec) ? value.durationSec : null });
   return { guildId: status.guildId, channelId: status.channelId,
@@ -35,7 +36,7 @@ function publicStatus(status) {
     stats: status.stats || null };
 }
 
-function createStreamDashboard({ broker, client, token, secretQuestion, secretAnswer, configuredWorkerIds = [], host = '0.0.0.0', port = 8082,
+function createStreamDashboard({ broker, client, token, secretQuestion, secretAnswer, configuredWorkerIds = [], channelIds = [], host = '0.0.0.0', port = 8082,
   staticDir = path.resolve(__dirname, '../web/dist'), log = console.log } = {}) {
   if (!secretAnswer && !token) return null;
   const profileCache = new Map();
@@ -127,8 +128,10 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
         const guild = client.guilds.cache.get(channelMatch[1]) || await client.guilds.fetch(channelMatch[1]).catch(() => null);
         if (!guild) return json(res, 404, { error: 'Server unavailable to the CS bot; use manual IDs.' });
         const channels = await guild.channels.fetch();
+        const allowed = new Set(channelIds);
         return json(res, 200, { channels: [...channels.values()]
-          .filter(channel => channel && (channel.type === 2 || channel.type === 13))
+          .filter(channel => channel && (channel.type === 2 || channel.type === 13) &&
+            (!allowed.size || allowed.has(channel.id)))
           .map(channel => ({ id: channel.id, name: channel.name, type: channel.type }))
           .sort((a, b) => a.name.localeCompare(b.name)) });
       }
@@ -188,7 +191,7 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
     catch { return json(res, 404, { error: 'Dashboard assets unavailable; build the web app.' }); }
     res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream',
       'Cache-Control': filename === 'index.html' ? 'no-store' : 'public, max-age=3600',
-      'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'self'; img-src 'self' https://cdn.discordapp.com data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'" });
+      'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'self'; img-src 'self' https: http: data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'" });
     if (req.method === 'HEAD') res.end(); else res.end(data);
   }
   const server = http.createServer((req, res) => {
