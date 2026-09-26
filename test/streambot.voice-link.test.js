@@ -853,6 +853,27 @@ test('$scrub on a VOD advances the piece and keeps ONE go-live', async t => {
   await mgr.stop();
 });
 
+test('seeking replaces the current VOD ahead of queued videos without duplicating it', async t => {
+  const { mgr, fv, start } = fixture(t);
+  await start('a');
+  await start('b');
+  const oldActive = mgr.voiceLink.pipeline.activeWriter;
+  oldActive.totalDurationSec = 3600;
+  const queuedBefore = mgr.status().queue.filter(item => !item.isFiller).map(item => item.id);
+  assert.deepEqual(queuedBefore.length, 1);
+  assert.equal((await mgr.seekTo(600)).newPosSec, 600);
+  assert.equal((await mgr.seekTo(900)).newPosSec, 900);
+  const p = mgr.voiceLink.pipeline;
+  assert.equal(p.enqueue.filter(item => !item.isFiller && item.queueId === oldActive.queueId).length, 1);
+  assert.deepEqual(mgr.status().queue.filter(item => !item.isFiller).map(item => item.id), queuedBefore,
+    'the pending seek replacement is current playback, not a new queue item');
+  await until(() => p.activeWriter && p.activeWriter !== oldActive);
+  assert.equal(p.activeWriter.title, 'a');
+  assert.equal(p.activeWriter.startOffsetSec, 900);
+  assert.deepEqual(mgr.status().queue.filter(item => !item.isFiller).map(item => item.id), queuedBefore);
+  assert.equal(fv.plays.length, 1);
+});
+
 test('$scrub on a filler/no-content is a no-op and does NOT tear down', async t => {
   const { mgr, fv } = fixture(t);
   await mgr.ensureChannel('g1', 'c1'); // only the join placeholder/filler

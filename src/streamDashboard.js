@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
-const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'pause', 'resume', 'catchup', 'toggle-overlay', 'reorder', 'remove-queued', 'set-name']);
+const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'reorder', 'remove-queued', 'set-name']);
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
@@ -168,6 +168,13 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
             return json(res, 400, { error: 'Scrub offset must be within one day.' });
           }
           payload.deltaSec = delta;
+        }
+        if (operation === 'seek') {
+          const position = Number(body.positionSec);
+          if (!Number.isFinite(position) || position < 0 || position > 7 * 86400) {
+            return json(res, 400, { error: 'Invalid seek position.' });
+          }
+          payload.positionSec = position;
         }
         if (operation === 'reorder') {
           if (!Array.isArray(body.ids) || body.ids.length > 50 || body.ids.some(id => typeof id !== 'string' || id.length > 64)) {

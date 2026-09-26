@@ -107,6 +107,14 @@ class StreamControl {
         const message = !r?.ok ? M.STREAM_START_FAILED : r.noOp ? (r.reason === 'live' ? M.SCRUB_LIVE : M.SCRUB_NEED_CONTENT) : M.SCRUB_APPLIED(r.newPosSec);
         return this._result(r?.ok === true, message, { detail: this._detail(r, ['noOp', 'reason', 'newPosSec']) });
       }
+      case 'seek': {
+        const positionSec = Number(payload.positionSec);
+        if (!Number.isFinite(positionSec) || positionSec < 0) return this._result(false, 'Invalid seek position.');
+        const r = await this.streamManager.seekTo(positionSec);
+        const message = !r?.ok ? M.STREAM_START_FAILED : r.noOp
+          ? (r.reason === 'live' ? M.SCRUB_LIVE : M.SCRUB_NEED_CONTENT) : M.SCRUB_APPLIED(r.newPosSec);
+        return this._result(r?.ok === true, message, { detail: this._detail(r, ['noOp', 'reason', 'newPosSec']) });
+      }
       case 'play': {
         if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);
         const input = String(payload.source || '').trim();

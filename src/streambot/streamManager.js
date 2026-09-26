@@ -1388,7 +1388,9 @@ class StreamManager {
       positionSec: piece ? Math.round(link.paused && Number.isFinite(link.pausedPositionSec)
         ? link.pausedPositionSec : this.positionOf(piece)) : null,
       current: piece ? this._queueItem(piece) : null,
-      queue: (link.pipeline?.enqueue || []).map(item => this._queueItem(item)),
+      queue: (link.pipeline?.enqueue || [])
+        .filter(item => !piece || item.queueId !== piece.queueId)
+        .map(item => this._queueItem(item)),
       stats: {
         videoCodec: this._outputCodec(), videoEncoder: this.config.videoEncoder || 'software',
         targetBitrateKbps: this.config.streamBitrate || 5000,
@@ -1690,12 +1692,12 @@ class StreamManager {
   // seconds. Reopens the piece at the new position; live streams and fillers
   // are graceful no-ops (see M.SCRUB_LIVE / SCRUB_NEED_CONTENT). Never tears
   // down the persistent go-live session or the shared muxer.
-  async scrub(deltaSec) {
+  async _seek(positionSec, relative) {
     return this._serialize(async () => {
       const { link, session } = this._activeRealSession();
       if (!link || !session || session.isFiller) return { ok: true, noOp: true, reason: 'filler' };
       if (session.isLive) return { ok: true, noOp: true, applied: false, reason: 'live' };
-      let pos = this.positionOf(session) + deltaSec;
+      let pos = relative ? this.positionOf(session) + positionSec : positionSec;
       if (pos < 0) pos = 0;
       const dur = session.totalDurationSec;
       if (Number.isFinite(dur) && dur > 0 && pos > dur) pos = dur;
@@ -1703,7 +1705,13 @@ class StreamManager {
       this._cancelPiece(session);
       this.session = piece;
       const p = link.pipeline;
-      p.enqueue.push(piece);
+      // Seeking replaces the current video, ahead of the existing queue.
+      // A second seek while the first is still pending replaces that pending
+      // copy instead of leaving duplicate playback later in the queue.
+      for (let i = p.enqueue.length - 1; i >= 0; i--) {
+        if (!p.enqueue[i].isFiller && p.enqueue[i].queueId === piece.queueId) p.enqueue.splice(i, 1);
+      }
+      p.enqueue.unshift(piece);
       if (!p.writerTask) {
         const videoModule = await this.preparePlayback(await this._video());
         this._pump(link, videoModule);
@@ -1711,6 +1719,10 @@ class StreamManager {
       return { ok: true, applied: true, newPosSec: Math.round(pos), title: piece.title };
     });
   }
+
+  async scrub(deltaSec) { return this._seek(deltaSec, true); }
+
+  async seekTo(positionSec) { return this._seek(positionSec, false); }
 
   // $pause: best-effort "freeze" — stop feeding the muxer (hold the last
   // frame) while keeping the go-live session + muxer OPEN and the queue held.

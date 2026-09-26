@@ -119,11 +119,10 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
     if (seeking || !canControl) return;
     const target = Number(value);
     if (!Number.isFinite(target)) return;
-    const deltaSec = Math.round(target - position);
-    if (!deltaSec) { setSeek(null); return; }
+    if (Math.round(target) === Math.round(position)) { setSeek(null); return; }
     setSeek(target);
     setSeeking(true);
-    try { await send('scrub', { deltaSec }); }
+    try { await send('seek', { positionSec: target }); }
     finally { setSeeking(false); setSeek(null); }
   };
   return <article className={`worker-card ${expanded ? 'expanded' : ''} ${worker.online ? '' : 'offline'}`}>
