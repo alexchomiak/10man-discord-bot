@@ -109,3 +109,87 @@
   .worker-card.expanded>.queue-list{padding:0 16px}
   .worker-card.expanded>.add-form{padding:14px 16px 0}
 }
+
+.topbar-identity{display:flex;align-items:center;gap:10px;min-width:0}
+.mobile-brand-mark{display:none}
+
+@media(max-width:740px){
+  .app-shell{display:block}
+  .main-content,.main-content.detail-mode{padding:0 12px}
+  .topbar{height:56px}
+  .topbar .eyebrow{font-size:10px;letter-spacing:.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .topbar .icon-button{width:44px;height:44px;flex:0 0 44px}
+  .mobile-brand-mark{display:grid;place-items:center;flex:0 0 28px;width:28px;height:28px;border-radius:7px;background:#d9ff62;color:#152016;font-size:13px}
+  .mobile-nav{gap:7px;margin:0 -12px;padding:10px 12px;background:#0b1018;scrollbar-width:none}
+  .mobile-nav::-webkit-scrollbar{display:none}
+  .mobile-nav a{display:flex;align-items:center;flex:0 0 auto;max-width:155px;min-height:40px;padding:8px 12px;font-size:12px;overflow:hidden;text-overflow:ellipsis}
+  .page-heading{gap:16px;padding:20px 0}
+  .page-heading h1{font-size:36px;margin:7px 0}
+  .page-heading p{font-size:13px;line-height:1.4}
+  .guild-picker,.detail-intro .guild-picker{width:100%;min-width:0}
+  .guild-picker select,.channel-controls select{min-height:44px;font-size:16px}
+  .detail-intro{gap:12px;padding:8px 0 16px}
+  .detail-intro .guild-picker{margin-top:0}
+  .back-link{display:none}
+  .overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px 8px;padding:14px;margin-bottom:16px}
+  .overview>div:not(.overview-note){min-width:0;gap:6px;flex-wrap:wrap}
+  .overview-number{font-size:25px}
+  .overview-label{font-size:9px;letter-spacing:.08em}
+  .overview-note{grid-column:1/-1;width:auto;margin:0;font-size:11px}
+  .cards-grid{gap:16px}
+  .worker-card,.worker-card.expanded{min-width:0}
+  .worker-header,.worker-card.expanded>.worker-header{gap:9px;padding:14px}
+  .avatar,.worker-card.expanded .avatar{width:44px;height:44px;border-radius:10px}
+  .worker-title h2,.worker-card.expanded .worker-title h2{font-size:18px;white-space:normal;overflow-wrap:anywhere;line-height:1.13}
+  .worker-subtitle{font-size:11px}
+  .worker-header-actions{align-self:center;gap:0}
+  .worker-header-actions .icon-button{width:38px;height:42px}
+  .stats-popover{width:min(270px,calc(100vw - 38px));max-height:65vh;overflow:auto}
+  .now-playing,.worker-card.expanded>.now-playing{margin:12px 12px 0;padding:14px}
+  .playing-thumb,.worker-card.expanded .playing-thumb{width:100%;aspect-ratio:16/9;max-height:none;object-fit:contain;margin-top:12px}
+  .playing-title,.worker-card.expanded .playing-title{font-size:clamp(19px,5.7vw,24px);line-height:1.18;white-space:normal;overflow-wrap:anywhere;overflow:visible;margin-top:12px}
+  .playing-meta,.worker-card.expanded .playing-meta{font-size:12px}
+  .progress-row,.worker-card.expanded .progress-row{font-size:12px;margin-top:18px}
+  .seek-slider,.worker-card.expanded .seek-slider{height:32px;touch-action:pan-y}
+  .seek-slider::-webkit-slider-runnable-track{height:8px}
+  .seek-slider::-moz-range-track{height:8px}
+  .seek-slider::-webkit-slider-thumb{width:23px;height:23px;margin-top:-7.5px}
+  .seek-slider::-moz-range-thumb{width:21px;height:21px}
+  .transport,.worker-card.expanded>.transport{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;padding:14px 12px 0}
+  .transport-spacer{display:none}
+  .transport-main,.transport-button,.worker-card.expanded .transport-main,.worker-card.expanded .transport-button{width:100%;height:48px;min-width:0;padding:0 3px;font-size:12px}
+  .channel-controls,.worker-card.expanded>.channel-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:12px 12px 18px}
+  .channel-controls select{grid-column:1/-1;width:100%;min-width:0}
+  .channel-controls .secondary-button,.worker-card.expanded .channel-controls .secondary-button{width:100%;height:44px;font-size:13px}
+  .channel-controls .manual{width:100%;height:44px;margin:0;border:1px solid #435469;border-radius:7px;color:#dce7ef;font-size:13px;font-weight:700}
+  .card-divider,.worker-card.expanded>.card-divider{margin:0 12px}
+  .queue-title,.worker-card.expanded>.queue-title{padding:18px 12px 10px}
+  .queue-list,.worker-card.expanded>.queue-list{max-height:none;min-height:0;overflow:visible;padding:0 12px}
+  .queue-item,.worker-card.expanded .queue-item{min-height:62px;padding:7px;gap:6px;margin-bottom:8px}
+  .queue-index{display:none}
+  .queue-thumb,.worker-card.expanded .queue-thumb{width:60px;height:44px;flex:0 0 60px;object-fit:contain}
+  .drag-handle{display:grid;place-items:center;flex:0 0 32px;width:32px;height:44px;padding:0;font-size:21px}
+  .queue-remove{flex:0 0 40px;width:40px;height:44px;font-size:25px}
+  .queue-copy strong,.worker-card.expanded .queue-copy strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;overflow:hidden;overflow-wrap:anywhere;font-size:13px;line-height:1.2}
+  .queue-copy small,.worker-card.expanded .queue-copy small{font-size:11px}
+  .add-form,.worker-card.expanded>.add-form{padding:14px 12px 0}
+  .input-row input,.modal input,.login-card input{min-height:44px;font-size:16px}
+  .add-button{width:44px;height:44px;flex-basis:44px}
+  .worker-card.expanded{padding-bottom:18px}
+  .modal-backdrop{align-items:center;padding:12px}
+  .modal{max-height:calc(100dvh - 24px);overflow:auto;padding:22px}
+  .modal-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .modal-actions button{width:100%;min-height:44px;white-space:normal}
+  .empty-fleet{padding:35px 20px}
+  .login-card{padding:27px 23px}
+  .login-card h1{font-size:34px}
+  footer{padding:26px 0;text-align:center;line-height:1.5}
+}
+
+@media(max-width:360px){
+  .worker-header,.worker-card.expanded>.worker-header{padding:12px;gap:7px}
+  .worker-header-actions .icon-button{width:34px}
+  .queue-thumb,.worker-card.expanded .queue-thumb{width:52px;height:40px;flex-basis:52px}
+  .queue-item,.worker-card.expanded .queue-item{gap:4px}
+  .transport,.worker-card.expanded>.transport{gap:4px}
+}

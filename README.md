@@ -250,7 +250,9 @@ Set `STREAM_DASHBOARD_CHANNEL_IDS=123456789012345678,234567890123456789` to show
 
 The dashboard can remove queued videos without interrupting the current stream. For Jellyfin `/Items/<id>/Download` URLs, the worker also tries a short, same-server item metadata lookup for title, runtime, and artwork; video playback still uses yt-dlp and proceeds if metadata is unavailable. Jellyfin artwork URLs may contain the same API key as the supplied media URL so the browser can load them.
 
-Click a worker in the dashboard sidebar to open its expanded player. Its URL uses `#/worker/<worker-id>`, so you can bookmark or share a direct link to that worker.
+Click a worker in the dashboard sidebar to open its expanded player. Its URL uses `#/<worker-id>` (for example, `#/one`), so you can bookmark or share a direct link to that worker. Existing `#/worker/<worker-id>` bookmarks still open the same page.
+
+Set `STREAM_DASHBOARD_BASE_URL=https://stream.example.com/` to show a QR code on filler screens. Each worker's QR code opens its own `#/<worker-id>` dashboard page and places that worker's Discord avatar in the center when the avatar is available. The idle filler shows a large QR code and the link; the between-video countdown shows the next title and thumbnail when available, a smaller QR code, and seconds remaining. Use the externally reachable HTTPS URL (including any reverse-proxy path), not the container's `localhost` address. With this setting unset, the original test-pattern filler remains. The dashboard still requires `SECRET_ANSWER` or the legacy dashboard password to sign in.
 
 The Docker build bundles the React app automatically. For a local non-Docker run, build it once with `npm ci --prefix web && npm run build --prefix web` before starting the CS bot.
 

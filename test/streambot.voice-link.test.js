@@ -678,6 +678,7 @@ test('buffer is inserted before a real piece while a real piece is active', asyn
   const buf = queue[bIdx - 1];
   assert.equal(buf.isFiller, true, 'the piece before "b" must be a filler buffer');
   assert.equal(buf.title, 'buffer', 'the buffer title must be "buffer"');
+  assert.equal(buf.upNext?.title, 'b', 'the countdown must describe the video following this buffer');
   assert.match(buf.streamUrl || '', /testsrc/, 'the buffer must be a testsrc/lavfi filler (same codec path as the placeholder)');
   await mgr.stop();
 });

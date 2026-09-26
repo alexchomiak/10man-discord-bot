@@ -16,6 +16,7 @@ const telemetry = require('./telemetry');
 const { isYoutubeHlsUrl } = require('./sources');
 const { createAlertSink } = require('./alerts');
 const { progressOverlayFilter } = require('./progressOverlay');
+const { createFillerArtwork, fillerCountdownFilter } = require('./fillerArtwork');
 
 function log(level, ...parts) {
   if (level === 'error') console.error(TAG, ...parts);
@@ -392,6 +393,7 @@ class StreamManager {
     const useVaapiFrames = cfg.videoEncoder === 'vaapi' && cfg.hardwareDecode === true && piece?.inputFormat !== 'lavfi';
     const showProgress = this.progressOverlay && !piece?.isLive && !piece?.isFiller &&
       Number.isFinite(piece?.totalDurationSec) && piece.totalDurationSec > 0;
+    const artworkFiller = piece?.isFiller && !!piece?.fillerArtwork;
 
     const configureInput = (command, url, { localRealtime = false } = {}) => {
       if (localRealtime) {
@@ -493,7 +495,11 @@ class StreamManager {
           baseFilter: baseVideoFilter + (useVaapiFrames ? ',hwdownload,format=nv12' : ''),
           durationSec: piece.totalDurationSec, offsetSec: offset
         })
-      : baseVideoFilter;
+      : artworkFiller
+        ? `${baseVideoFilter}[base];movie=${piece.fillerArtwork.file}[art];` +
+          `[base][art]overlay=0:0:eof_action=repeat` +
+          (piece.upNext ? `,${fillerCountdownFilter(piece.durationSec, cfg.streamWidth || 1920, height)}` : '')
+        : baseVideoFilter;
     command
       .output(output)
       .outputFormat('nut')
@@ -1014,6 +1020,10 @@ class StreamManager {
       clearTimeout(escalation);
       piece.telemetry?.stop();
       piece.output?.destroy?.();
+      if (piece.fillerArtwork?.directory) {
+        await fs.promises.rm(piece.fillerArtwork.directory, { recursive: true, force: true }).catch(() => {});
+        piece.fillerArtwork = null;
+      }
     }
   }
 
@@ -1041,6 +1051,29 @@ class StreamManager {
         let stallWatchdog = null;
         let lastVideoFrameAt = 0;
         try {
+          if (piece.isFiller && this.config.dashboardBaseUrl) {
+            try {
+              let avatarUrl = null;
+              try {
+                avatarUrl = this.client?.user?.displayAvatarURL?.({ size: 256, extension: 'png', format: 'png' }) ||
+                  this.client?.user?.avatarURL?.({ size: 256, format: 'png' }) || null;
+              } catch { /* An unavailable profile image must not stop filler playback. */ }
+              const artwork = await createFillerArtwork({
+                baseUrl: this.config.dashboardBaseUrl,
+                workerId: this.config.workerId || this.config.defaultWorkerId || 'primary',
+                avatarUrl,
+                next: piece.upNext,
+                width: this.config.streamWidth || 1920,
+                height: this.config.streamHeight || 1080,
+                signal: piece.control.signal
+              });
+              piece.fillerArtwork = artwork;
+              piece.control.signal.throwIfAborted();
+            } catch (error) {
+              if (piece.control.signal.aborted) throw error;
+              log('error', `filler artwork unavailable; using default screen: ${error.message}`);
+            }
+          }
           if (piece.recoveryAttempt) {
             await sleep(piece.retryDelayMs, undefined, { signal: piece.control.signal });
             if (piece.sourceInput) {
@@ -1307,9 +1340,10 @@ class StreamManager {
     return this.config.streamBufferSec > 0 ? this.config.streamBufferSec : 15;
   }
 
-  _gapFiller(link) {
+  _gapFiller(link, nextPiece = null) {
     return this._piece(link, { streamUrl: 'testsrc=size=1280x720:rate=30', inputFormat: 'lavfi',
-      durationSec: this._gapFillerDurationSec(), isFiller: true, title: 'buffer' });
+      durationSec: this._gapFillerDurationSec(), isFiller: true, title: 'buffer',
+      upNext: nextPiece ? { title: nextPiece.title, thumbnail: nextPiece.thumbnail } : null });
   }
 
   _piece(link, args) {
@@ -1495,7 +1529,7 @@ class StreamManager {
       // FIFO piece, so $skip (cancel active) lands on it, then the next real.
       const realAhead = (p.activeWriter && !p.activeWriter.isFiller) || p.enqueue.some(q => !q.isFiller);
       const bufferInserted = realAhead && this._gapFillerEnabled();
-      if (bufferInserted) p.enqueue.push(this._gapFiller(link));
+      if (bufferInserted) p.enqueue.push(this._gapFiller(link, piece));
       p.enqueue.push(piece);
       // Only the placeholder is interruptible. Real content is always FIFO.
       if (p.activeWriter?.isFiller) this._cancelPiece(p.activeWriter);

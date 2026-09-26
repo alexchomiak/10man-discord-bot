@@ -98,6 +98,7 @@ function loadConfig() {
     token,
     workerId,
     defaultWorkerId,
+    dashboardBaseUrl: (process.env.STREAM_DASHBOARD_BASE_URL || '').trim(),
     chatCommands: parseBoolean(chatCommandsValue, workerId.toLowerCase() === defaultWorkerId.toLowerCase()),
     brokerUrl: (process.env.STREAM_BROKER_URL || (process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET ? 'ws://127.0.0.1:8090' : '')).trim(),
     brokerSecret: (process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET || '').trim(),

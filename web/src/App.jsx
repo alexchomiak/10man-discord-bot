@@ -6,7 +6,8 @@ import { Toaster, toast } from 'sonner';
 
 const TIMEOUT_MS = 65000;
 const workerIdFromHash = () => {
-  const match = /^#\/worker\/([A-Za-z0-9_-]{1,32})$/.exec(window.location.hash)
+  const match = /^#\/([A-Za-z0-9_-]{1,32})$/.exec(window.location.hash)
+    || /^#\/worker\/([A-Za-z0-9_-]{1,32})$/.exec(window.location.hash)
     || /^#worker-([A-Za-z0-9_-]{1,32})$/.exec(window.location.hash);
   return match?.[1] || null;
 };
@@ -300,11 +301,11 @@ export default function App() {
   return <div className="app-shell"><Toaster position="top-right" theme="dark" richColors closeButton />
     <aside className="sidebar"><div className="sidebar-brand"><div className="brand-mark">▶</div><span>10MAN<span className="brand-light">/STREAM</span></span></div>
       <div className="sidebar-label">WORKSPACE</div><a href="#/" className={`sidebar-item ${!selectedWorkerId ? 'active' : ''}`}>◫ <span>Control room</span></a>
-      <div className="sidebar-section"><div className="sidebar-label">FLEET</div>{workers.map(worker => <a key={worker.id} href={`#/worker/${worker.id}`} className={`sidebar-worker ${selectedWorkerId === worker.id ? 'active' : ''}`}><span className={`sidebar-status ${worker.online ? 'on' : ''}`} />{worker.profile?.displayName || worker.id}</a>)}</div>
+      <div className="sidebar-section"><div className="sidebar-label">FLEET</div>{workers.map(worker => <a key={worker.id} href={`#/${worker.id}`} className={`sidebar-worker ${selectedWorkerId === worker.id ? 'active' : ''}`}><span className={`sidebar-status ${worker.online ? 'on' : ''}`} />{worker.profile?.displayName || worker.id}</a>)}</div>
       <div className="sidebar-footer"><span className="sidebar-status on" /> Broker connected <button onClick={() => { sessionStorage.removeItem('stream-dashboard-answer'); setAnswer(''); }} title="Sign out">↪</button></div>
     </aside>
-    <main className={`main-content ${selectedWorkerId ? 'detail-mode' : ''}`}><div className="topbar"><div className="eyebrow">DASHBOARD / {selectedWorkerId ? `WORKER / ${selectedWorkerId.toUpperCase()}` : 'CONTROL ROOM'}</div><button className="icon-button" title="Refresh" onClick={() => void refresh()}><Icon name="refresh" /></button></div>
-      <nav className="mobile-nav" aria-label="Stream workers"><a href="#/" className={!selectedWorkerId ? 'active' : ''}>All workers</a>{workers.map(worker => <a key={worker.id} href={`#/worker/${worker.id}`} className={selectedWorkerId === worker.id ? 'active' : ''}>{worker.profile?.displayName || worker.id}</a>)}</nav>
+    <main className={`main-content ${selectedWorkerId ? 'detail-mode' : ''}`}><div className="topbar"><div className="topbar-identity"><span className="mobile-brand-mark" aria-hidden="true">▶</span><div className="eyebrow">DASHBOARD / {selectedWorkerId ? `WORKER / ${selectedWorkerId.toUpperCase()}` : 'CONTROL ROOM'}</div></div><button className="icon-button" title="Refresh" aria-label="Refresh dashboard" onClick={() => void refresh()}><Icon name="refresh" /></button></div>
+      <nav className="mobile-nav" aria-label="Stream workers"><a href="#/" className={!selectedWorkerId ? 'active' : ''}>All workers</a>{workers.map(worker => <a key={worker.id} href={`#/${worker.id}`} className={selectedWorkerId === worker.id ? 'active' : ''}>{worker.profile?.displayName || worker.id}</a>)}</nav>
       {selectedWorkerId ? <div className="detail-view">
         <section className="detail-intro"><div><a href="#/" className="back-link">← All workers</a><div className="eyebrow highlight">PLAYER · {selectedWorkerId.toUpperCase()}</div></div>
           <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
