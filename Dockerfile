@@ -9,7 +9,9 @@ RUN apt-get update \
 
 COPY package.json package-lock.json ./
 COPY scripts ./scripts
-RUN npm ci --omit=dev \
+# Both bundled FFmpeg CLIs duplicate the system binary in the runtime.
+RUN SKIP_FFMPEG=true npm ci --omit=dev \
+  && rm -rf node_modules/ffmpeg-static node_modules/node-av/binary/ffmpeg \
   && npm cache clean --force
 
 FROM node:22-trixie-slim AS dashboard-build
@@ -29,8 +31,7 @@ ENV NODE_ENV=production
 # ffmpeg binary (fluent-ffmpeg), which must be built with the libzmq muxer
 # (Discord sends stream data over a ZMQ socket). Debian trixie's ffmpeg
 # ships with libzmq and pulls in the libva2 runtime for VAAPI.
-# (The CS2 bot does NOT use this system binary — it always uses the
-#  self-contained ffmpeg-static npm binary, so it is unaffected.)
+# The CS2 bot also uses this binary for music and TTS audio decoding.
 #
 # Optional, for explicitly selected VAAPI encoding inside this image:
 #   - Intel GPU : Intel Media Driver (`intel-media-va-driver`)

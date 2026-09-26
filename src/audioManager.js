@@ -16,7 +16,9 @@ const {
   joinVoiceChannel,
   VoiceConnectionStatus
 } = require('@discordjs/voice');
-const ffmpegPath = require('ffmpeg-static');
+// The container already ships FFmpeg for video streaming. Reuse it for voice
+// audio as well instead of bundling a second, static FFmpeg binary.
+const ffmpegPath = (process.env.FFMPEG_PATH || '').trim() || 'ffmpeg';
 const googleTTS = require('google-tts-api');
 const { SPEECH, formatSpeechList } = require('./speech.ts');
 
@@ -499,11 +501,6 @@ class AudioManager {
       return false;
     }
 
-    if (!ffmpegPath) {
-      this.warn('ffmpeg binary missing; music disabled', { musicPath: trackPath });
-      return false;
-    }
-
     if (options.replace) {
       this.stopMusic(session);
     }
@@ -745,11 +742,6 @@ class AudioManager {
 
   decodeMp3ToPcm(mp3Buffer, requestId = 'manual') {
     return new Promise((resolve, reject) => {
-      if (!ffmpegPath) {
-        reject(new Error('ffmpeg-static did not provide an ffmpeg binary'));
-        return;
-      }
-
       this.info('TTS ffmpeg decode starting', { requestId, mp3Bytes: mp3Buffer.length, ffmpegPath });
       const proc = spawn(ffmpegPath, [
         '-hide_banner',
