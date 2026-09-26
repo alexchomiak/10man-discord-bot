@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
-const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'pause', 'resume', 'catchup', 'toggle-overlay', 'reorder', 'set-name']);
+const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'pause', 'resume', 'catchup', 'toggle-overlay', 'reorder', 'remove-queued', 'set-name']);
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
@@ -174,6 +174,12 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
             return json(res, 400, { error: 'Invalid queue order.' });
           }
           payload.ids = body.ids;
+        }
+        if (operation === 'remove-queued') {
+          if (typeof body.queueId !== 'string' || !/^[a-f0-9-]{36}$/i.test(body.queueId)) {
+            return json(res, 400, { error: 'Invalid queue item ID.' });
+          }
+          payload.queueId = body.queueId;
         }
         const result = await broker.request(operation, payload, workerId);
         return json(res, result.ok ? 200 : 409, { ok: !!result.ok, message: result.message,

@@ -12,7 +12,8 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "sonner": "^2.0.8"
   },
   "devDependencies": {
     "vite": "^7.1.7"

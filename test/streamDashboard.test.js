@@ -61,7 +61,12 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(move.ok,true);
   const reorder = await (await request('/api/workers/one/actions', { operation:'reorder', ids:['q1'] })).json();
   assert.equal(reorder.ok,true);
-  assert.deepEqual(calls.slice(0,2).map(call=>call.operation),['move','reorder']);
+  const queueId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const remove = await (await request('/api/workers/one/actions', { operation:'remove-queued', queueId })).json();
+  assert.equal(remove.ok,true);
+  assert.deepEqual(calls.slice(0,3).map(call=>call.operation),['move','reorder','remove-queued']);
+  assert.equal(calls[2].payload.queueId,queueId);
+  assert.equal((await request('/api/workers/one/actions', { operation:'remove-queued', queueId:'bad' })).status,400);
   const name = await (await request('/api/workers/one/actions', { operation:'set-name', guildId, name:'Movie Night' })).json();
   assert.equal(name.scope,'guild');
   assert.deepEqual(nicknames,['Movie Night']);

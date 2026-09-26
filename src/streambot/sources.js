@@ -810,6 +810,62 @@ async function resolveYtdlp(raw, cfg) {
   return { kind: 'ytdlp', available: false, note: M.STREAM_NO_PROGRESSIVE };
 }
 
+function jellyfinDownload(raw) {
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    const match = /^(.*)\/Items\/([a-f0-9]{32})\/Download\/?$/i.exec(url.pathname);
+    if (!match) return null;
+    const key = [...url.searchParams.keys()].find(name => /^(apikey|api_key)$/i.test(name));
+    return { url, prefix: match[1], itemId: match[2], key, token: key ? url.searchParams.get(key) : null };
+  } catch { return null; }
+}
+
+async function resolveJellyfinMetadata(raw, fetchImpl = fetch) {
+  const source = jellyfinDownload(raw);
+  if (!source) return null;
+  const itemUrl = new URL(source.url);
+  itemUrl.pathname = `${source.prefix}/Items/${source.itemId}`;
+  itemUrl.search = '';
+  if (source.token) itemUrl.searchParams.set(source.key, source.token);
+  try {
+    const response = await fetchImpl(itemUrl.toString(), {
+      headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(3500)
+    });
+    if (!response.ok || Number(response.headers.get('content-length')) > 256 * 1024) return null;
+    const chunks = [];
+    let bytes = 0;
+    for await (const chunk of response.body) {
+      bytes += chunk.length;
+      if (bytes > 256 * 1024) return null;
+      chunks.push(chunk);
+    }
+    const item = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (!item || typeof item !== 'object' || String(item.Id || '').toLowerCase() !== source.itemId.toLowerCase()) return null;
+    const name = typeof item.Name === 'string' ? item.Name.trim().slice(0, 200) : '';
+    const series = typeof item.SeriesName === 'string' ? item.SeriesName.trim().slice(0, 120) : '';
+    const title = series && name ? `${series} — ${name}` : name || series || null;
+    const ticks = Number(item.RunTimeTicks);
+    const totalDurationSec = Number.isFinite(ticks) && ticks > 0 ? Math.round(ticks / 10000000) : null;
+    let imageId = null;
+    let imageType = 'Primary';
+    if (item.ImageTags?.Primary) imageId = source.itemId;
+    else if (item.ImageTags?.Thumb) { imageId = source.itemId; imageType = 'Thumb'; }
+    else if (/^[a-f0-9]{32}$/i.test(String(item.ParentPrimaryImageItemId || ''))) imageId = item.ParentPrimaryImageItemId;
+    else if (/^[a-f0-9]{32}$/i.test(String(item.SeriesId || '')) && item.SeriesPrimaryImageTag) imageId = item.SeriesId;
+    let thumbnail = null;
+    if (imageId) {
+      const imageUrl = new URL(source.url);
+      imageUrl.pathname = `${source.prefix}/Items/${imageId}/Images/${imageType}`;
+      imageUrl.search = '';
+      imageUrl.searchParams.set('maxWidth', '640');
+      if (source.token) imageUrl.searchParams.set(source.key, source.token);
+      thumbnail = imageUrl.toString();
+    }
+    return { title, totalDurationSec, thumbnail };
+  } catch { return null; }
+}
+
 async function resolveSource(input, config) {
   const cfg = config || {};
   const raw = String(input || '').trim();
@@ -831,6 +887,22 @@ async function resolveSource(input, config) {
 
   const isHttp = /^https?:\/\//i.test(raw);
   const isPrefixed = /^[a-zA-Z][a-zA-Z0-9+.-]*:[^\s]+$/.test(raw);
+  if (jellyfinDownload(raw)) {
+    const metadataRequest = resolveJellyfinMetadata(raw);
+    const playback = await resolveYtdlp(raw, cfg);
+    // Metadata must not turn a slow item API into a slow playback command.
+    let graceTimer;
+    const metadata = await Promise.race([
+      metadataRequest,
+      new Promise(resolve => { graceTimer = setTimeout(() => resolve(null), 500); })
+    ]);
+    clearTimeout(graceTimer);
+    return playback.available && metadata
+      ? { ...playback, title: metadata.title || playback.title,
+        thumbnail: metadata.thumbnail || playback.thumbnail,
+        totalDurationSec: metadata.totalDurationSec ?? playback.totalDurationSec }
+      : playback;
+  }
   if (isHttp || isPrefixed) return resolveYtdlp(raw, cfg);
 
   return { kind: 'unknown', available: false, note: M.SOURCE_UNRECOGNIZED };
@@ -842,6 +914,7 @@ module.exports = {
   resolveShareTv,
   resolveDirect,
   resolveYtdlp,
+  resolveJellyfinMetadata,
   isYoutubeHlsUrl,
   looksLikeShareTv,
   // primitives (used by tests and advanced consumers):

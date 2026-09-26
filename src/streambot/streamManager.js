@@ -1428,6 +1428,20 @@ class StreamManager {
     });
   }
 
+  async removeQueued(queueId) {
+    return this._serialize(async () => {
+      const queue = this.voiceLink?.pipeline?.enqueue;
+      if (!queue || typeof queueId !== 'string') return { ok: false, message: 'No queue item to remove.' };
+      const index = queue.findIndex(piece => !piece.isFiller && piece.queueId === queueId);
+      if (index < 0) return { ok: false, message: 'Queue changed; refresh and try again.' };
+      const title = queue[index].title || 'video';
+      let start = index;
+      while (start > 0 && queue[start - 1].isFiller && queue[start - 1].title === 'buffer') start--;
+      queue.splice(start, index - start + 1);
+      return { ok: true, title };
+    });
+  }
+
   async toggleProgressOverlay() {
     return this._serialize(async () => {
       this.progressOverlay = !this.progressOverlay;

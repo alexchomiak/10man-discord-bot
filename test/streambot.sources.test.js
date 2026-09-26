@@ -5,6 +5,8 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const http = require('node:http');
+const { once } = require('node:events');
 
 const {
   resolveSource,
@@ -628,6 +630,36 @@ test('hls: manifest_url present -> streamType single, stream the manifest URL (n
   assert.strictEqual(calls.length, 1, 'HLS: exactly ONE yt-dlp call');
   assert.strictEqual(calls[0].mode, 'dump', 'HLS: the call must be --dump-json (not -g, not -o)');
   assert.ok(!calls.some((c) => c.argv.includes('-o')), 'HLS: no download (-o) must happen');
+});
+
+test('Jellyfin Download URL keeps yt-dlp playback and adds item title, runtime, and artwork', async t => {
+  setScenario('hls');
+  const id = 'f3d6bd13a3738a4240d6d6a493728e5b';
+  const paths = [];
+  let metadataAvailable = true;
+  const server = http.createServer((req, res) => {
+    paths.push(req.url);
+    if (metadataAvailable && req.url.startsWith(`/Items/${id}?`)) {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ Id: id, Name: 'Episode 3', SeriesName: 'The Series',
+        RunTimeTicks: 3600 * 10000000, ImageTags: { Primary: 'image-tag' } }));
+    } else { res.writeHead(404).end(); }
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/Items/${id}/Download?ApiKey=test-key`;
+  const result = await resolveSource(url, CfgPlain);
+  assert.equal(result.streamUrl, 'https://manifest.example/hls/master.m3u8');
+  assert.equal(result.title, 'The Series — Episode 3');
+  assert.equal(result.totalDurationSec, 3600);
+  assert.match(result.thumbnail, new RegExp(`/Items/${id}/Images/Primary`));
+  assert.equal(paths.length, 1, 'metadata lookup must not download media');
+  assert.match(paths[0], /ApiKey=test-key/);
+  metadataAvailable = false;
+  const fallback = await resolveSource(url, CfgPlain);
+  assert.equal(fallback.available, true);
+  assert.equal(fallback.title, 'HLS VOD', 'metadata failure must not block yt-dlp playback');
 });
 
 test('single: combined direct url -> streamType single, stream the direct URL (no download)', async () => {

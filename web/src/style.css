@@ -11,6 +11,8 @@
 .drag-handle{border:0;background:transparent;padding:3px 5px;color:#aab9c9;touch-action:none;line-height:1;cursor:grab}
 .drag-handle:hover{color:#d9ff62}
 .drag-handle:active{cursor:grabbing}
+.queue-remove{width:26px;height:26px;flex:0 0 26px;display:grid;place-items:center;border:1px solid transparent;background:transparent;color:#8c9aab;border-radius:5px;font-size:21px;line-height:1}
+.queue-remove:hover{color:#ff9696;background:#4c2d36;border-color:#81515d}
 .seek-slider{display:block;width:100%;height:18px;margin:0;cursor:pointer;appearance:none;background:transparent}
 .seek-slider::-webkit-slider-runnable-track{height:6px;border-radius:9px;background:linear-gradient(to right,#d9ff62 var(--seek-percent),#45564e var(--seek-percent))}
 .seek-slider::-moz-range-track{height:6px;border-radius:9px;background:linear-gradient(to right,#d9ff62 var(--seek-percent),#45564e var(--seek-percent))}

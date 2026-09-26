@@ -83,6 +83,9 @@ class StreamBroker {
         if (pending && pending.workerId === socket.workerId) {
           clearTimeout(pending.timer);
           this.pending.delete(message.requestId);
+          if (worker && message.result && Object.hasOwn(message.result, 'status')) {
+            worker.status = message.result.status;
+          }
           pending.resolve(message.result || { ok: false, message: 'Worker returned no result.' });
         }
       }

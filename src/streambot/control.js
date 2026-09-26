@@ -50,6 +50,10 @@ class StreamControl {
         const r = await this.streamManager.reorderQueue(payload.ids);
         return this._result(r.ok === true, r.message || 'Queue reordered.');
       }
+      case 'remove-queued': {
+        const r = await this.streamManager.removeQueued(payload.queueId);
+        return this._result(r.ok === true, r.ok ? `Removed ${r.title} from the queue.` : r.message);
+      }
       case 'move': {
         if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);
         const r = await this.streamManager.moveChannel(guildId, channelId);
@@ -111,7 +115,7 @@ class StreamControl {
         if (!resolved?.available) return this._result(false, resolved?.note || M.SOURCE_UNRECOGNIZED);
         const label = resolved.kind === 'sharetv' && resolved.channel
           ? resolved.channel
-          : (resolved.streamUrl || resolved.videoUrl || input);
+          : (resolved.title || resolved.streamUrl || resolved.videoUrl || input);
         const r = await this.streamManager.start({
           guildId, channelId,
           sourceInput: input,

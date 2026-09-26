@@ -438,6 +438,17 @@ test('queue reorder keeps each transition filler attached and rejects stale orde
   assert.equal((await mgr.reorderQueue([before[0].id])).ok,false);
 });
 
+test('removing a queued video also removes its transition filler without touching playback', async t => {
+  const {mgr,start}=fixture(t);
+  await start('a'); await start('b'); await start('c');
+  const before = mgr.status().queue.filter(item=>!item.isFiller);
+  const removed = await mgr.removeQueued(before[0].id);
+  assert.equal(removed.ok,true);
+  assert.equal(mgr.session.title,'a');
+  assert.deepEqual(mgr.voiceLink.pipeline.enqueue.map(item=>item.title), ['buffer','c']);
+  assert.equal((await mgr.removeQueued(before[0].id)).ok,false);
+});
+
 test('external move cannot wedge stop/play commands when the old media writer never exits', async t => {
   const {mgr,start}=fixture(t,{streamBufferSec:0,streamCleanupTimeoutMs:30},{hangAppend:true});
   await start('a');

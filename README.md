@@ -248,6 +248,8 @@ The optional React control room runs in the CS app bot process when `STREAM_BROK
 
 Set `STREAM_DASHBOARD_CHANNEL_IDS=123456789012345678,234567890123456789` to show only those voice channels in the dashboard dropdown. Channel names still come from Discord. Leave it empty to show all visible voice channels; the manual ID dialog works regardless of this filter.
 
+The dashboard can remove queued videos without interrupting the current stream. For Jellyfin `/Items/<id>/Download` URLs, the worker also tries a short, same-server item metadata lookup for title, runtime, and artwork; video playback still uses yt-dlp and proceeds if metadata is unavailable. Jellyfin artwork URLs may contain the same API key as the supplied media URL so the browser can load them.
+
 The Docker build bundles the React app automatically. For a local non-Docker run, build it once with `npm ci --prefix web && npm run build --prefix web` before starting the CS bot.
 
 For multiple workers in one container, set:

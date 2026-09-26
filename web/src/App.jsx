@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { Toaster, toast } from 'sonner';
 
 const TIMEOUT_MS = 65000;
 const fmt = seconds => {
@@ -44,7 +45,7 @@ function Icon({ name, size = 17 }) {
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-function SortableQueueItem({ item, index, canControl }) {
+function SortableQueueItem({ item, index, canControl, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: !canControl });
   return <div ref={setNodeRef} className={`queue-item ${isDragging ? 'dragging' : ''}`}
     style={{ transform: CSS.Transform.toString(transform), transition }}>
@@ -54,6 +55,8 @@ function SortableQueueItem({ item, index, canControl }) {
     {item.thumbnail && <img className="queue-thumb" src={item.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer"
       onError={event => { event.currentTarget.style.display = 'none'; }} />}
     <div className="queue-copy"><strong>{item.title}</strong><small>{item.isLive ? 'Live' : item.durationSec ? fmt(item.durationSec) : 'Video'}</small></div>
+    <button type="button" className="queue-remove" aria-label={`Remove ${item.title} from queue`}
+      title="Remove from queue" disabled={!canControl} onClick={() => onRemove(item.id)}>×</button>
   </div>;
 }
 
@@ -180,7 +183,8 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy }
       <SortableContext items={displayQueue.map(item => item.id)} strategy={verticalListSortingStrategy}>
         <div className="queue-list">
           {displayQueue.length ? displayQueue.map((item, index) =>
-            <SortableQueueItem key={item.id} item={item} index={index} canControl={canControl} />)
+            <SortableQueueItem key={item.id} item={item} index={index} canControl={canControl}
+              onRemove={queueId => void send('remove-queued', { queueId })} />)
             : <div className="queue-empty">No videos in the queue yet.</div>}
         </div>
       </SortableContext>
@@ -233,8 +237,8 @@ export default function App() {
   const [channels, setChannels] = useState([]);
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState({});
-  const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  useEffect(() => { if (error) toast.error(error); }, [error]);
   useEffect(() => {
     fetch('/api/auth-question').then(response => response.json())
       .then(result => setQuestion(result.question || 'Dashboard password'))
@@ -266,21 +270,23 @@ export default function App() {
     try {
       const result = await api(answer, `/api/workers/${encodeURIComponent(workerId)}/actions`,
         { method: 'POST', body: JSON.stringify({ operation, ...payload }) });
-      setNotice(result.message || 'Done.'); setError('');
+      toast.success(operation === 'play' ? 'Playback request accepted.' : result.message || 'Done.');
+      setError('');
       await refresh();
       return result;
-    } catch (failure) { setError(failure.message); return null; }
+    } catch (failure) { toast.error(failure.message); return null; }
     finally { setBusy(previous => ({ ...previous, [workerId]: false })); }
   };
-  if (!answer) return <div className="login-page"><div className="login-glow" /><div className="login-card">
+  if (!answer) return <div className="login-page"><Toaster position="top-right" theme="dark" richColors closeButton />
+    <div className="login-glow" /><div className="login-card">
     <div className="brand-mark">▶</div><div className="eyebrow">10MAN CONTROL ROOM</div>
     <h1>Stream Deck</h1><p>Your Discord streams, all in one place.</p>
     <form onSubmit={event => { event.preventDefault(); sessionStorage.setItem('stream-dashboard-answer', login); setAnswer(login); }}>
       <label htmlFor="dashboard-answer">{question}</label><input id="dashboard-answer" type="password" value={login} onChange={event => setLogin(event.target.value)} autoComplete="off" placeholder="Your answer" required />
       <button className="primary-button" type="submit">Open control room <span>→</span></button>
-    </form>{error && <div className="error-note">{error}</div>}
+    </form>
   </div></div>;
-  return <div className="app-shell">
+  return <div className="app-shell"><Toaster position="top-right" theme="dark" richColors closeButton />
     <aside className="sidebar"><div className="sidebar-brand"><div className="brand-mark">▶</div><span>10MAN<span className="brand-light">/STREAM</span></span></div>
       <div className="sidebar-label">WORKSPACE</div><div className="sidebar-item active">◫ <span>Control room</span></div>
       <div className="sidebar-section"><div className="sidebar-label">FLEET</div>{workers.map(worker => <a key={worker.id} href={`#worker-${worker.id}`} className="sidebar-worker"><span className={`sidebar-status ${worker.online ? 'on' : ''}`} />{worker.profile?.displayName || worker.id}</a>)}</div>
@@ -291,8 +297,6 @@ export default function App() {
         <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
       </section>
       <div className="overview"><div><span className="overview-number">{workers.length}</span><span className="overview-label">WORKERS</span></div><div><span className="overview-number">{workers.filter(worker => worker.online).length}</span><span className="overview-label">ONLINE</span></div><div><span className="overview-number">{workers.filter(worker => worker.status?.current && !worker.status.current.isFiller).length}</span><span className="overview-label">ON AIR</span></div><div className="overview-note"><span className="pulse" /> Auto-refreshing every 5 seconds</div></div>
-      {error && <div className="alert error">{error}<button onClick={() => setError('')}>×</button></div>}
-      {notice && <div className="alert success">{notice}<button onClick={() => setNotice('')}>×</button></div>}
       <div className="cards-grid">{workers.map(worker => <div id={`worker-${worker.id}`} key={worker.id}><WorkerCard worker={worker} guildId={guildId} guilds={state.guilds} channels={channels} action={action} onModal={setModal} busy={busy[worker.id]} /></div>)}</div>
       {!workers.length && <div className="empty-fleet">No stream workers configured or connected.</div>}
       <footer>10MAN STREAM DECK <span>·</span> Persistent Go Live control</footer>
