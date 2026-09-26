@@ -5,6 +5,11 @@ import { CSS } from '@dnd-kit/utilities';
 import { Toaster, toast } from 'sonner';
 
 const TIMEOUT_MS = 65000;
+const workerIdFromHash = () => {
+  const match = /^#\/worker\/([A-Za-z0-9_-]{1,32})$/.exec(window.location.hash)
+    || /^#worker-([A-Za-z0-9_-]{1,32})$/.exec(window.location.hash);
+  return match?.[1] || null;
+};
 const fmt = seconds => {
   if (!Number.isFinite(seconds)) return '—:—';
   const n = Math.max(0, Math.floor(seconds));
@@ -60,7 +65,7 @@ function SortableQueueItem({ item, index, canControl, onRemove }) {
   </div>;
 }
 
-function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy }) {
+function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, expanded = false }) {
   const status = worker.status;
   const queue = status?.queue || [];
   const realQueue = queue.filter(item => !item.isFiller);
@@ -121,7 +126,7 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy }
     try { await send('scrub', { deltaSec }); }
     finally { setSeeking(false); setSeek(null); }
   };
-  return <article className={`worker-card ${worker.online ? '' : 'offline'}`}>
+  return <article className={`worker-card ${expanded ? 'expanded' : ''} ${worker.online ? '' : 'offline'}`}>
     <header className="worker-header">
       <div className="avatar-wrap">
         {worker.profile?.avatarUrl ? <img className="avatar" src={worker.profile.avatarUrl} alt="" /> : <div className="avatar avatar-fallback">{worker.id.slice(0, 1).toUpperCase()}</div>}
@@ -229,6 +234,7 @@ function Modal({ modal, close, action, guildId }) {
 }
 
 export default function App() {
+  const [selectedWorkerId, setSelectedWorkerId] = useState(workerIdFromHash);
   const [answer, setAnswer] = useState(() => sessionStorage.getItem('stream-dashboard-answer') || '');
   const [question, setQuestion] = useState('Dashboard password');
   const [login, setLogin] = useState('');
@@ -238,6 +244,11 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState({});
   const [error, setError] = useState('');
+  useEffect(() => {
+    const onRoute = () => { setSelectedWorkerId(workerIdFromHash()); window.scrollTo(0, 0); };
+    window.addEventListener('hashchange', onRoute);
+    return () => window.removeEventListener('hashchange', onRoute);
+  }, []);
   useEffect(() => { if (error) toast.error(error); }, [error]);
   useEffect(() => {
     fetch('/api/auth-question').then(response => response.json())
@@ -265,6 +276,7 @@ export default function App() {
     return () => { live = false; };
   }, [answer, guildId]);
   const workers = useMemo(() => state?.workers || [], [state]);
+  const selectedWorker = workers.find(worker => worker.id === selectedWorkerId);
   const action = async (workerId, operation, payload = {}) => {
     setBusy(previous => ({ ...previous, [workerId]: true }));
     try {
@@ -288,17 +300,29 @@ export default function App() {
   </div></div>;
   return <div className="app-shell"><Toaster position="top-right" theme="dark" richColors closeButton />
     <aside className="sidebar"><div className="sidebar-brand"><div className="brand-mark">▶</div><span>10MAN<span className="brand-light">/STREAM</span></span></div>
-      <div className="sidebar-label">WORKSPACE</div><div className="sidebar-item active">◫ <span>Control room</span></div>
-      <div className="sidebar-section"><div className="sidebar-label">FLEET</div>{workers.map(worker => <a key={worker.id} href={`#worker-${worker.id}`} className="sidebar-worker"><span className={`sidebar-status ${worker.online ? 'on' : ''}`} />{worker.profile?.displayName || worker.id}</a>)}</div>
+      <div className="sidebar-label">WORKSPACE</div><a href="#/" className={`sidebar-item ${!selectedWorkerId ? 'active' : ''}`}>◫ <span>Control room</span></a>
+      <div className="sidebar-section"><div className="sidebar-label">FLEET</div>{workers.map(worker => <a key={worker.id} href={`#/worker/${worker.id}`} className={`sidebar-worker ${selectedWorkerId === worker.id ? 'active' : ''}`}><span className={`sidebar-status ${worker.online ? 'on' : ''}`} />{worker.profile?.displayName || worker.id}</a>)}</div>
       <div className="sidebar-footer"><span className="sidebar-status on" /> Broker connected <button onClick={() => { sessionStorage.removeItem('stream-dashboard-answer'); setAnswer(''); }} title="Sign out">↪</button></div>
     </aside>
-    <main className="main-content"><div className="topbar"><div className="eyebrow">DASHBOARD / CONTROL ROOM</div><button className="icon-button" title="Refresh" onClick={() => void refresh()}><Icon name="refresh" /></button></div>
-      <section className="page-heading"><div><div className="eyebrow highlight">LIVE OPERATIONS</div><h1>Stream Deck<span className="heading-period">.</span></h1><p>Manage your Discord stream workers and playback queues.</p></div>
-        <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
-      </section>
-      <div className="overview"><div><span className="overview-number">{workers.length}</span><span className="overview-label">WORKERS</span></div><div><span className="overview-number">{workers.filter(worker => worker.online).length}</span><span className="overview-label">ONLINE</span></div><div><span className="overview-number">{workers.filter(worker => worker.status?.current && !worker.status.current.isFiller).length}</span><span className="overview-label">ON AIR</span></div><div className="overview-note"><span className="pulse" /> Auto-refreshing every 5 seconds</div></div>
-      <div className="cards-grid">{workers.map(worker => <div id={`worker-${worker.id}`} key={worker.id}><WorkerCard worker={worker} guildId={guildId} guilds={state.guilds} channels={channels} action={action} onModal={setModal} busy={busy[worker.id]} /></div>)}</div>
-      {!workers.length && <div className="empty-fleet">No stream workers configured or connected.</div>}
+    <main className={`main-content ${selectedWorkerId ? 'detail-mode' : ''}`}><div className="topbar"><div className="eyebrow">DASHBOARD / {selectedWorkerId ? `WORKER / ${selectedWorkerId.toUpperCase()}` : 'CONTROL ROOM'}</div><button className="icon-button" title="Refresh" onClick={() => void refresh()}><Icon name="refresh" /></button></div>
+      <nav className="mobile-nav" aria-label="Stream workers"><a href="#/" className={!selectedWorkerId ? 'active' : ''}>All workers</a>{workers.map(worker => <a key={worker.id} href={`#/worker/${worker.id}`} className={selectedWorkerId === worker.id ? 'active' : ''}>{worker.profile?.displayName || worker.id}</a>)}</nav>
+      {selectedWorkerId ? <div className="detail-view">
+        <section className="detail-intro"><div><a href="#/" className="back-link">← All workers</a><div className="eyebrow highlight">DEDICATED PLAYER · {selectedWorkerId.toUpperCase()}</div>
+          <h1>{selectedWorker?.profile?.displayName || selectedWorkerId}<span className="heading-period">.</span></h1>
+          <p>Playback, queue, and voice controls for this stream worker.</p></div>
+          <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
+        </section>
+        {!state ? <div className="empty-fleet">Connecting to stream workers…</div>
+          : selectedWorker ? <WorkerCard worker={selectedWorker} guildId={guildId} guilds={state.guilds} channels={channels} action={action} onModal={setModal} busy={busy[selectedWorker.id]} expanded />
+            : <div className="empty-fleet">Worker “{selectedWorkerId}” is not configured. <a href="#/">View all workers</a></div>}
+      </div> : <>
+        <section className="page-heading"><div><div className="eyebrow highlight">LIVE OPERATIONS</div><h1>Stream Deck<span className="heading-period">.</span></h1><p>Manage your Discord stream workers and playback queues.</p></div>
+          <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
+        </section>
+        <div className="overview"><div><span className="overview-number">{workers.length}</span><span className="overview-label">WORKERS</span></div><div><span className="overview-number">{workers.filter(worker => worker.online).length}</span><span className="overview-label">ONLINE</span></div><div><span className="overview-number">{workers.filter(worker => worker.status?.current && !worker.status.current.isFiller).length}</span><span className="overview-label">ON AIR</span></div><div className="overview-note"><span className="pulse" /> Auto-refreshing every 5 seconds</div></div>
+        <div className="cards-grid">{workers.map(worker => <div key={worker.id}><WorkerCard worker={worker} guildId={guildId} guilds={state.guilds} channels={channels} action={action} onModal={setModal} busy={busy[worker.id]} /></div>)}</div>
+        {!workers.length && <div className="empty-fleet">No stream workers configured or connected.</div>}
+      </>}
       <footer>10MAN STREAM DECK <span>·</span> Persistent Go Live control</footer>
     </main>
     {modal && <Modal key={`${modal.kind}-${modal.worker.id}`} modal={modal} close={() => setModal(null)} action={action} guildId={guildId} />}
