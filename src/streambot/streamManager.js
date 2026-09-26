@@ -112,6 +112,7 @@ class StreamManager {
     this._feederFactory = (streamer, videoModule) => new PersistentTrackFeeder({
       streamer, videoModule, width: this.config.streamWidth || 1920,
       height: this.config.streamHeight || 1080, frameRate: this.config.streamFrameRate || 30,
+      videoCodec: this._outputCodec(),
       diagnostics: this.config.verbose === true
     });
   }
@@ -137,9 +138,7 @@ class StreamManager {
 
   setupStreamOptions(videoModule, startOffsetSec, durationSec, inputFormat) {
     const cfg = this.config;
-    const codec = videoModule.Utils
-      ? videoModule.Utils.normalizeVideoCodec(cfg.videoCodec || 'H264')
-      : (cfg.videoCodec || 'H264').toUpperCase();
+    const codec = this._outputCodec();
     const bitrate = Number.isFinite(cfg.streamBitrate) ? cfg.streamBitrate : 5000;
     const width = cfg.streamWidth || 1920; // fixed session format; pad instead of changing aspect ratio
     const height = Number.isFinite(cfg.streamHeight) && cfg.streamHeight > 0 ? cfg.streamHeight : 1080;
@@ -188,6 +187,7 @@ class StreamManager {
   // false from setVolume (volume stays at 1.0) — parity with the library's
   // own behavior when azmq can't connect.
   async preparePlayback(videoModule) {
+    this._outputCodec();
     try {
       await demuxGuard.ensureTrackerInstalled();
     } catch (e) {
@@ -209,14 +209,27 @@ class StreamManager {
     return [...new Set([configured, ...discovered])];
   }
 
+  _outputCodec() {
+    const codec = String(this.config.videoCodec || 'H264').trim().toUpperCase();
+    if (codec !== 'H264' && codec !== 'AV1') {
+      throw new Error(`VIDEO_CODEC=${codec} is unsupported by the persistent stream; use H264 or AV1`);
+    }
+    if (codec === 'AV1' && this.config.videoEncoder !== 'vaapi') {
+      throw new Error('VIDEO_CODEC=AV1 requires STREAMBOT_VIDEO_ENCODER=vaapi');
+    }
+    return codec;
+  }
+
   _probeVaapiDevice(device) {
+    const codec = this._outputCodec();
     const bin = this.config.ffmpegPath || 'ffmpeg';
     const args = [
       '-hide_banner', '-loglevel', 'error',
       '-vaapi_device', device,
       '-f', 'lavfi', '-i', 'color=c=black:s=320x180:r=30',
       '-frames:v', '1', '-vf', 'format=nv12,hwupload',
-      '-c:v', 'h264_vaapi', '-profile:v', 'constrained_baseline',
+      '-c:v', codec === 'AV1' ? 'av1_vaapi' : 'h264_vaapi',
+      ...(codec === 'H264' ? ['-profile:v', 'constrained_baseline'] : []),
       '-f', 'null', '-'
     ];
     return new Promise(resolve => {
@@ -283,7 +296,7 @@ class StreamManager {
         const result = await this._probeVaapiDevice(device);
         if (result.ok) {
           this.config.vaapiDevice = device;
-          log('info', `VAAPI ready: h264_vaapi on ${device}`);
+          log('info', `VAAPI ready: ${this._outputCodec() === 'AV1' ? 'av1_vaapi' : 'h264_vaapi'} on ${device}`);
           return device;
         }
         failures.push(`${device}: ${String(result.detail || 'initialization failed').replace(/\s+/g, ' ').trim()}`);
@@ -292,7 +305,7 @@ class StreamManager {
         failures.push(`diagnostic: ${await this._probeVaapiInfo(this._vaapiCandidates()[0])}`);
       }
       this._vaapiReady = null;
-      throw new Error(`VAAPI H.264 initialization failed for every render device. ${failures.join(' | ')}`);
+      throw new Error(`VAAPI ${this._outputCodec() === 'H264' ? 'H.264' : 'AV1'} initialization failed for every render device. ${failures.join(' | ')}`);
     })();
     return this._vaapiReady;
   }
@@ -309,25 +322,39 @@ class StreamManager {
       // stream that late-joining Discord viewers cannot initialize. Keep the
       // hardware upload path, but constrain H.264 to a WebRTC-safe stream
       // with decoder headers on every one-second IDR boundary.
-      return (bitrate, bitrateMax) => ({
-        H264: {
-          name: 'h264_vaapi',
-          // Hardware-decoded frames already live on the VAAPI device. Avoid
-          // downloading and uploading them between decode, scale and encode.
-          outFilters: inputOnVaapi ? [] : ['format=nv12', 'hwupload'],
-          globalOptions: ['-vaapi_device', device],
-          options: [
-            '-profile:v', 'constrained_baseline',
-            '-level:v', '4.1',
-            '-g', String(keyframeFrames),
-            '-keyint_min', String(keyframeFrames),
-            '-idr_interval', '0',
-            '-bf', '0',
-            '-b:v', `${Math.round(bitrate)}k`,
-            '-maxrate:v', `${Math.round(bitrateMax)}k`
-          ]
-        }
+      const h264 = (bitrate, bitrateMax) => ({
+        name: 'h264_vaapi',
+        // Hardware-decoded frames already live on the VAAPI device. Avoid
+        // downloading and uploading them between decode, scale and encode.
+        outFilters: inputOnVaapi ? [] : ['format=nv12', 'hwupload'],
+        globalOptions: ['-vaapi_device', device],
+        options: [
+          '-profile:v', 'constrained_baseline',
+          '-level:v', '4.1',
+          '-g', String(keyframeFrames),
+          '-keyint_min', String(keyframeFrames),
+          '-idr_interval', '0',
+          '-bf', '0',
+          '-b:v', `${Math.round(bitrate)}k`,
+          '-maxrate:v', `${Math.round(bitrateMax)}k`
+        ]
       });
+      if (this._outputCodec() === 'AV1') {
+        return (bitrate, bitrateMax) => ({
+          AV1: {
+            name: 'av1_vaapi',
+            outFilters: inputOnVaapi ? [] : ['format=nv12', 'hwupload'],
+            globalOptions: ['-vaapi_device', device],
+            options: [
+              '-g', String(keyframeFrames),
+              '-bf', '0',
+              '-b:v', `${Math.round(bitrate)}k`,
+              '-maxrate:v', `${Math.round(bitrateMax)}k`
+            ]
+          }
+        });
+      }
+      return (bitrate, bitrateMax) => ({ H264: h264(bitrate, bitrateMax) });
     }
     return videoModule.Encoders?.software?.({ x264: { preset: 'superfast', tune: 'film' } }) || null;
   }
@@ -336,9 +363,7 @@ class StreamManager {
     const cfg = this.config;
     const ff = require('fluent-ffmpeg');
 
-    const codec = videoModule.Utils
-      ? videoModule.Utils.normalizeVideoCodec(cfg.videoCodec || 'H264')
-      : (cfg.videoCodec || 'H264').toUpperCase();
+    const codec = this._outputCodec();
     const bitrate = Number.isFinite(cfg.streamBitrate) && cfg.streamBitrate > 0 ? Math.round(cfg.streamBitrate) : 5000;
     const bitrateMax = Math.round(bitrate * 1.4);
     // A small VBV reservoir smooths the encoded wire rate. With the previous
@@ -486,19 +511,23 @@ class StreamManager {
     if (padAudio) command.addOutputOption('-shortest');
     command.addOutputOption('-force_key_frames', `expr:gte(t,n_forced*${keyframeIntervalSec})`);
 
-    // Encoder settings use VAAPI on Intel when configured and libx264
-    // otherwise. Fall back to ultrafast libx264 if the library exports no
-    // encoder helper (mainly useful for compatibility with older releases).
+    // An AV1 sender must never receive H.264 packets through a silent codec
+    // fallback. H.264 retains the legacy software fallback.
     let encoderSettings = null;
     try {
       const encoder = this._encoder(videoModule, useVaapiFrames && !showProgress);
       if (encoder) {
         if (typeof encoder === 'function') {
           const byCodec = encoder(bitrate, bitrateMax) || {};
-          encoderSettings = byCodec[codec] || byCodec.H264 || null;
+          encoderSettings = byCodec[codec] || null;
         }
       }
-    } catch { /* fall through to fallback */ }
+    } catch (error) {
+      if (codec === 'AV1') throw error;
+    }
+    if (codec === 'AV1' && !encoderSettings) {
+      throw new Error('AV1 VAAPI encoder settings are unavailable; refusing to send H.264 as AV1');
+    }
     if (encoderSettings) {
       command
         .videoCodec(encoderSettings.name)

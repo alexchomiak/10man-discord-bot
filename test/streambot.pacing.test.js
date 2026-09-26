@@ -71,6 +71,17 @@ test('preparePlayback: VAAPI preflight refuses playback when no render node work
   await assert.rejects(() => mgr.preparePlayback({}), /VAAPI H\.264 initialization failed.*permission denied/);
 });
 
+test('preparePlayback: AV1 requires VAAPI and fails clearly when Arc encoding is unavailable', async () => {
+  const software = new StreamManager({ token: 't' }, 'c1', { videoCodec: 'AV1' });
+  await assert.rejects(() => software.preparePlayback({}), /VIDEO_CODEC=AV1 requires STREAMBOT_VIDEO_ENCODER=vaapi/);
+  const h265 = new StreamManager({ token: 't' }, 'c1', { videoCodec: 'h265', videoEncoder: 'vaapi' });
+  await assert.rejects(() => h265.preparePlayback({}), /VIDEO_CODEC=H265 is unsupported/);
+  const arc = new StreamManager({ token: 't' }, 'c1', { videoCodec: 'AV1', videoEncoder: 'vaapi' });
+  arc._vaapiCandidates = () => ['/dev/dri/renderD128'];
+  arc._probeVaapiDevice = async () => ({ ok: false, detail: 'encoder unavailable' });
+  await assert.rejects(() => arc.preparePlayback({}), /VAAPI AV1 initialization failed.*encoder unavailable/);
+});
+
 test('start() call-site latch: StreamManager.prototype.start references preparePlayback', () => {
   assert.ok(
     StreamManager.prototype.start.toString().includes('preparePlayback'),
@@ -285,6 +296,30 @@ test('Arc mode uses VAAPI encode with the configured render device and 1080p/30 
   assert.deepStrictEqual(argv.slice(argv.indexOf('-bufsize:v'), argv.indexOf('-bufsize:v') + 2), ['-bufsize:v', '1500k']);
   assert.deepStrictEqual(argv.slice(argv.indexOf('-force_key_frames'), argv.indexOf('-force_key_frames') + 2),
     ['-force_key_frames', 'expr:gte(t,n_forced*2)']);
+});
+
+test('Arc AV1 uses av1_vaapi at 1080p30 and keeps the requested bitrate and GOP', () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    videoCodec: 'AV1', videoEncoder: 'vaapi', hardwareDecode: true,
+    vaapiDevice: '/dev/dri/renderD128', streamWidth: 1920, streamHeight: 1080,
+    streamFrameRate: 30, streamBitrate: 4000, keyframeIntervalSec: 1
+  });
+  const command = mgr._buildDashMerge({}, 'https://cdn.example/v.mp4',
+    'https://cdn.example/a.m4a', 0, null, { isLive: false }).command;
+  const argv = argvOf(command);
+  assert.ok(argv.includes('av1_vaapi'));
+  assert.ok(!argv.includes('h264_vaapi') && !argv.includes('libx264'));
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-hwaccel'), argv.indexOf('-hwaccel') + 6),
+    ['-hwaccel', 'vaapi', '-hwaccel_device', '/dev/dri/renderD128', '-hwaccel_output_format', 'vaapi']);
+  assert.ok(argv.some(arg => arg.includes('scale_vaapi=w=1920:h=1080')));
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-r'), argv.indexOf('-r') + 2), ['-r', '30']);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-g'), argv.indexOf('-g') + 2), ['-g', '30']);
+  assert.ok(argv.includes('4000k') && argv.includes('5600k'));
+  const filler = mgr._buildDashMerge({}, 'testsrc=size=1920x1080:rate=30',
+    null, 0, { customInputOptions: ['-f', 'lavfi'] }, { isFiller: true, inputFormat: 'lavfi' }).command;
+  const fillerArgv = argvOf(filler);
+  assert.ok(fillerArgv.includes('av1_vaapi'), 'filler must use the same codec as content on the persistent stream');
+  assert.ok(!fillerArgv.includes('h264_vaapi') && !fillerArgv.includes('libx264'));
 });
 
 test('Arc hardware decode keeps decode, aspect-correct scale, pad and encode on VAAPI', () => {

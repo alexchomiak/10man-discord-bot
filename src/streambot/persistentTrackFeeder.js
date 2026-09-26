@@ -135,12 +135,13 @@ class TimedTrack extends Writable {
 }
 
 class PersistentTrackFeeder {
-  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30, diagnostics = false } = {}) {
+  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30, videoCodec = 'H264', diagnostics = false } = {}) {
     this.streamer = streamer;
     this.videoModule = videoModule;
     this.width = width;
     this.height = height;
     this.frameRate = frameRate;
+    this.videoCodec = videoCodec;
     this.diagnostics = diagnostics;
     this.connection = null;
     this.startPromise = null;
@@ -171,7 +172,7 @@ class PersistentTrackFeeder {
         this.streamer.stopStream?.();
         throw new Error('Persistent track feeder closed during startup');
       }
-      connection.setPacketizer('H264');
+      connection.setPacketizer(this.videoCodec);
       connection.mediaConnection.setSpeaking(true);
       connection.mediaConnection.setVideoAttributes(true, {
         width: Math.round(this.width), height: Math.round(this.height), fps: Math.round(this.frameRate)

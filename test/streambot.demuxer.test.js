@@ -291,6 +291,20 @@ test('persistent track feeder creates one go-live connection across sequential c
   await feeder.close();
 });
 
+test('persistent track feeder configures the negotiated AV1 packetizer', async () => {
+  const codecs = [];
+  const connection = {
+    ready: true,
+    setPacketizer(codec) { codecs.push(codec); },
+    mediaConnection: { setSpeaking() {}, setVideoAttributes() {} }
+  };
+  const feeder = new PersistentTrackFeeder({
+    streamer: { createStream: async () => connection }, videoModule: {}, videoCodec: 'AV1'
+  });
+  await feeder.start();
+  assert.deepStrictEqual(codecs, ['AV1']);
+});
+
 test('VOD feeder drains a full video queue to reach the next audio packet', async () => {
   const packet = pts => ({
     data: Buffer.from([1]), pts: BigInt(pts), duration: 1n,
