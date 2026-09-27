@@ -37,6 +37,7 @@ class StreamBrokerClient {
       this._send({
         type: 'register',
         workerId: this.workerId,
+        accessCode: this.streamManager?.config?.dashboardAccessCode,
         userId: this.streamManager?.client?.user?.id || null,
         capabilities: CAPABILITIES,
         status: this.streamManager.status(), musicMode: this.streamManager.musicMode === true

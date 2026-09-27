@@ -3,7 +3,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
-const { createStreamDashboard, parseExternalChannels, publicStatus } = require('../src/streamDashboard');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { createStreamDashboard, parseExternalChannels, publicStatus, scopedStatus } = require('../src/streamDashboard');
 
 const guildId = '111111111111111111';
 const channelId = '222222222222222222';
@@ -26,7 +29,21 @@ test('dashboard strips resolved media URLs from its public status', () => {
   assert(!JSON.stringify(status).includes('ApiKey'));
 });
 
+test('public worker status omits channel IDs and credential-bearing thumbnails', () => {
+  const status = scopedStatus({ guildId, channelId,
+    current: { id: 'one', title: 'Movie', thumbnail: 'https://jelly.example/Images/Primary?ApiKey=secret' },
+    queue: [{ id: 'two', title: 'Next', thumbnail: 'https://i.ytimg.com/vi/example/default.jpg' }] });
+  assert.equal(status.inVoiceChannel, true);
+  assert.equal(status.guildId, undefined);
+  assert.equal(status.channelId, undefined);
+  assert.equal(status.current.thumbnail, null);
+  assert.equal(status.queue[0].thumbnail, 'https://i.ytimg.com/vi/example/default.jpg');
+});
+
 test('dashboard authenticates reads and commands, routes moves/reorders, and falls back to nickname', async t => {
+  const staticDir = await fs.mkdtemp(path.join(os.tmpdir(), 'stream-dashboard-test-'));
+  await fs.writeFile(path.join(staticDir, 'index.html'), '<!doctype html><head></head><body>Player</body>');
+  t.after(() => fs.rm(staticDir, { recursive: true, force: true }));
   const calls = []; const nicknames = [];
   const member = { nickname: null, manageable: true, setNickname: async name => nicknames.push(name) };
   const hiddenChannelId = '444444444444444444';
@@ -40,27 +57,30 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   const guildCache = new Map([[guildId, guild], [externalGuildId, externalGuild]]);
   const client = { guilds: { cache: guildCache, fetch: async id => guildCache.get(id) || null },
     users: { cache: new Map([[userId, user]]), fetch: async () => user } };
-  const broker = { defaultWorkerId: 'one', listWorkers: () => [{ id: 'one', userId,
+  let online = true;
+  const activeWorker = { id: 'one', userId, connectedAt: 1,
     status: { guildId, channelId, streamUrl: 'https://secret/?ApiKey=private',
-      queue: [{ id: 'q1', title: 'Next' }], current: { id: 'now', title: 'Playing' } } }],
+      queue: [{ id: 'q1', title: 'Next' }], current: { id: 'now', title: 'Playing' } } };
+  const broker = { defaultWorkerId: 'one', listWorkers: () => online ? [activeWorker] : [],
+  getWorkerByAccessCode: code => online && code === 'abcdef' ? activeWorker : null,
   getWorker: () => ({ id: 'one', userId }), request: async (operation, payload, workerId) => {
     calls.push({ operation, payload, workerId });
     if (operation === 'set-global-name') return { ok: false, message: 'CAPTCHA_SOLVER_NOT_IMPLEMENTED' };
     return { ok: true, message: 'Done.', status: null };
   } };
-  const dashboard = createStreamDashboard({ broker, client, secretQuestion: "What is Alex's nickname?",
-    secretAnswer: 'chomes', configuredWorkerIds: ['one','two'], channelIds: [channelId],
+  const dashboard = createStreamDashboard({ broker, client, password: 'CaseSensitivePassword',
+    configuredWorkerIds: ['one','two'], channelIds: [channelId],
     externalChannels: parseExternalChannels(`${externalGuildId}:${externalChannelId}`),
-    host: '127.0.0.1', port: 0, log: () => {} });
+    host: '127.0.0.1', port: 0, staticDir, log: () => {} });
   dashboard.listen(); await once(dashboard.server, 'listening');
   t.after(() => dashboard.close());
   const base = `http://127.0.0.1:${dashboard.server.address().port}`;
-  const request = (route, body, answer = 'CHOMES') => fetch(`${base}${route}`, {
-    method: body ? 'POST' : 'GET', headers: { Authorization: `Bearer ${answer}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+  const request = (route, body, password = 'CaseSensitivePassword') => fetch(`${base}${route}`, {
+    method: body ? 'POST' : 'GET', headers: { Authorization: `Bearer ${password}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body && JSON.stringify(body)
   });
-  const challenge = await (await fetch(`${base}/api/auth-question`)).json();
-  assert.equal(challenge.question, "What is Alex's nickname?");
+  assert.equal((await fetch(`${base}/api/auth-question`)).status, 401);
+  assert.equal((await request('/api/state', null, 'casesensitivepassword')).status, 401);
   assert.equal((await request('/api/state', null, 'wrong')).status,401);
   const state = await (await request(`/api/state?guildId=${guildId}`)).json();
   assert.equal(state.workers.length,2);
@@ -92,4 +112,31 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(name.scope,'guild');
   assert.deepEqual(nicknames,['Movie Night']);
   assert.equal((await request('/api/workers/one/actions', { operation:'stop' }, 'wrong')).status,401);
+  const publicFetch = (route, body) => fetch(`${base}${route}`, { method: body ? 'POST' : 'GET',
+    headers: body ? { 'Content-Type': 'application/json' } : {}, body: body && JSON.stringify(body) });
+  const signedPage = await publicFetch('/abcdef');
+  assert.equal(signedPage.status, 200);
+  assert.equal(signedPage.headers.get('referrer-policy'), 'no-referrer');
+  assert.match(await signedPage.text(), /name="stream-public-code" content="abcdef"/);
+  assert.equal((await publicFetch('/xxxxxx')).status, 404);
+  const scoped = await (await publicFetch('/api/public/abcdef/state')).json();
+  assert.deepEqual(scoped.worker.status.queue.map(item => item.title), ['Next']);
+  assert.equal(scoped.worker.status.guildId, undefined);
+  assert.equal(scoped.worker.status.channelId, undefined);
+  assert.equal(scoped.guilds, undefined);
+  const scopedPlay = await (await publicFetch('/api/public/abcdef/actions', { operation: 'play',
+    source: 'https://youtube.com/watch?v=test', guildId: externalGuildId, channelId: externalChannelId })).json();
+  assert.equal(scopedPlay.ok, true);
+  assert.equal(calls.at(-1).workerId, 'one');
+  assert.equal(calls.at(-1).payload.guildId, guildId);
+  assert.equal(calls.at(-1).payload.channelId, channelId);
+  assert.equal((await publicFetch('/api/public/abcdef/actions', { operation: 'move',
+    guildId: externalGuildId, channelId: externalChannelId })).status, 403);
+  assert.equal((await publicFetch('/api/public/abcdef/actions', { operation: 'set-name', name: 'Hijack' })).status, 403);
+  assert.equal((await publicFetch('/api/public/abcdef/actions', { operation: 'stop' })).status, 403);
+  assert.equal((await publicFetch(`/api/guilds/${guildId}/channels`)).status, 401);
+  assert.equal((await publicFetch('/api/state')).status, 401);
+  online = false;
+  assert.equal((await publicFetch('/api/public/abcdef/state')).status, 404);
+  assert.equal((await publicFetch('/api/public/abcdef/actions', { operation: 'pause' })).status, 404);
 });

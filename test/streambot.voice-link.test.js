@@ -199,6 +199,7 @@ function fixture(t, config = {}, moduleOptions = {}) {
   const fv = fakeVideoModule(moduleOptions);
   const alerts = [];
   const mgr = new StreamManager(makeClient(), 'c1', { playStreamStartTimeoutMs: 100, jitterBufferSec: 0,
+    dashboardAccessCode: 'abcdef',
     alertSink: { notify: async (event, detail) => alerts.push({event,detail}) }, ...config });
   mgr._videoModule = fv.moduleRef;
   mgr._prepareSingle = (vm, piece) => vm.prepareStream(piece.streamUrl,
@@ -237,6 +238,7 @@ test('config: grace, filler and queue defaults retain existing env names', () =>
   process.env.SELF_BOT_TOKEN = 'test';
   try {
     const cfg = require('../src/streambot/config').loadConfig();
+    assert.match(cfg.dashboardAccessCode, /^[a-z]{6}$/);
     assert.equal(cfg.streamGraceMs, Number(process.env.STREAM_GRACE_MS) || 300000);
     assert.equal(cfg.streamQueueLimit, Number(process.env.STREAM_QUEUE_LIMIT) || 100);
   } finally { if (old === undefined) delete process.env.SELF_BOT_TOKEN; else process.env.SELF_BOT_TOKEN=old; }

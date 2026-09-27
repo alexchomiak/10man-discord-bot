@@ -8,6 +8,8 @@ const crypto = require('node:crypto');
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
 const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-name']);
+const PUBLIC_ACTIONS = new Set(['play', 'skip', 'scrub', 'seek', 'pause', 'resume', 'reorder', 'remove-queued']);
+const ACCESS_CODE = /^[a-z]{6}$/;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
@@ -25,11 +27,6 @@ function sameToken(expected, actual) {
   const a = Buffer.from(String(expected || ''));
   const b = Buffer.from(String(actual || ''));
   return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-function sameAnswer(expected, actual) {
-  return sameToken(String(expected || '').trim().toLocaleLowerCase('en-US'),
-    String(actual || '').trim().toLocaleLowerCase('en-US'));
 }
 
 function publicStatus(status) {
@@ -52,10 +49,46 @@ function publicStatus(status) {
     stats: status.stats || null };
 }
 
-function createStreamDashboard({ broker, client, token, secretQuestion, secretAnswer, configuredWorkerIds = [], channelIds = [], externalChannels = [], host = '0.0.0.0', port = 8082,
+function scopedStatus(status) {
+  const value = publicStatus(status);
+  if (!value) return null;
+  const safeThumbnail = item => {
+    if (!item?.thumbnail) return;
+    try {
+      const url = new URL(item.thumbnail);
+      const sensitive = [...url.searchParams.keys()].some(key => /^(api.?key|token|access.?token|auth|key)$/i.test(key));
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || sensitive) item.thumbnail = null;
+    } catch { item.thumbnail = null; }
+  };
+  safeThumbnail(value.current);
+  value.queue.forEach(safeThumbnail);
+  delete value.guildId;
+  delete value.channelId;
+  delete value.stats;
+  value.inVoiceChannel = !!(status.guildId && status.channelId);
+  return value;
+}
+
+function createStreamDashboard({ broker, client, password, token, configuredWorkerIds = [], channelIds = [], externalChannels = [], host = '0.0.0.0', port = 8082,
   staticDir = path.resolve(__dirname, '../web/dist'), log = console.log } = {}) {
-  if (!secretAnswer && !token) return null;
+  const adminPassword = password || token;
+  if (!adminPassword) return null;
   const profileCache = new Map();
+  const invalidCodes = new Map();
+  const authFailures = new Map();
+  const recordFailure = (req, attempts) => {
+    const key = req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    if (!attempts.has(key) && attempts.size >= 1000) attempts.delete(attempts.keys().next().value);
+    const previous = attempts.get(key);
+    const count = previous && now - previous.since < 60000 ? previous.count + 1 : 1;
+    attempts.set(key, { count, since: previous && now - previous.since < 60000 ? previous.since : now });
+    return count;
+  };
+  const invalidCodeResponse = (req, res) => {
+    const count = recordFailure(req, invalidCodes);
+    return json(res, count > 30 ? 429 : 404, { error: count > 30 ? 'Too many invalid links.' : 'Link expired or unavailable.' });
+  };
   const json = (res, code, body) => {
     res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff' });
@@ -117,15 +150,29 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
   async function handle(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     if (url.pathname.startsWith('/api/')) {
-      if (req.method === 'GET' && url.pathname === '/api/auth-question') {
-        return json(res, 200, { question: secretAnswer ? secretQuestion || 'What is the password?' : 'Dashboard password' });
+      const scopedMatch = /^\/api\/public\/([a-z]{6})\/(state|actions)$/.exec(url.pathname);
+      let scopedWorker = null;
+      if (scopedMatch) {
+        scopedWorker = broker.getWorkerByAccessCode?.(scopedMatch[1]) || null;
+        if (!scopedWorker) return invalidCodeResponse(req, res);
+        if (req.method === 'GET' && scopedMatch[2] === 'state') {
+          return json(res, 200, { worker: { id: scopedWorker.id, online: true,
+            musicMode: scopedWorker.musicMode === true,
+            status: scopedStatus(scopedWorker.status),
+            profile: scopedWorker.userId ? await profile(scopedWorker.userId, scopedWorker.status?.guildId) : null } });
+        }
+        if (req.method !== 'POST' || scopedMatch[2] !== 'actions') return json(res, 405, { error: 'Method not allowed.' });
+      } else {
+        const auth = String(req.headers.authorization || '');
+        const supplied = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+        if (!sameToken(adminPassword, supplied)) {
+          const count = recordFailure(req, authFailures);
+          return json(res, count > 30 ? 429 : 401,
+            { error: count > 30 ? 'Too many password attempts.' : 'Incorrect password.' });
+        }
+        authFailures.delete(req.socket.remoteAddress || 'unknown');
       }
-      const auth = String(req.headers.authorization || '');
-      const supplied = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-      if (secretAnswer ? !sameAnswer(secretAnswer, supplied) : !sameToken(token, supplied)) {
-        return json(res, 401, { error: 'Incorrect answer.' });
-      }
-      if (req.method === 'GET' && url.pathname === '/api/state') {
+      if (!scopedWorker && req.method === 'GET' && url.pathname === '/api/state') {
         const guildId = url.searchParams.get('guildId') || null;
         const online = new Map(broker.listWorkers().map(worker => [worker.id, worker]));
         const ids = [...new Set([broker.defaultWorkerId, ...configuredWorkerIds, ...online.keys()])];
@@ -141,7 +188,7 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
         return json(res, 200, { defaultWorkerId: broker.defaultWorkerId, workers, guilds });
       }
       const channelMatch = /^\/api\/guilds\/(\d{17,20})\/channels$/.exec(url.pathname);
-      if (req.method === 'GET' && channelMatch) {
+      if (!scopedWorker && req.method === 'GET' && channelMatch) {
         const guild = client.guilds.cache.get(channelMatch[1]) || await client.guilds.fetch(channelMatch[1]).catch(() => null);
         if (!guild) return json(res, 404, { error: 'Server unavailable to the CS bot; use manual IDs.' });
         const channels = await guild.channels.fetch();
@@ -163,11 +210,11 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
         }));
         return json(res, 200, { channels: [...local, ...external.filter(Boolean)] });
       }
-      const actionMatch = /^\/api\/workers\/([A-Za-z0-9_-]{1,32})\/actions$/.exec(url.pathname);
+      const actionMatch = scopedWorker ? [null, scopedWorker.id] : /^\/api\/workers\/([A-Za-z0-9_-]{1,32})\/actions$/.exec(url.pathname);
       if (req.method === 'POST' && actionMatch) {
         const body = await readBody(req);
         const operation = String(body?.operation || '');
-        if (!ACTIONS.has(operation)) return json(res, 400, { error: 'Unsupported action.' });
+        if (!(scopedWorker ? PUBLIC_ACTIONS : ACTIONS).has(operation)) return json(res, 403, { error: 'Action not available on this page.' });
         const workerId = actionMatch[1];
         if (!WORKER_ID.test(workerId)) return json(res, 400, { error: 'Invalid worker ID.' });
         if (operation === 'set-name') {
@@ -177,13 +224,15 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
           }
           return json(res, 200, await setName(workerId, name, String(body.guildId)));
         }
-        const payload = { requestedBy: 'dashboard' };
+        const payload = { requestedBy: scopedWorker ? 'public-link' : 'dashboard' };
         if (['play', 'join', 'move'].includes(operation)) {
-          if (!DISCORD_ID.test(String(body.guildId || '')) || !DISCORD_ID.test(String(body.channelId || ''))) {
+          const targetGuild = scopedWorker ? scopedWorker.status?.guildId : body.guildId;
+          const targetChannel = scopedWorker ? scopedWorker.status?.channelId : body.channelId;
+          if (!DISCORD_ID.test(String(targetGuild || '')) || !DISCORD_ID.test(String(targetChannel || ''))) {
             return json(res, 400, { error: 'Valid server and voice channel IDs are required.' });
           }
-          payload.guildId = String(body.guildId);
-          payload.channelId = String(body.channelId);
+          payload.guildId = String(targetGuild);
+          payload.channelId = String(targetChannel);
         }
         if (operation === 'play') {
           const source = String(body.source || '').trim();
@@ -216,14 +265,23 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
           }
           payload.queueId = body.queueId;
         }
+        if (scopedWorker) {
+          const current = broker.getWorkerByAccessCode?.(scopedMatch[1]);
+          if (!current || current.id !== workerId || current.connectedAt !== scopedWorker.connectedAt) {
+            return json(res, 410, { error: 'Link expired or unavailable.' });
+          }
+        }
         const result = await broker.request(operation, payload, workerId);
         return json(res, result.ok ? 200 : 409, { ok: !!result.ok, message: result.message,
-          status: publicStatus(result.status), detail: result.detail || null });
+          status: scopedWorker ? scopedStatus(result.status) : publicStatus(result.status),
+          detail: scopedWorker ? null : result.detail || null });
       }
       return json(res, 404, { error: 'Not found.' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'Method not allowed.' });
-    const filename = url.pathname === '/' ? 'index.html' : url.pathname.replace(/^\//, '');
+    const accessCode = /^\/([a-z]{6})$/.exec(url.pathname)?.[1];
+    if (accessCode && !broker.getWorkerByAccessCode?.(accessCode)) return invalidCodeResponse(req, res);
+    const filename = url.pathname === '/' || accessCode ? 'index.html' : url.pathname.replace(/^\//, '');
     if (filename.includes('..') || !/^[A-Za-z0-9_./-]+$/.test(filename)) return json(res, 404, { error: 'Not found.' });
     const file = path.join(staticDir, filename);
     if (!file.startsWith(`${staticDir}${path.sep}`)) return json(res, 404, { error: 'Not found.' });
@@ -232,8 +290,12 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
     catch { return json(res, 404, { error: 'Dashboard assets unavailable; build the web app.' }); }
     res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream',
       'Cache-Control': filename === 'index.html' ? 'no-store' : 'public, max-age=3600',
-      'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'self'; img-src 'self' https: http: data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'" });
-    if (req.method === 'HEAD') res.end(); else res.end(data);
+      'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow',
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' https: http: data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'" });
+    if (req.method === 'HEAD') res.end();
+    else if (accessCode && filename === 'index.html') {
+      res.end(data.toString('utf8').replace('</head>', `<meta name="stream-public-code" content="${accessCode}" /></head>`));
+    } else res.end(data);
   }
   const server = http.createServer((req, res) => {
     void handle(req, res).catch(error => {
@@ -249,4 +311,4 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
   };
 }
 
-module.exports = { createStreamDashboard, parseExternalChannels, publicStatus, sameToken, sameAnswer };
+module.exports = { createStreamDashboard, parseExternalChannels, publicStatus, scopedStatus, sameToken };

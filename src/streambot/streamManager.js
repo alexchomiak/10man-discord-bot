@@ -1169,6 +1169,7 @@ class StreamManager {
             } catch { /* Profile image is optional. */ }
             piece.musicArtwork = await createMusicArtwork({
               baseUrl: this.config.dashboardBaseUrl,
+              accessCode: this.config.dashboardAccessCode,
               workerId: this.config.workerId || this.config.defaultWorkerId || 'primary',
               title: piece.isFiller ? null : piece.title,
               thumbnail: piece.isFiller ? null : piece.thumbnail,
@@ -1190,6 +1191,7 @@ class StreamManager {
               } catch { /* An unavailable profile image must not stop filler playback. */ }
               const artwork = await createFillerArtwork({
                 baseUrl: this.config.dashboardBaseUrl,
+                accessCode: this.config.dashboardAccessCode,
                 workerId: this.config.workerId || this.config.defaultWorkerId || 'primary',
                 avatarUrl,
                 next: piece.upNext,
@@ -1612,8 +1614,7 @@ class StreamManager {
   async toggleMusicMode() {
     return this._serialize(async () => {
       const enabled = !this.musicMode;
-      if (enabled && !workerDashboardUrl(this.config.dashboardBaseUrl,
-        this.config.workerId || this.config.defaultWorkerId || 'primary')) {
+      if (enabled && !workerDashboardUrl(this.config.dashboardBaseUrl, this.config.dashboardAccessCode)) {
         return { ok: false, message: 'Set STREAM_DASHBOARD_BASE_URL to the public dashboard URL before enabling Music Mode.' };
       }
       this.musicMode = enabled;
@@ -1833,7 +1834,15 @@ class StreamManager {
         return { ok: true, noOp: true, skippedTo: null, fellBackToFiller: false, queued: p ? p.enqueue.length : 0 };
       }
       let fellBackToFiller = false;
-      if (active) this._cancelPiece(active);
+      if (active) {
+        // A seek or mode switch may have a replacement of this same source
+        // waiting at the head of the queue. Skip should leave the source,
+        // not start that replacement and appear to do nothing.
+        for (let i = p.enqueue.length - 1; i >= 0; i--) {
+          if (!p.enqueue[i].isFiller && p.enqueue[i].queueId === active.queueId) p.enqueue.splice(i, 1);
+        }
+        this._cancelPiece(active);
+      }
       if (p && p.enqueue.length === 0) {
         p.enqueue.push(this._placeholder(link));
         fellBackToFiller = true;

@@ -5,6 +5,11 @@ import { CSS } from '@dnd-kit/utilities';
 import { Toaster, toast } from 'sonner';
 
 const TIMEOUT_MS = 65000;
+const publicCode = document.querySelector('meta[name="stream-public-code"]')?.content || null;
+const apiPrefix = publicCode
+  ? window.location.pathname.slice(0, -publicCode.length)
+  : window.location.pathname.replace(/[^/]*$/, '');
+const apiRoute = route => `${apiPrefix.replace(/\/$/, '')}${route}`;
 const workerIdFromHash = () => {
   const match = /^#\/([A-Za-z0-9_-]{1,32})$/.exec(window.location.hash)
     || /^#\/worker\/([A-Za-z0-9_-]{1,32})$/.exec(window.location.hash)
@@ -23,8 +28,9 @@ async function api(answer, route, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const response = await fetch(route, { ...options, signal: controller.signal,
-      headers: { Authorization: `Bearer ${answer}`, ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
+    const response = await fetch(apiRoute(route), { ...options, signal: controller.signal,
+      headers: { ...(answer ? { Authorization: `Bearer ${answer}` } : {}),
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
     const result = await response.json();
     if (!response.ok || result.ok === false) {
       const error = new Error(result.error || result.message || `Request failed (${response.status})`);
@@ -122,7 +128,7 @@ function ChannelPicker({ workerId, channels, selected, onSelect, disabled }) {
   </div>;
 }
 
-function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, expanded = false }) {
+function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, expanded = false, publicView = false }) {
   const status = worker.status;
   const musicMode = worker.musicMode === true || status?.musicMode === true;
   const queue = status?.queue || [];
@@ -156,13 +162,14 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
   const preferred = destinationKey || (status?.guildId && status?.channelId ? `${status.guildId}:${status.channelId}` : '');
   const selected = channels.find(channel => channelKey(channel) === preferred) || channels[0];
   const canControl = worker.online && !busy;
+  const canAdd = canControl && (!publicView || !!status?.inVoiceChannel);
   const channelName = channels.find(channel => channel.guildId === status?.guildId && channel.id === status?.channelId)?.name;
   const destination = () => ({ guildId: selected?.guildId, channelId: selected?.id });
   const send = (operation, payload = {}) => action(worker.id, operation, payload);
   const play = async event => {
     event.preventDefault();
     if (!source.trim()) return;
-    const where = status?.guildId && status?.channelId
+    const where = publicView ? {} : status?.guildId && status?.channelId
       ? { guildId: status.guildId, channelId: status.channelId }
       : destination();
     if (await send('play', { ...where, source: source.trim() })) setSource('');
@@ -195,9 +202,9 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
       <div className="worker-title">
         <div className="eyebrow">STREAM WORKER · {worker.id}</div>
         <h2>{worker.profile?.displayName || worker.id}</h2>
-        <div className="worker-subtitle">{worker.online ? status?.channelId ? <><Icon name="audio" size={13} /> {channelName || `Voice ${status.channelId}`}</> : 'Standing by' : 'Offline'}</div>
+        <div className="worker-subtitle">{worker.online ? publicView ? status?.inVoiceChannel ? 'In a voice channel' : 'Standing by' : status?.channelId ? <><Icon name="audio" size={13} /> {channelName || `Voice ${status.channelId}`}</> : 'Standing by' : 'Offline'}</div>
       </div>
-      <div className="worker-header-actions">
+      {!publicView && <div className="worker-header-actions">
         <button type="button" className={`mode-toggle ${musicMode ? 'active' : ''}`}
           aria-label={`Turn Music Mode ${musicMode ? 'off' : 'on'} for ${worker.id}`}
           aria-pressed={musicMode} disabled={!canControl}
@@ -220,7 +227,7 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
             </dl>
           </div>
         </div>
-      </div>
+      </div>}
     </header>
 
     <div className="now-playing">
@@ -245,7 +252,7 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
       <button className="transport-button" disabled={!canControl || !current || status?.isLive} onClick={() => send('scrub', { deltaSec: 30 })}>+30s</button>
       <span className="transport-spacer" />
       <button className="transport-button" disabled={!canControl || !current} title="Skip" onClick={() => send('skip')}><Icon name="skip" /></button>
-      <button className="transport-button danger" disabled={!canControl || !status} title="Stop and leave" onClick={() => send('stop')}><Icon name="stop" /></button>
+      {!publicView && <button className="transport-button danger" disabled={!canControl || !status} title="Stop and leave" onClick={() => send('stop')}><Icon name="stop" /></button>}
     </div>
 
     <div className="card-divider" />
@@ -268,14 +275,15 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
 
     <form className="add-form" onSubmit={play}>
       <label htmlFor={`source-${worker.id}`}>ADD TO QUEUE</label>
-      <div className="input-row"><input id={`source-${worker.id}`} value={source} onChange={event => setSource(event.target.value)} placeholder={musicMode ? 'Paste a music URL' : 'Paste a video URL or ShareTV slug'} disabled={!canControl} /><button className="add-button" disabled={!canControl || !source.trim()} title="Play or queue"><Icon name="plus" /></button></div>
+      <div className="input-row"><input id={`source-${worker.id}`} value={source} onChange={event => setSource(event.target.value)} placeholder={musicMode ? 'Paste a music URL' : 'Paste a video URL or ShareTV slug'} disabled={!canAdd} /><button className="add-button" disabled={!canAdd || !source.trim()} title="Play or queue"><Icon name="plus" /></button></div>
+      {publicView && !status?.inVoiceChannel && <p className="public-hint">Ask the stream owner to join a voice channel before adding media.</p>}
     </form>
-    <div className="channel-controls">
+    {!publicView && <div className="channel-controls">
       <ChannelPicker workerId={worker.id} channels={channels} selected={selected ? channelKey(selected) : ''}
         onSelect={setDestinationKey} disabled={!canControl || !guildId} />
       <button className="secondary-button" disabled={!canControl || !selected} onClick={() => send(status ? 'move' : 'join', destination())}><Icon name="move" size={15} /> {status ? 'Switch' : 'Join'}</button>
       <button className="text-button manual" onClick={() => onModal({ kind: 'channel', worker, guildId, guilds })} disabled={!canControl}>Use IDs</button>
-    </div>
+    </div>}
   </article>;
 }
 
@@ -302,10 +310,50 @@ function Modal({ modal, close, action, guildId }) {
   </div></div>;
 }
 
-export default function App() {
+function PublicWorkerPage() {
+  const [worker, setWorker] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [expired, setExpired] = useState(false);
+  const refresh = useCallback(async () => {
+    try {
+      const state = await api(null, `/api/public/${publicCode}/state`);
+      setWorker(state.worker);
+    } catch (failure) {
+      if ([404, 410, 429].includes(failure.status)) setExpired(true);
+      else toast.error(failure.message);
+    }
+  }, []);
+  useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 5000); return () => clearInterval(timer); }, [refresh]);
+  const action = async (_workerId, operation, payload = {}) => {
+    setBusy(true);
+    try {
+      const result = await api(null, `/api/public/${publicCode}/actions`,
+        { method: 'POST', body: JSON.stringify({ operation, ...payload }) });
+      toast.success(result.message || 'Done.');
+      await refresh();
+      return result;
+    } catch (failure) {
+      if ([404, 410].includes(failure.status)) setExpired(true);
+      toast.error(failure.message);
+      return null;
+    } finally { setBusy(false); }
+  };
+  return <div className="app-shell public-shell"><Toaster position="top-right" theme="dark" richColors closeButton />
+    <main className="main-content detail-mode">
+      <div className="topbar"><div className="topbar-identity"><span className="mobile-brand-mark" aria-hidden="true">▶</span><div className="eyebrow">10MAN / STREAM · PUBLIC PLAYER</div></div></div>
+      <div className="detail-view">
+        {expired ? <div className="empty-fleet">This player link has expired. Scan the worker’s current QR code for a new link.</div>
+          : worker ? <WorkerCard worker={worker} guildId="" guilds={[]} channels={[]} action={action}
+              onModal={() => {}} busy={busy} expanded publicView />
+            : <div className="empty-fleet">Connecting to the stream worker…</div>}
+      </div>
+    </main>
+  </div>;
+}
+
+function AdminApp() {
   const [selectedWorkerId, setSelectedWorkerId] = useState(workerIdFromHash);
-  const [answer, setAnswer] = useState(() => sessionStorage.getItem('stream-dashboard-answer') || '');
-  const [question, setQuestion] = useState('Dashboard password');
+  const [answer, setAnswer] = useState(() => sessionStorage.getItem('stream-dashboard-password') || '');
   const [login, setLogin] = useState('');
   const [state, setState] = useState(null);
   const [guildId, setGuildId] = useState('');
@@ -319,11 +367,6 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onRoute);
   }, []);
   useEffect(() => { if (error) toast.error(error); }, [error]);
-  useEffect(() => {
-    fetch('/api/auth-question').then(response => response.json())
-      .then(result => setQuestion(result.question || 'Dashboard password'))
-      .catch(() => {});
-  }, []);
   const refresh = useCallback(async () => {
     if (!answer) return;
     try {
@@ -332,7 +375,7 @@ export default function App() {
       setError('');
       if (!guildId && next.guilds.length) setGuildId(next.guilds[0].id);
     } catch (failure) {
-      if (failure.status === 401) { sessionStorage.removeItem('stream-dashboard-answer'); setAnswer(''); setState(null); }
+      if (failure.status === 401) { sessionStorage.removeItem('stream-dashboard-password'); setAnswer(''); setState(null); }
       setError(failure.message);
     }
   }, [answer, guildId]);
@@ -363,8 +406,8 @@ export default function App() {
     <div className="login-glow" /><div className="login-card">
     <div className="brand-mark">▶</div><div className="eyebrow">10MAN CONTROL ROOM</div>
     <h1>Stream Deck</h1><p>Your Discord streams, all in one place.</p>
-    <form onSubmit={event => { event.preventDefault(); sessionStorage.setItem('stream-dashboard-answer', login); setAnswer(login); }}>
-      <label htmlFor="dashboard-answer">{question}</label><input id="dashboard-answer" type="password" value={login} onChange={event => setLogin(event.target.value)} autoComplete="off" placeholder="Your answer" required />
+    <form onSubmit={event => { event.preventDefault(); sessionStorage.setItem('stream-dashboard-password', login); setAnswer(login); }}>
+      <label htmlFor="dashboard-answer">Dashboard password</label><input id="dashboard-answer" type="password" value={login} onChange={event => setLogin(event.target.value)} autoComplete="current-password" placeholder="Password" required />
       <button className="primary-button" type="submit">Open control room <span>→</span></button>
     </form>
   </div></div>;
@@ -372,7 +415,7 @@ export default function App() {
     <aside className="sidebar"><div className="sidebar-brand"><div className="brand-mark">▶</div><span>10MAN<span className="brand-light">/STREAM</span></span></div>
       <div className="sidebar-label">WORKSPACE</div><a href="#/" className={`sidebar-item ${!selectedWorkerId ? 'active' : ''}`}>◫ <span>Control room</span></a>
       <div className="sidebar-section"><div className="sidebar-label">FLEET</div>{workers.map(worker => <a key={worker.id} href={`#/${worker.id}`} className={`sidebar-worker ${selectedWorkerId === worker.id ? 'active' : ''}`}><span className={`sidebar-status ${worker.online ? 'on' : ''}`} />{worker.profile?.displayName || worker.id}</a>)}</div>
-      <div className="sidebar-footer"><span className="sidebar-status on" /> Broker connected <button onClick={() => { sessionStorage.removeItem('stream-dashboard-answer'); setAnswer(''); }} title="Sign out">↪</button></div>
+      <div className="sidebar-footer"><span className="sidebar-status on" /> Broker connected <button onClick={() => { sessionStorage.removeItem('stream-dashboard-password'); setAnswer(''); }} title="Sign out">↪</button></div>
     </aside>
     <main className={`main-content ${selectedWorkerId ? 'detail-mode' : ''}`}><div className="topbar"><div className="topbar-identity"><span className="mobile-brand-mark" aria-hidden="true">▶</span><div className="eyebrow">DASHBOARD / {selectedWorkerId ? `WORKER / ${selectedWorkerId.toUpperCase()}` : 'CONTROL ROOM'}</div></div><button className="icon-button" title="Refresh" aria-label="Refresh dashboard" onClick={() => void refresh()}><Icon name="refresh" /></button></div>
       <nav className="mobile-nav" aria-label="Stream workers"><a href="#/" className={!selectedWorkerId ? 'active' : ''}>All workers</a>{workers.map(worker => <a key={worker.id} href={`#/${worker.id}`} className={selectedWorkerId === worker.id ? 'active' : ''}>{worker.profile?.displayName || worker.id}</a>)}</nav>
@@ -396,3 +439,5 @@ export default function App() {
     {modal && <Modal key={`${modal.kind}-${modal.worker.id}`} modal={modal} close={() => setModal(null)} action={action} guildId={guildId} />}
   </div>;
 }
+
+export default function App() { return publicCode ? <PublicWorkerPage /> : <AdminApp />; }

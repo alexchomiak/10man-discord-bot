@@ -22,7 +22,8 @@ test('broker: default and explicit worker routing, command correlation and statu
   const server = broker.start();
   await once(server, 'listening');
   const calls = [];
-  const manager = { client: { user: { id: '111111111111111111' } }, status: () => ({ title: 'Video', paused: false, queued: 1 }) };
+  const manager = { client: { user: { id: '111111111111111111' } }, config: { dashboardAccessCode: 'abcdef' },
+    status: () => ({ title: 'Video', paused: false, queued: 1 }) };
   const control = { execute: async (operation, payload) => {
     calls.push({ operation, payload });
     return { ok: true, message: `${operation} ok`, status: manager.status() };
@@ -39,7 +40,7 @@ test('broker: default and explicit worker routing, command correlation and statu
       secondaryCalls.push({ operation, payload });
       return { ok: true, message: `youtube ${operation} ok`, status: manager.status() };
     } },
-    streamManager: manager, log: () => {}
+    streamManager: { ...manager, config: { dashboardAccessCode: 'ghijkl' } }, log: () => {}
   });
   t.after(async () => { worker.close(); secondary.close(); await broker.close(); });
   worker.start();
@@ -56,7 +57,14 @@ test('broker: default and explicit worker routing, command correlation and statu
   assert.strictEqual(broker.resolveWorkerId(null), 'primary');
   assert.deepStrictEqual(broker.listWorkers().map(item => item.id).sort(), ['primary', 'youtube']);
   assert.strictEqual(broker.getWorker('primary').userId, '111111111111111111');
+  assert.strictEqual(broker.getWorkerByAccessCode('abcdef').id, 'primary');
+  assert.strictEqual(broker.getWorkerByAccessCode('ghijkl').id, 'youtube');
+  assert.strictEqual(broker.getWorkerByAccessCode('wrong'), null);
+  assert(!JSON.stringify(broker.listWorkers()).includes('abcdef'));
   assert(!broker.getWorker('primary').capabilities.includes('setDisplayName'));
+  worker.close();
+  await until(() => broker.getWorkerByAccessCode('abcdef') === null);
+  assert.strictEqual(broker.getWorkerByAccessCode('ghijkl').id, 'youtube');
 });
 
 test('Discord stream commands expose every operation and player scrub buttons', () => {
@@ -108,7 +116,8 @@ test('broker offline errors identify connected worker IDs', async t => {
   const broker = new StreamBroker({ host: '127.0.0.1', port: 0, secret: 'test-secret', defaultWorkerId: 'one', log: () => {} });
   const server = broker.start();
   await once(server, 'listening');
-  const manager = { client: { user: { id: '222222222222222222' } }, status: () => null };
+  const manager = { client: { user: { id: '222222222222222222' } },
+    config: { dashboardAccessCode: 'mnopqr' }, status: () => null };
   const primary = new StreamBrokerClient({
     url: `ws://127.0.0.1:${broker.port}`,
     secret: 'test-secret', workerId: 'primary',

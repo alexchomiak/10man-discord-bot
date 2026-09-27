@@ -78,9 +78,7 @@ const config = {
   streamBrokerPort: Number.parseInt(process.env.STREAM_BROKER_PORT || '8090', 10),
   streamBrokerSecret: process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET || '',
   defaultStreambotId: process.env.STREAMBOT_DEFAULT_ID || 'primary',
-  streamDashboardToken: process.env.STREAM_DASHBOARD_TOKEN || '',
-  streamDashboardQuestion: process.env.SECRET_QUESTION || '',
-  streamDashboardAnswer: process.env.SECRET_ANSWER || '',
+  streamDashboardPassword: process.env.STREAM_DASHBOARD_PASSWORD || process.env.STREAM_DASHBOARD_TOKEN || '',
   streamDashboardHost: process.env.STREAM_DASHBOARD_HOST || '0.0.0.0',
   streamDashboardPort: Number.parseInt(process.env.STREAM_DASHBOARD_PORT || '8082', 10),
   streamDashboardChannelIds: (process.env.STREAM_DASHBOARD_CHANNEL_IDS || '')
@@ -266,9 +264,8 @@ streamBroker.start();
 if (!streamBroker.enabled) {
   console.warn('[stream-broker] disabled: STREAM_BROKER_SECRET is not set');
 }
-const streamDashboard = streamBroker.enabled && (config.streamDashboardAnswer || config.streamDashboardToken)
-  ? createStreamDashboard({ broker: streamBroker, client, token: config.streamDashboardToken,
-    secretQuestion: config.streamDashboardQuestion, secretAnswer: config.streamDashboardAnswer,
+const streamDashboard = streamBroker.enabled && config.streamDashboardPassword
+  ? createStreamDashboard({ broker: streamBroker, client, password: config.streamDashboardPassword,
     channelIds: config.streamDashboardChannelIds,
     externalChannels: config.streamDashboardExternalChannels,
     configuredWorkerIds: (process.env.STREAMBOT_IDS || '').split(',').map(id => id.trim()).filter(Boolean),

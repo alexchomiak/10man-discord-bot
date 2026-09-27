@@ -9,12 +9,14 @@ const sharp = require('sharp');
 // Rendering is a one-off operation per filler piece, never a per-frame Node task.
 sharp.cache(false);
 
-function workerDashboardUrl(baseUrl, workerId) {
-  if (!baseUrl || !/^[A-Za-z0-9_-]{1,32}$/.test(workerId || '')) return null;
+function workerDashboardUrl(baseUrl, accessCode) {
+  if (!baseUrl || !/^[a-z]{6}$/.test(accessCode || '')) return null;
   try {
     const url = new URL(baseUrl);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
-    url.hash = `/${encodeURIComponent(workerId)}`;
+    url.hash = '';
+    url.search = '';
+    url.pathname = `${url.pathname.replace(/\/+$/, '')}/${accessCode}`;
     return url.toString();
   } catch { return null; }
 }
@@ -77,8 +79,8 @@ function artworkSvg({ url, workerId, next, hasThumbnail }) {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080"><style>text{font-family:DejaVu Sans,Arial,sans-serif}</style>${frame}${brand}${body}${next ? footer : ''}</svg>`);
 }
 
-async function createFillerArtwork({ baseUrl, workerId, avatarUrl = null, next = null, width = 1920, height = 1080, signal }) {
-  const url = workerDashboardUrl(baseUrl, workerId);
+async function createFillerArtwork({ baseUrl, workerId, accessCode, avatarUrl = null, next = null, width = 1920, height = 1080, signal }) {
+  const url = workerDashboardUrl(baseUrl, accessCode);
   if (!url) throw new Error('STREAM_DASHBOARD_BASE_URL must be an http(s) dashboard URL');
   signal?.throwIfAborted();
   const qrSize = next ? 420 : 512;

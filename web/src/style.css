@@ -218,3 +218,7 @@
   .queue-item,.worker-card.expanded .queue-item{gap:4px}
   .transport,.worker-card.expanded>.transport{gap:4px}
 }
+
+.public-shell .main-content{max-width:1200px}
+.public-shell .detail-view{padding-top:24px}
+.public-hint{margin:10px 0 0;color:#9caabb;font-size:12px}

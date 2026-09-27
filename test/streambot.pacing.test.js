@@ -255,7 +255,7 @@ test('Music Mode keeps VAAPI upload inside its complex artwork filter', () => {
 
 test('Music Mode playback passes the current piece and seek offset to the FFmpeg builder', async () => {
   const mgr = new StreamManager({ token: 't' }, 'c1', {
-    dashboardBaseUrl: 'https://stream.example.com/', workerId: 'one'
+    dashboardBaseUrl: 'https://stream.example.com/', dashboardAccessCode: 'abcdef', workerId: 'one'
   });
   mgr.musicMode = true;
   const piece = { title: 'Current song', streamUrl: 'https://cdn.example/song.mp4',

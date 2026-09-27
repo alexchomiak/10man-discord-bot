@@ -8,17 +8,18 @@ const { workerDashboardUrl, createFillerArtwork, fillerCountdownFilter } = requi
 const { createMusicArtwork, updateMusicQueue, stopMusicQueueFrames } = require('../src/streambot/musicArtwork');
 
 test('filler links target the selected worker, preserving a reverse-proxy path', () => {
-  assert.equal(workerDashboardUrl('https://stream.example.com/player/', 'one'),
-    'https://stream.example.com/player/#/one');
-  assert.equal(workerDashboardUrl('https://stream.example.com/player/', 'two'),
-    'https://stream.example.com/player/#/two');
-  assert.equal(workerDashboardUrl('file:///tmp/dashboard', 'one'), null);
+  assert.equal(workerDashboardUrl('https://stream.example.com/player/', 'abcdef'),
+    'https://stream.example.com/player/abcdef');
+  assert.equal(workerDashboardUrl('https://stream.example.com/player/', 'ghijkl'),
+    'https://stream.example.com/player/ghijkl');
+  assert.equal(workerDashboardUrl('file:///tmp/dashboard', 'abcdef'), null);
+  assert.equal(workerDashboardUrl('https://stream.example.com/', 'one'), null);
 });
 
 test('idle and next-up screens render bounded frames, and countdown is time-based', async () => {
   for (const next of [null, { title: 'Example next video', thumbnail: null }]) {
     const artwork = await createFillerArtwork({
-      baseUrl: 'https://stream.example.com/', workerId: 'one', next,
+      baseUrl: 'https://stream.example.com/', workerId: 'one', accessCode: 'abcdef', next,
       width: 1920, height: 1080
     });
     try {
@@ -26,7 +27,7 @@ test('idle and next-up screens render bounded frames, and countdown is time-base
       assert.equal(metadata.width, 1920);
       assert.equal(metadata.height, 1080);
       assert.equal(metadata.format, 'png');
-      assert.equal(artwork.url, 'https://stream.example.com/#/one');
+      assert.equal(artwork.url, 'https://stream.example.com/abcdef');
     } finally {
       await fs.rm(artwork.directory, { recursive: true, force: true });
     }
@@ -40,11 +41,11 @@ test('next-up artwork embeds an available thumbnail', async () => {
   global.fetch = async () => new Response(thumbnail, { headers: { 'content-type': 'image/png' } });
   let artwork;
   try {
-    artwork = await createFillerArtwork({ baseUrl: 'https://stream.example.com/', workerId: 'two',
+    artwork = await createFillerArtwork({ baseUrl: 'https://stream.example.com/', workerId: 'two', accessCode: 'ghijkl',
       next: { title: 'A new video', thumbnail: 'https://images.example.com/next.png' } });
     const pixel = await sharp(artwork.file).extract({ left: 300, top: 300, width: 1, height: 1 }).raw().toBuffer();
     assert.deepEqual([...pixel.subarray(0, 3)], [255, 0, 0]);
-    assert.equal(artwork.url, 'https://stream.example.com/#/two');
+    assert.equal(artwork.url, 'https://stream.example.com/ghijkl');
   } finally {
     global.fetch = originalFetch;
     if (artwork) await fs.rm(artwork.directory, { recursive: true, force: true });
@@ -57,7 +58,7 @@ test('worker avatar is centered in the blue and neon QR code', async () => {
   global.fetch = async () => new Response(avatar, { headers: { 'content-type': 'image/png' } });
   let artwork;
   try {
-    artwork = await createFillerArtwork({ baseUrl: 'https://stream.example.com/', workerId: 'one',
+    artwork = await createFillerArtwork({ baseUrl: 'https://stream.example.com/', workerId: 'one', accessCode: 'abcdef',
       avatarUrl: 'https://cdn.discordapp.com/avatars/one.png' });
     const center = await sharp(artwork.file).extract({ left: 960, top: 496, width: 1, height: 1 }).raw().toBuffer();
     const quietZone = await sharp(artwork.file).extract({ left: 706, top: 242, width: 1, height: 1 }).raw().toBuffer();
@@ -71,12 +72,12 @@ test('worker avatar is centered in the blue and neon QR code', async () => {
 
 test('music artwork links to its worker and updates the live queue image', async () => {
   const artwork = await createMusicArtwork({ baseUrl: 'https://stream.example.com/player/',
-    workerId: 'two', title: 'Current song', queue: [{ title: 'First song' }] });
+    workerId: 'two', accessCode: 'ghijkl', title: 'Current song', queue: [{ title: 'First song' }] });
   try {
     const metadata = await sharp(artwork.file).metadata();
     assert.equal(metadata.width, 1920);
     assert.equal(metadata.height, 1080);
-    assert.equal(artwork.url, 'https://stream.example.com/player/#/two');
+    assert.equal(artwork.url, 'https://stream.example.com/player/ghijkl');
     assert(artwork.queueFrame.length > 0);
     const first = artwork.queueFrame;
     await updateMusicQueue(artwork, [{ title: 'Second song' }]);
@@ -90,7 +91,7 @@ test('music artwork links to its worker and updates the live queue image', async
 test('chaptered music updates current track and upcoming overlay without replacing the base stream', async () => {
   let position = 0;
   const artwork = await createMusicArtwork({ baseUrl: 'https://stream.example.com/player/',
-    workerId: 'one', title: 'Long mix', getPosition: () => position,
+    workerId: 'one', accessCode: 'abcdef', title: 'Long mix', getPosition: () => position,
     chapters: [{ title: 'Intro', startSec: 0, endSec: 30 },
       { title: 'First track', startSec: 30, endSec: 60 },
       { title: 'Second track', startSec: 60, endSec: 90 }],
@@ -121,7 +122,7 @@ test('music screen composites the worker avatar, current thumbnail, and queued t
     { headers: { 'content-type': 'image/png' } });
   let artwork;
   try {
-    artwork = await createMusicArtwork({ baseUrl: 'https://stream.example.com/', workerId: 'one',
+    artwork = await createMusicArtwork({ baseUrl: 'https://stream.example.com/', workerId: 'one', accessCode: 'abcdef',
       title: 'Playing now', thumbnail: 'https://images.example/current',
       avatarUrl: 'https://images.example/avatar',
       queue: [{ title: 'Coming next', thumbnail: 'https://images.example/queued' }] });

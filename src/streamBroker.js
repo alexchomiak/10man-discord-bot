@@ -5,6 +5,7 @@ const { WebSocketServer, WebSocket } = require('ws');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_USER_ID = /^\d{17,20}$/;
+const ACCESS_CODE = /^[a-z]{6}$/;
 
 function secretMatches(expected, actual) {
   const a = Buffer.from(String(expected || ''));
@@ -71,8 +72,12 @@ class StreamBroker {
         socket.workerId = id;
         const userId = String(message.userId || '');
         if (!DISCORD_USER_ID.test(userId)) { socket.close(1008, 'invalid Discord user id'); return; }
+        const accessCode = String(message.accessCode || '');
+        if (!ACCESS_CODE.test(accessCode) || [...this.workers.values()].some(worker => worker.accessCode === accessCode)) {
+          socket.close(1008, 'invalid or duplicate access code'); return;
+        }
         this.workers.set(id, { id, userId, socket, status: message.status || null,
-          musicMode: message.musicMode === true, capabilities: message.capabilities || [], connectedAt: Date.now() });
+          accessCode, musicMode: message.musicMode === true, capabilities: message.capabilities || [], connectedAt: Date.now() });
         this.log(`[stream-broker] worker connected: ${id}`);
         return;
       }
@@ -121,6 +126,17 @@ class StreamBroker {
     if (!worker || worker.socket.readyState !== WebSocket.OPEN) return null;
     const { id, userId, status, musicMode, capabilities, connectedAt } = worker;
     return { id, userId, status, musicMode, capabilities, connectedAt };
+  }
+
+  getWorkerByAccessCode(code) {
+    if (!ACCESS_CODE.test(code || '')) return null;
+    for (const worker of this.workers.values()) {
+      if (worker.accessCode === code && worker.socket.readyState === WebSocket.OPEN) {
+        const { id, userId, status, musicMode, connectedAt } = worker;
+        return { id, userId, status, musicMode, connectedAt };
+      }
+    }
+    return null;
   }
 
   resolveWorkerId(requested) {
