@@ -1,18 +1,20 @@
 'use strict';
 
-// Render only 64 FFT columns, then enlarge them with nearest-neighbor scaling.
-// The mirrored copy gives the bars a floor reflection without a second FFT.
+// Render 32 FFT columns, mirror them into 64 centered bars, then enlarge with
+// nearest-neighbor scaling. The floor reflection reuses that same FFT.
 function musicVisualizerFilter({ width, height, fps }) {
-  const barWidth = Math.max(64, Math.round(width * 0.6 / 64) * 64);
-  const barHeight = Math.max(80, Math.round(height * 0.22));
+  const barWidth = Math.max(64, Math.round(width * 0.9 / 64) * 64);
+  const barHeight = Math.max(80, Math.round(height * 0.16));
   const x = Math.round((width - barWidth) / 2);
-  const y = Math.round(height * 0.4);
+  const y = Math.round(height * 0.58);
   const rate = Math.max(1, Math.round(fps));
-  return `[1:a]showfreqs=s=64x${barHeight}:r=${rate}:mode=bar:ascale=sqrt:fscale=log:` +
-    'win_size=2048:averaging=3:colors=0x38cfff|0xb178ff,' +
-    `scale=${barWidth}:${barHeight}:flags=neighbor,format=rgba,` +
-    'colorkey=0x000000:0.08:0.05,split[bars][mirror];' +
-    '[mirror]vflip,colorchannelmixer=aa=0.20[reflection];' +
+  const columnWidth = Math.max(1, Math.round(barWidth / 64));
+  return `[1:a]volume=8,showfreqs=s=32x${barHeight}:r=${rate}:mode=bar:ascale=cbrt:fscale=log:` +
+    'win_size=2048:averaging=1:colors=0x87bfd6|0xa4b6d4,split[left][right];' +
+    '[left]hflip[mirrored];[mirrored][right]hstack=inputs=2,' +
+    `scale=${barWidth}:${barHeight}:flags=neighbor,drawgrid=w=${columnWidth}:h=${barHeight}:t=2:c=black,format=rgba,` +
+    'colorkey=0x000000:0.08:0.05,colorchannelmixer=aa=0.72,split[bars][mirror];' +
+    '[mirror]vflip,colorchannelmixer=aa=0.25[reflection];' +
     `[base][bars]overlay=${x}:${y}:shortest=0:repeatlast=1[lit];` +
     `[lit][reflection]overlay=${x}:${y + barHeight}:shortest=0:repeatlast=1[visual];`;
 }

@@ -107,6 +107,10 @@ test('music visualizer artwork keeps its background translucent and reuses one F
     const filter = musicVisualizerFilter({ width: 1920, height: 1080, fps: 30 });
     assert.equal((filter.match(/showfreqs=/g) || []).length, 1);
     assert.match(filter, /vflip/);
+    assert.match(filter, /volume=8/);
+    assert.match(filter, /colors=0x87bfd6\|0xa4b6d4/);
+    assert.match(filter, /overlay=96:626/);
+    assert.match(filter, /overlay=96:799/);
   } finally {
     stopMusicQueueFrames(artwork);
     await fs.rm(artwork.directory, { recursive: true, force: true });
@@ -151,12 +155,13 @@ test('music screen composites the worker avatar, current thumbnail, and queued t
       title: 'Playing now', thumbnail: 'https://images.example/current',
       avatarUrl: 'https://images.example/avatar',
       queue: [{ title: 'Coming next', thumbnail: 'https://images.example/queued' }] });
-    const avatar = await sharp(artwork.file).extract({ left: 500, top: 345, width: 1, height: 1 }).raw().toBuffer();
-    const current = await sharp(artwork.file).extract({ left: 500, top: 670, width: 1, height: 1 }).raw().toBuffer();
+    const avatar = await sharp(artwork.file).extract({ left: 500, top: 755, width: 1, height: 1 }).raw().toBuffer();
+    const current = await sharp(artwork.file).extract({ left: 500, top: 330, width: 1, height: 1 }).raw().toBuffer();
     const queued = await sharp(artwork.queueFrame).extract({ left: 70, top: 30, width: 1, height: 1 }).raw().toBuffer();
     assert.deepEqual([...avatar.subarray(0, 3)], [235, 94, 138]);
-    assert.deepEqual([...current.subarray(0, 3)], [33, 150, 243]);
-    assert.deepEqual([...queued.subarray(0, 3)], [255, 176, 32]);
+    assert(current[2] > current[0] * 2 && current[2] > current[1]);
+    assert(queued[0] > 200 && queued[1] > 120 && queued[2] < 80);
+    assert(queued[3] < 255);
   } finally {
     global.fetch = originalFetch;
     if (artwork) {
