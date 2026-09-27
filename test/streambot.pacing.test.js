@@ -229,6 +229,8 @@ test('Music Mode uses a static video page and progressive source audio', () => {
   assert(argv.includes('https://cdn.example/audio.m4a'));
   assert(argv.includes('1:a:0'));
   assert(argv.includes('-shortest'));
+  assert(argv.some(arg => arg.includes('apad=pad_dur=2.5')),
+    'finite Music Mode tracks need a short Opus silence tail before voice speaking clears');
   assert.equal(argv.filter(arg => arg === '-ss').length, 1, 'seek only the audio source');
   assert(argv.some(arg => arg.includes('overlay=1000:265')));
   clearInterval(piece.musicArtwork.timer);

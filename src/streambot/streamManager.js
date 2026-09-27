@@ -631,7 +631,12 @@ class StreamManager {
       }
     } catch { /* zeromq not loadable — volume control will be off */ }
 
-    command.audioFilters(`volume@internal_lib=1.0${padAudio ? ',apad' : ''}`);
+    // Music is sent over the voice connection. Its speaking flag is cleared
+    // as soon as the track drains, so allow the final Opus packets to reach
+    // Discord before that flag changes. Keep this tail finite: the existing
+    // -shortest output still ends and advances the queue normally.
+    const musicVoiceTail = musicMode && !piece?.isFiller && !piece?.isLive;
+    command.audioFilters(`volume@internal_lib=1.0${padAudio ? ',apad' : musicVoiceTail ? ',apad=pad_dur=2.5' : ''}`);
     if (bindableEndpoint) {
       command.audioFilters(`azmq=b=${bindableEndpoint.replaceAll(':', '\\\\:')}`);
     } else {
