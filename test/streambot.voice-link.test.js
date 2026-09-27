@@ -577,6 +577,58 @@ test('$stop retries a guild-scoped leave when Discord still reports the bot in v
   assert.equal(mgr.voiceLink, null);
 });
 
+test('$stop confirms the gateway leave before starting native demux cleanup', async t => {
+  const { mgr, fv, start } = fixture(t, { voiceLeaveAckTimeoutMs: 100 });
+  await start('a');
+  const events = new EventEmitter();
+  mgr.client.on = events.on.bind(events);
+  mgr.client.off = events.off.bind(events);
+  const state = { channelId: 'c1' };
+  mgr.client.guilds = { cache: { get: () => ({ voiceStates: { cache: { get: () => state } } }) } };
+  let cleanupStarted = false;
+  let cleanupBeforeAck = false;
+  const demuxer = { close: async () => {
+    cleanupStarted = true;
+    cleanupBeforeAck = state.channelId !== null;
+  } };
+  trackedDemuxers.add(demuxer);
+  t.after(() => trackedDemuxers.delete(demuxer));
+  const sendOpcode = fv.streamer.sendOpcode;
+  fv.streamer.sendOpcode = (op, data) => {
+    sendOpcode(op, data);
+    if (op === 4 && data.channel_id === null) setTimeout(() => {
+      state.channelId = null;
+      events.emit('raw', { t: 'VOICE_STATE_UPDATE', d: { guild_id: 'g1', user_id: 'u1', channel_id: null } });
+    }, 5);
+  };
+  assert.equal(await mgr.stop(), true);
+  assert.equal(cleanupStarted, true);
+  assert.equal(cleanupBeforeAck, false, 'native cleanup must not preempt the leave ACK');
+});
+
+test('$stop reports a confirmed leave even when native demux cleanup never settles', async t => {
+  const { mgr, fv, start } = fixture(t, { voiceLeaveAckTimeoutMs: 100, streamCleanupTimeoutMs: 25 });
+  await start('a');
+  const events = new EventEmitter();
+  mgr.client.on = events.on.bind(events);
+  mgr.client.off = events.off.bind(events);
+  const state = { channelId: 'c1' };
+  mgr.client.guilds = { cache: { get: () => ({ voiceStates: { cache: { get: () => state } } }) } };
+  const demuxer = { close: () => new Promise(() => {}) };
+  trackedDemuxers.add(demuxer);
+  t.after(() => trackedDemuxers.delete(demuxer));
+  const sendOpcode = fv.streamer.sendOpcode;
+  fv.streamer.sendOpcode = (op, data) => {
+    sendOpcode(op, data);
+    if (op === 4 && data.channel_id === null) setTimeout(() => {
+      state.channelId = null;
+      events.emit('raw', { t: 'VOICE_STATE_UPDATE', d: { guild_id: 'g1', user_id: 'u1', channel_id: null } });
+    }, 5);
+  };
+  assert.equal(await mgr.stop(), true);
+  assert.equal(mgr.voiceLink, null);
+});
+
 test('$stop reports an unconfirmed leave and permits a second Stop attempt', async t => {
   const { mgr, start } = fixture(t, { voiceLeaveAckTimeoutMs: 10 });
   await start('a');

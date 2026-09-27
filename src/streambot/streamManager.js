@@ -1424,14 +1424,23 @@ class StreamManager {
       }
       trace('send-voice-clear');
       this._sendGuildVoiceClear(link.streamer, link.guildId);
-      const leaveConfirmation = this._confirmVoiceLeave(link).then(left => {
-        link.disconnectFailed = !left;
-        if (left) {
-          log('info', `voice: leave confirmed guild=${link.guildId}`);
-          if (this.voiceLink === link) this.voiceLink = null;
-        }
-        return left;
-      });
+      // Give the gateway/REST fallback a chance to confirm the disconnect
+      // before native demux cleanup can block the event loop. The old order
+      // started closeAllDemuxers() immediately after sending the clear, so a
+      // stuck native close could prevent the leave ACK and even its timer from
+      // running; Stop appeared to die at phase=cleanup-media.
+      trace('await-leave-confirmation');
+      let left = false;
+      try { left = await this._confirmVoiceLeave(link); }
+      catch (error) {
+        log('error', `voice: leave confirmation failed guild=${link.guildId}: ${this._sanitize(error?.message || String(error))}`);
+      }
+      link.disconnectFailed = !left;
+      if (left) {
+        log('info', `voice: leave confirmed guild=${link.guildId}`);
+        if (this.voiceLink === link) this.voiceLink = null;
+      }
+      trace(`leave-result left=${left}`);
       if (p) {
         // Start native demux cleanup BEFORE waiting for writerTask. The writer
         // can itself be blocked in demux(), so the old ordering deadlocked:
@@ -1445,13 +1454,14 @@ class StreamManager {
             cleanupTimeoutMs,
             `stream cleanup timed out after ${cleanupTimeoutMs}ms`
           );
+          trace('cleanup-media-settled');
         } catch (error) {
           // A dead native demuxer must never retain the serialized command
           // queue. Its inputs/processes are already aborted and destroyed.
           log('error', `voice: ${error.message}; continuing forced teardown`);
+          trace('cleanup-media-timeout');
         }
       }
-      const left = await leaveConfirmation;
       trace(`complete left=${left}`);
       return left;
     })();

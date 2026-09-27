@@ -61,10 +61,10 @@ function queueSvg(items, { chaptered = false, currentTitle = null } = {}) {
   if (!songs.length) return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="700">${title}<text x="${x + 15}" y="45" font-family="DejaVu Sans,Arial" font-size="25" fill="#a9bdbe">Nothing queued yet</text></svg>`);
   const cards = songs.map((item, index) => {
     const y = index * 64;
-    return `<rect x="${x}" y="${y}" width="810" height="58" rx="8" fill="#20313b" fill-opacity="0.84" stroke="#3b5549" stroke-width="1"/>
+    return `<rect x="${x}" y="${y}" width="810" height="58" rx="8" fill="#20313b" fill-opacity="0.65" stroke="#3b5549" stroke-opacity="0.65" stroke-width="1"/>
       <text x="${x + 10}" y="${y + 38}" font-family="DejaVu Sans,Arial" font-size="20" fill="#a9bdbe">${String(index + 1).padStart(2, '0')}</text>
       <rect x="${x + 45}" y="${y + 7}" width="80" height="45" rx="5" fill="#0b141c" fill-opacity="0.2"/>
-      <text x="${x + 139}" y="${y + 38}" font-family="DejaVu Sans,Arial" font-size="23" fill="#f0f4f6">${escapeXml(shorten(item.title || 'Untitled', 47))}</text>`;
+      <text x="${x + 139}" y="${y + 38}" font-family="DejaVu Sans,Arial" font-size="23" fill="#d3dfe3">${escapeXml(shorten(item.title || 'Untitled', 47))}</text>`;
   }).join('');
   const more = all.length > songs.length
     ? `<text x="${x + 12}" y="${songs.length * 64 + 29}" font-family="DejaVu Sans,Arial" font-size="22" fill="#d9ff62">+${all.length - songs.length} more queued</text>` : '';
@@ -90,7 +90,7 @@ async function queueFrame(artwork, items, signal) {
     if (!artwork.thumbnailCache.has(item.thumbnail)) {
       artwork.thumbnailCache.set(item.thumbnail,
         fetchArtworkImage(item.thumbnail, { width: 80, height: 45 }, signal)
-          .then(image => translucentImage(image, 80, 45)));
+          .then(image => translucentImage(image, 80, 45, 0.65)));
     }
     return artwork.thumbnailCache.get(item.thumbnail);
   }));

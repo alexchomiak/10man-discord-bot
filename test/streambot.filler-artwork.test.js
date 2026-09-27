@@ -108,7 +108,8 @@ test('music visualizer artwork keeps its background translucent and reuses one F
     assert.equal((filter.match(/showfreqs=/g) || []).length, 1);
     assert.match(filter, /vflip/);
     assert.match(filter, /volume=8/);
-    assert.match(filter, /colors=0x87bfd6\|0xa4b6d4/);
+    assert.match(filter, /averaging=2/);
+    assert.match(filter, /gradients=.*nb_colors=2:c0=0xbca3d4:c1=0x88bdd3/);
     assert.match(filter, /overlay=96:626/);
     assert.match(filter, /overlay=96:799/);
   } finally {
@@ -158,10 +159,12 @@ test('music screen composites the worker avatar, current thumbnail, and queued t
     const avatar = await sharp(artwork.file).extract({ left: 500, top: 755, width: 1, height: 1 }).raw().toBuffer();
     const current = await sharp(artwork.file).extract({ left: 500, top: 330, width: 1, height: 1 }).raw().toBuffer();
     const queued = await sharp(artwork.queueFrame).extract({ left: 70, top: 30, width: 1, height: 1 }).raw().toBuffer();
+    const card = await sharp(artwork.queueFrame).extract({ left: 300, top: 10, width: 1, height: 1 }).raw().toBuffer();
     assert.deepEqual([...avatar.subarray(0, 3)], [235, 94, 138]);
     assert(current[2] > current[0] * 2 && current[2] > current[1]);
-    assert(queued[0] > 200 && queued[1] > 120 && queued[2] < 80);
+    assert(queued[0] > queued[1] && queued[1] > queued[2], `Queued thumbnail pixel: ${[...queued]}`);
     assert(queued[3] < 255);
+    assert(card[3] >= 158 && card[3] <= 174);
   } finally {
     global.fetch = originalFetch;
     if (artwork) {
