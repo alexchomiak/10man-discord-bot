@@ -109,7 +109,7 @@ test('music visualizer artwork keeps its background translucent and reuses one F
     assert.equal((filter.match(/showfreqs=/g) || []).length, 1);
     assert.match(filter, /vflip/);
     assert.match(filter, /volume=8/);
-    assert.match(filter, /averaging=1/);
+    assert.match(filter, /averaging=2/);
     assert.match(filter, /gradients=.*nb_colors=2:c0=0xbca3d4:c1=0x88bdd3/);
     assert.match(filter, /overlay=96:626/);
     assert.match(filter, /overlay=96:799/);
