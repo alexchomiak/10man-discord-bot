@@ -197,13 +197,15 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
         if (!scopedWorker && !broker.getWorker(searchMatch[1])) return json(res, 404, { error: 'Worker unavailable.' });
         const query = String(url.searchParams.get('q') || '').trim();
         if (query.length < 2 || query.length > 120) return json(res, 400, { error: 'Search must be 2–120 characters.' });
+        const page = Number(url.searchParams.get('page') || 1);
+        if (!Number.isInteger(page) || page < 1 || page > 20) return json(res, 400, { error: 'Invalid search page.' });
         if (scopedWorker && recordFailure(req, publicSearches) > 20) {
           return json(res, 429, { error: 'Too many searches. Try again in a minute.' });
         }
         if (searchesInFlight >= 3) return json(res, 429, { error: 'Search is busy. Try again shortly.' });
         searchesInFlight++;
         try {
-          const results = await searchYoutube(query);
+          const results = await searchYoutube(query, { page });
           if (scopedWorker) {
             const current = publicWorkerFor(scopedMatch[1]);
             if (!current || current.id !== scopedWorker.id || current.connectedAt !== scopedWorker.connectedAt) {

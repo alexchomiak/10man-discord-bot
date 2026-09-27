@@ -52,6 +52,15 @@ test('YouTube search results expose only playable URLs and safe display metadata
     thumbnail: 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg' }]);
 });
 
+test('YouTube search uses extractor thumbnails without accepting external image hosts', () => {
+  const results = normalizeResults([
+    { id: 'abcdefghijk', thumbnails: [{ url: 'https://i.ytimg.com/vi/abcdefghijk/hq720.jpg?token=abc', width: 480 }] },
+    { id: 'lmnopqrstuv', thumbnail: 'https://example.com/vi/lmnopqrstuv/image.jpg' }
+  ]);
+  assert.equal(results[0].thumbnail, 'https://i.ytimg.com/vi/abcdefghijk/hq720.jpg?token=abc');
+  assert.equal(results[1].thumbnail, 'https://i.ytimg.com/vi/lmnopqrstuv/hqdefault.jpg');
+});
+
 test('dashboard authenticates reads and commands, routes moves/reorders, and falls back to nickname', async t => {
   const staticDir = await fs.mkdtemp(path.join(os.tmpdir(), 'stream-dashboard-test-'));
   await fs.writeFile(path.join(staticDir, 'index.html'), '<!doctype html><head></head><body>Player</body>');
@@ -84,7 +93,7 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
     configuredWorkerIds: ['one','two'], channelIds: [channelId],
     externalChannels: parseExternalChannels(`${externalGuildId}:${externalChannelId}`),
     host: '127.0.0.1', port: 0, staticDir, log: () => {},
-    searchYoutube: async query => { searches.push(query); return [{ title: 'Found', url: 'https://www.youtube.com/watch?v=abcdefghijk' }]; } });
+    searchYoutube: async (query, { page }) => { searches.push({ query, page }); return [{ title: 'Found', url: 'https://www.youtube.com/watch?v=abcdefghijk' }]; } });
   dashboard.listen(); await once(dashboard.server, 'listening');
   t.after(() => dashboard.close());
   const base = `http://127.0.0.1:${dashboard.server.address().port}`;
@@ -97,8 +106,10 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal((await request('/api/state', null, 'wrong')).status,401);
   assert.equal((await request('/api/workers/one/search?q=music', null, 'wrong')).status, 401);
   assert.equal((await request('/api/workers/one/search?q=x')).status, 400);
+  assert.equal((await request('/api/workers/one/search?q=music&page=21')).status, 400);
   assert.equal((await request('/api/workers/two/search?q=music')).status, 404);
   assert.deepEqual((await (await request('/api/workers/one/search?q=music')).json()).results.map(item => item.title), ['Found']);
+  assert.deepEqual((await (await request('/api/workers/one/search?q=music&page=2')).json()).results.map(item => item.title), ['Found']);
   const state = await (await request(`/api/state?guildId=${guildId}`)).json();
   assert.equal(state.workers.length,2);
   assert.equal(state.workers[1].online,false);
@@ -151,7 +162,7 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(scoped.guilds, undefined);
   assert.equal((await publicFetch('/api/public/one/search?q=x')).status, 400);
   assert.deepEqual((await (await publicFetch('/api/public/one/search?q=music')).json()).results.map(item => item.title), ['Found']);
-  assert.deepEqual(searches, ['music', 'music']);
+  assert.deepEqual(searches, [{ query: 'music', page: 1 }, { query: 'music', page: 2 }, { query: 'music', page: 1 }]);
   assert.equal((await publicFetch('/api/public/two/search?q=music')).status, 404);
   const scopedPlay = await (await publicFetch('/api/public/one/actions', { operation: 'play',
     source: 'https://youtube.com/watch?v=test', guildId: externalGuildId, channelId: externalChannelId })).json();

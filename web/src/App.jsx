@@ -307,7 +307,7 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
       <button className="text-button manual" onClick={() => onModal({ kind: 'channel', worker, guildId, guilds })} disabled={!canControl}>Use IDs</button>
     </div>}
     {searchOpen && createPortal(<YoutubeSearchModal workerName={worker.profile?.displayName || worker.id}
-      close={() => setSearchOpen(false)} search={query => searchYoutube(worker.id, query)} add={playSource} />, document.body)}
+      close={() => setSearchOpen(false)} search={(query, page) => searchYoutube(worker.id, query, page)} add={playSource} />, document.body)}
     {clearOpen && createPortal(<ClearQueueModal count={realQueue.length} close={() => setClearOpen(false)}
       confirm={async () => { const result = await send('clear-queue'); if (result) setPreviewIds(null); return result; }} />, document.body)}
   </article>;
@@ -337,10 +337,21 @@ function ClearQueueModal({ count, close, confirm }) {
   </div>;
 }
 
+function SearchThumbnail({ result }) {
+  const [failed, setFailed] = useState(0);
+  const fallback = `https://i.ytimg.com/vi/${result.id}/hqdefault.jpg`;
+  if (failed > 1) return <div className="search-thumb-placeholder" aria-hidden="true">▶</div>;
+  return <img src={failed ? fallback : result.thumbnail} alt="" loading="eager" referrerPolicy="no-referrer"
+    onError={() => setFailed(previous => result.thumbnail === fallback ? 2 : previous + 1)} />;
+}
+
 function YoutubeSearchModal({ workerName, close, search, add }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [activeQuery, setActiveQuery] = useState('');
+  const [hasMore, setHasMore] = useState(false);
   const [adding, setAdding] = useState(null);
   const [added, setAdded] = useState([]);
   const [error, setError] = useState('');
@@ -355,8 +366,25 @@ function YoutubeSearchModal({ workerName, close, search, add }) {
     event.preventDefault();
     if (loading || query.trim().length < 2) return;
     setLoading(true); setError(''); setResults(null); setAdded([]);
-    try { setResults((await search(query.trim())).results || []); }
+    try {
+      const found = (await search(query.trim(), 1)).results || [];
+      setResults(found); setPage(1); setActiveQuery(query.trim()); setHasMore(found.length === 10);
+    }
     catch (failure) { setError(failure.message || 'Search failed.'); }
+    finally { setLoading(false); }
+  };
+  const loadMore = async () => {
+    if (loading || !hasMore || !activeQuery) return;
+    setLoading(true); setError('');
+    try {
+      const nextPage = page + 1;
+      const found = (await search(activeQuery, nextPage)).results || [];
+      setResults(previous => {
+        const seen = new Set(previous.map(result => result.id));
+        return [...previous, ...found.filter(result => !seen.has(result.id))];
+      });
+      setPage(nextPage); setHasMore(found.length === 10 && nextPage < 20);
+    } catch (failure) { setError(failure.message || 'Could not load more results.'); }
     finally { setLoading(false); }
   };
   const addResult = async result => {
@@ -375,15 +403,17 @@ function YoutubeSearchModal({ workerName, close, search, add }) {
       </form>
       <div className="search-results" aria-live="polite">
         {error && <p className="search-state error-note">{error}</p>}
-        {loading && <p className="search-state">Searching YouTube…</p>}
+        {loading && !results && <p className="search-state">Searching YouTube…</p>}
         {results && !results.length && <p className="search-state">No videos found. Try another search.</p>}
         {results?.map(result => <div className="search-result" key={result.id}>
-          <img src={result.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" />
+          <SearchThumbnail result={result} />
           <div className="search-result-copy"><strong>{result.title}</strong><small>YouTube{result.durationSec ? ` · ${fmt(result.durationSec)}` : ''}</small>
             {result.description && <p>{result.description}</p>}</div>
           <button type="button" className="secondary-button search-add" disabled={!!adding || added.includes(result.id)} onClick={() => void addResult(result)}>
             {added.includes(result.id) ? 'Added' : adding === result.id ? 'Adding…' : 'Add to queue'}</button>
         </div>)}
+        {results && hasMore && <button type="button" className="secondary-button search-more" disabled={loading} onClick={() => void loadMore()}>
+          {loading ? 'Loading…' : 'Load 10 more results'}</button>}
       </div>
     </section>
   </div>;
@@ -440,7 +470,7 @@ function PublicWorkerPage() {
       return null;
     } finally { setBusy(false); }
   };
-  const searchYoutube = async (_workerId, query) => api(null, `/api/public/${publicId}/search?q=${encodeURIComponent(query)}`);
+  const searchYoutube = async (_workerId, query, page = 1) => api(null, `/api/public/${publicId}/search?q=${encodeURIComponent(query)}&page=${page}`);
   return <div className="app-shell public-shell"><Toaster position="top-right" theme="dark" richColors closeButton />
     <main className="main-content detail-mode">
       <div className="topbar"><div className="topbar-identity"><span className="mobile-brand-mark" aria-hidden="true">▶</span><div className="eyebrow">10MAN / STREAM · PUBLIC PLAYER</div></div></div>
@@ -505,7 +535,7 @@ function AdminApp() {
     } catch (failure) { toast.error(failure.message); return null; }
     finally { setBusy(previous => ({ ...previous, [workerId]: false })); }
   };
-  const searchYoutube = async (workerId, query) => api(answer, `/api/workers/${encodeURIComponent(workerId)}/search?q=${encodeURIComponent(query)}`);
+  const searchYoutube = async (workerId, query, page = 1) => api(answer, `/api/workers/${encodeURIComponent(workerId)}/search?q=${encodeURIComponent(query)}&page=${page}`);
   if (!answer) return <div className="login-page"><Toaster position="top-right" theme="dark" richColors closeButton />
     <div className="login-glow" /><div className="login-card">
     <div className="brand-mark">▶</div><div className="eyebrow">10MAN CONTROL ROOM</div>

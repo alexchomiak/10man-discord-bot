@@ -101,6 +101,7 @@ function loadConfig() {
     workerId,
     defaultWorkerId,
     dashboardBaseUrl: (process.env.STREAM_DASHBOARD_BASE_URL || '').trim(),
+    musicVisualizer: parseBoolean(process.env.STREAMBOT_MUSIC_VISUALIZER, true),
     dashboardRandomCodes: parseBoolean(process.env.STREAM_DASHBOARD_RANDOM_CODES),
     dashboardAccessCode: Array.from({ length: 6 }, () => String.fromCharCode(97 + crypto.randomInt(26))).join(''),
     chatCommands: parseBoolean(chatCommandsValue, workerId.toLowerCase() === defaultWorkerId.toLowerCase()),

@@ -4,6 +4,21 @@ const { spawn } = require('node:child_process');
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
+function resultThumbnail(entry, id) {
+  const candidates = [entry?.thumbnail, ...(Array.isArray(entry?.thumbnails)
+    ? [...entry.thumbnails].sort((a, b) => Math.abs((a?.width || 0) - 480) - Math.abs((b?.width || 0) - 480)).map(item => item?.url)
+    : [])];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue;
+    try {
+      const url = new URL(candidate);
+      if (url.protocol === 'https:' && ['i.ytimg.com', 'img.youtube.com'].includes(url.hostname)
+        && url.pathname.startsWith(`/vi/${id}/`)) return url.href;
+    } catch { /* Ignore malformed extractor metadata. */ }
+  }
+  return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+}
+
 function normalizeResults(entries) {
   if (!Array.isArray(entries)) return [];
   return entries.slice(0, 10).flatMap(entry => {
@@ -13,15 +28,18 @@ function normalizeResults(entries) {
       title: String(entry.title || 'YouTube video').slice(0, 200),
       description: typeof entry.description === 'string' ? entry.description.replace(/\s+/g, ' ').slice(0, 280) : '',
       durationSec: Number.isFinite(entry.duration) && entry.duration > 0 ? entry.duration : null,
-      thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg` }];
+      thumbnail: resultThumbnail(entry, id) }];
   });
 }
 
-function searchYoutube(query, { bin = process.env.YTDLP_PATH || 'yt-dlp', cookiesFile = process.env.YTDLP_COOKIES_FILE || '' } = {}) {
+function searchYoutube(query, { bin = process.env.YTDLP_PATH || 'yt-dlp', cookiesFile = process.env.YTDLP_COOKIES_FILE || '', page = 1 } = {}) {
   return new Promise((resolve, reject) => {
+    if (!Number.isInteger(page) || page < 1 || page > 20) return reject(new Error('Invalid search page.'));
+    const start = (page - 1) * 10 + 1;
+    const end = page * 10;
     const args = ['--ignore-config', '--js-runtimes', 'node', '--flat-playlist', '--dump-single-json',
-      '--no-warnings', '--playlist-end', '10',
-      ...(cookiesFile ? ['--cookies', cookiesFile] : []), `ytsearch10:${query}`];
+      '--no-warnings', '--playlist-start', String(start), '--playlist-end', String(end),
+      ...(cookiesFile ? ['--cookies', cookiesFile] : []), `ytsearch${end}:${query}`];
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';

@@ -6,6 +6,7 @@ const test = require('node:test');
 const sharp = require('sharp');
 const { workerDashboardUrl, createFillerArtwork, fillerCountdownFilter } = require('../src/streambot/fillerArtwork');
 const { createMusicArtwork, updateMusicQueue, stopMusicQueueFrames } = require('../src/streambot/musicArtwork');
+const { musicVisualizerFilter } = require('../src/streambot/musicVisualizer');
 
 test('filler links target the selected worker, preserving a reverse-proxy path', () => {
   assert.equal(workerDashboardUrl('https://stream.example.com/player/', 'one'),
@@ -89,6 +90,23 @@ test('music artwork links to its worker and updates the live queue image', async
     const first = artwork.queueFrame;
     await updateMusicQueue(artwork, [{ title: 'Second song' }]);
     assert.notDeepEqual(artwork.queueFrame, first);
+  } finally {
+    stopMusicQueueFrames(artwork);
+    await fs.rm(artwork.directory, { recursive: true, force: true });
+  }
+});
+
+test('music visualizer artwork keeps its background translucent and reuses one FFT for the reflection', async () => {
+  const artwork = await createMusicArtwork({ baseUrl: 'https://stream.example.com/', workerId: 'one',
+    title: 'Song', visualizer: true });
+  try {
+    const pixel = await sharp(artwork.file).extract({ left: 100, top: 300, width: 1, height: 1 })
+      .ensureAlpha().raw().toBuffer();
+    assert(pixel[3] > 0 && pixel[3] < 255);
+    assert.equal(artwork.visualizer, true);
+    const filter = musicVisualizerFilter({ width: 1920, height: 1080, fps: 30 });
+    assert.equal((filter.match(/showfreqs=/g) || []).length, 1);
+    assert.match(filter, /vflip/);
   } finally {
     stopMusicQueueFrames(artwork);
     await fs.rm(artwork.directory, { recursive: true, force: true });

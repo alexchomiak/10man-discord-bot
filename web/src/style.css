@@ -272,11 +272,13 @@
 .search-state{padding:24px 8px;color:#aab9c7;font-size:14px;text-align:center}
 .search-result{display:grid;grid-template-columns:136px minmax(0,1fr) auto;align-items:center;gap:14px;padding:12px 3px;border-top:1px solid #344253}
 .search-result img{display:block;width:136px;aspect-ratio:16/9;object-fit:contain;border-radius:7px;background:#0d1621}
+.search-thumb-placeholder{display:grid;place-items:center;width:136px;aspect-ratio:16/9;border-radius:7px;background:#0d1621;color:#91a5a0;font-size:26px}
 .search-result-copy{min-width:0}
 .search-result-copy strong{display:block;font-size:14px;line-height:1.3;overflow-wrap:anywhere}
 .search-result-copy small{display:block;margin-top:4px;color:#b7caab;font-size:11px}
 .search-result-copy p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;margin:6px 0 0;color:#99a8b8;font-size:11px;line-height:1.4}
 .search-add{min-height:40px;font-size:12px}
+.search-more{display:block;width:100%;min-height:44px;margin:14px 0 4px}
 .public-shell .worker-card.expanded>.add-form{order:3;padding-top:18px}
 .public-shell .worker-card.expanded>.card-divider{order:4;margin-top:18px}
 @media(max-width:740px){
@@ -297,14 +299,14 @@
   .search-modal-header h2{font-size:24px;margin-bottom:12px}
   .youtube-search-form .primary-button{font-size:14px}
   .search-result{grid-template-columns:96px minmax(0,1fr);gap:10px;padding:12px 0}
-  .search-result img{width:96px}
+  .search-result img,.search-thumb-placeholder{width:96px}
   .search-result-copy strong{font-size:13px}
   .search-result-copy p{-webkit-line-clamp:2}
   .search-add{grid-column:2;width:100%;min-height:44px;font-size:13px}
 }
 @media(max-width:360px){
   .search-result{grid-template-columns:80px minmax(0,1fr)}
-  .search-result img{width:80px}
+  .search-result img,.search-thumb-placeholder{width:80px}
   .youtube-search-form{gap:6px}
   .youtube-search-form .primary-button{padding:0 10px;font-size:13px}
 }

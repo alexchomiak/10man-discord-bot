@@ -26,12 +26,12 @@ function titleMarkup(title, y = 847) {
   return lines.map((line, index) =>
     `<tspan x="500" y="${y + index * 40}">${escapeXml(shorten(line, 40))}</tspan>`).join('');
 }
-function musicSvg(url, workerId, title, hasThumbnail, chaptered = false) {
+function musicSvg(url, workerId, title, hasThumbnail, chaptered = false, visualizer = false) {
   const displayUrl = escapeXml(shorten(url, 67));
   const worker = escapeXml(shorten(workerId.toUpperCase(), 32));
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080"><style>text{font-family:DejaVu Sans,Arial,sans-serif}</style>
-    <rect width="1920" height="1080" fill="#0b111a"/>
-    <rect x="36" y="36" width="1848" height="1008" rx="26" fill="#17232d" stroke="#344b44" stroke-width="3"/>
+    <rect width="1920" height="1080" fill="#0b111a"${visualizer ? ' fill-opacity="0.12"' : ''}/>
+    <rect x="36" y="36" width="1848" height="1008" rx="26" fill="#17232d"${visualizer ? ' fill-opacity="0.55"' : ''} stroke="#344b44" stroke-width="3"/>
     <rect x="960" y="92" width="2" height="896" fill="#344b44"/>
     <rect x="90" y="85" width="56" height="56" rx="14" fill="#d9ff62"/><path d="M109 99 L109 129 L135 114 Z" fill="#17232d"/>
     <text x="165" y="124" font-size="29" font-weight="700" fill="#e8f2f4">10MAN / MUSIC</text>
@@ -130,7 +130,7 @@ function stopMusicQueueFrames(artwork) {
   artwork.thumbnailCache?.clear();
 }
 async function createMusicArtwork({ baseUrl, workerId, accessCode, randomCodes = false, title, thumbnail = null, avatarUrl = null,
-  queue = [], chapters = null, getPosition = null, width = 1920, height = 1080, signal }) {
+  queue = [], chapters = null, getPosition = null, width = 1920, height = 1080, visualizer = false, signal }) {
   const url = workerDashboardUrl(baseUrl, randomCodes ? accessCode : workerId);
   if (!url) throw new Error('STREAM_DASHBOARD_BASE_URL must be an http(s) dashboard URL for Music Mode');
   signal?.throwIfAborted();
@@ -150,14 +150,14 @@ async function createMusicArtwork({ baseUrl, workerId, accessCode, randomCodes =
     composites.push({ input: avatar, left: 464, top: 309 });
   }
   const chaptered = Array.isArray(chapters) && chapters.length > 1;
-  const image = await sharp(musicSvg(url, workerId, title, !!currentThumbnail, chaptered))
+  const image = await sharp(musicSvg(url, workerId, title, !!currentThumbnail, chaptered, visualizer))
     .composite(composites).resize(width, height).png().toBuffer();
   signal?.throwIfAborted();
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sbot-music-'));
   try {
     const file = path.join(directory, 'frame.png');
     await fs.writeFile(file, image, { mode: 0o600 });
-    const artwork = { file, directory, url, queueStream: new PassThrough({ highWaterMark: 512 * 1024 }),
+    const artwork = { file, directory, url, visualizer, queueStream: new PassThrough({ highWaterMark: 512 * 1024 }),
       title, thumbnail, chapters, chaptered, chapterIndex: -1, getPosition,
       queueItems: [...queue], signal, thumbnailCache: new Map(), queueFrame: null, timer: null };
     artwork.queueFrame = await queueFrame(artwork, queue, signal);

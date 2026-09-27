@@ -19,6 +19,7 @@ const { progressOverlayFilter } = require('./progressOverlay');
 const { createFillerArtwork, fillerCountdownFilter, workerDashboardUrl } = require('./fillerArtwork');
 const { createMusicArtwork, updateMusicQueue, startMusicQueueFrames,
   stopMusicQueueFrames } = require('./musicArtwork');
+const { musicVisualizerFilter } = require('./musicVisualizer');
 
 function log(level, ...parts) {
   if (level === 'error') console.error(TAG, ...parts);
@@ -508,8 +509,10 @@ class StreamManager {
     // A GPU-to-CPU transfer is needed only while a finite VOD overlay is
     // visible. With the preference off, retain the original all-VAAPI path.
     const videoFilter = musicMode && piece?.musicArtwork
-      ? `[0:v]${baseVideoFilter}[base];movie=${piece.musicArtwork.file}[art];` +
-        `[base][art]overlay=0:0:eof_action=repeat[stage];[2:v]format=rgba[queue];` +
+      ? `[0:v]${baseVideoFilter}[base];` +
+        (piece.musicArtwork.visualizer ? musicVisualizerFilter({ width: cfg.streamWidth || 1920, height, fps }) : '') +
+        `movie=${piece.musicArtwork.file}[art];` +
+        `[${piece.musicArtwork.visualizer ? 'visual' : 'base'}][art]overlay=0:0:eof_action=repeat[stage];[2:v]format=rgba[queue];` +
         `[stage][queue]overlay=${piece.musicArtwork.chaptered ? 0 : 1000}:265:repeatlast=1:shortest=0` +
         (cfg.videoEncoder === 'vaapi' ? ',format=nv12,hwupload' : '') + '[v]'
       : showProgress
@@ -1182,6 +1185,7 @@ class StreamManager {
               getPosition: () => this.positionOf(piece),
               width: this.config.streamWidth || 1920,
               height: this.config.streamHeight || 1080,
+              visualizer: this.config.musicVisualizer !== false,
               signal: piece.control.signal
             });
           }
