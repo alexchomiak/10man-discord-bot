@@ -252,6 +252,8 @@ The optional React control room runs in the CS app bot process when `STREAM_BROK
 
 Set `STREAM_DASHBOARD_CHANNEL_IDS=123456789012345678,234567890123456789` to show only those voice channels in the dashboard dropdown. Channel names still come from Discord. Leave it empty to show all visible voice channels; the manual ID dialog works regardless of this filter.
 
+Set `STREAM_DASHBOARD_EXTERNAL_CHANNELS=111111111111111111:222222222222222222,333333333333333333:444444444444444444` to append specific voice channels from other servers to the dashboard selector. Each entry is `server_id:channel_id`. These entries appear after the current server's channels and are unaffected by `STREAM_DASHBOARD_CHANNEL_IDS`. The CS bot must have access to an external server/channel to display its name; otherwise the dropdown shows its IDs. The selected pair is sent to the worker, which must also have access to that voice channel.
+
 The dashboard can remove queued videos without interrupting the current stream. For Jellyfin `/Items/<id>/Download` URLs, the worker also tries a short, same-server item metadata lookup for title, runtime, and artwork; video playback still uses yt-dlp and proceeds if metadata is unavailable. Jellyfin artwork URLs may contain the same API key as the supplied media URL so the browser can load them.
 
 Click a worker in the dashboard sidebar to open its expanded player. Its URL uses `#/<worker-id>` (for example, `#/one`), so you can bookmark or share a direct link to that worker. Existing `#/worker/<worker-id>` bookmarks still open the same page.

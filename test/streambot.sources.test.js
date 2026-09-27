@@ -109,6 +109,18 @@ const SCENARIOS = {
       { format_id: 'dashA', vcodec: 'none', acodec: 'mp4a' }
     ]
   },
+  chapterMix: {
+    duration: 900,
+    title: 'Long mix',
+    thumbnail: 'https://i.ytimg.com/vi/MIX/hqdefault.jpg',
+    chapters: [
+      { start_time: 0, end_time: 30, title: 'Intro' },
+      { start_time: 30, end_time: 397, title: 'First track' },
+      { start_time: 397, end_time: 900, title: 'Second track' }
+    ],
+    formats: [{ format_id: 'audio-video', vcodec: 'h264', acodec: 'mp4a',
+      manifest_url: 'https://manifest.example/mix/master.m3u8' }]
+  },
   // Combined A+V manifests in TWO languages (both with manifest_url). en is the
   // original (lower tbr); the Arabic dub has a HIGHER tbr. audioLang must make
   // the bot pick the English manifest, not the higher-bitrate Arabic one.
@@ -719,6 +731,20 @@ test('hls: manifest_url present -> streamType single, stream the manifest URL (n
   assert.strictEqual(calls.length, 1, 'HLS: exactly ONE yt-dlp call');
   assert.strictEqual(calls[0].mode, 'dump', 'HLS: the call must be --dump-json (not -g, not -o)');
   assert.ok(!calls.some((c) => c.argv.includes('-o')), 'HLS: no download (-o) must happen');
+});
+
+test('chapter metadata is exposed only for Music Mode without splitting or downloading media', async () => {
+  setScenario('chapterMix');
+  const before = readFakeLog().length;
+  const url = 'https://www.youtube.com/watch?v=MIX';
+  const video = await resolveYtdlp(url, CfgPlain);
+  const music = await resolveYtdlp(url, { ...CfgPlain, musicMode: true });
+  assert.equal(video.chapters, null);
+  assert.deepEqual(music.chapters.map(chapter => chapter.title), ['Intro', 'First track', 'Second track']);
+  assert.equal(music.chapters[1].startSec, 30);
+  assert.equal(music.streamUrl, video.streamUrl);
+  assert(readFakeLog().slice(before).every(call => call.argv.includes('--dump-json') &&
+    !call.argv.includes('--split-chapters') && !call.argv.includes('-o')));
 });
 
 test('Jellyfin Download URL keeps yt-dlp playback and adds item title, runtime, and artwork', async t => {

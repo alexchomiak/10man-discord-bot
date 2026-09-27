@@ -270,7 +270,8 @@ class CommandRegistry {
     }
     const guildId = this.resolveGuildId(message);
 
-    const config = (this.streamManager && this.streamManager.config) || {};
+    const config = { ...((this.streamManager && this.streamManager.config) || {}),
+      musicMode: this.streamManager?.musicMode === true };
     let resolved;
     try {
       resolved = await resolveSource(raw, config);
@@ -314,9 +315,11 @@ class CommandRegistry {
       videoUrl: resolved.videoUrl || null,
       audioUrl: resolved.audioUrl || null,
       title: resolved.title || null,
+      thumbnail: resolved.thumbnail || null,
       startOffsetSec: resolved.startOffsetSec || null,
       isLive: resolved.isLive === true,
-      totalDurationSec: resolved.totalDurationSec != null ? resolved.totalDurationSec : null
+      totalDurationSec: resolved.totalDurationSec != null ? resolved.totalDurationSec : null,
+      chapters: resolved.chapters || null
     });
     if (!result.ok) {
       await this.reply(message, result.message || M.STREAM_START_FAILED);

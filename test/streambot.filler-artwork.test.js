@@ -87,6 +87,31 @@ test('music artwork links to its worker and updates the live queue image', async
   }
 });
 
+test('chaptered music updates current track and upcoming overlay without replacing the base stream', async () => {
+  let position = 0;
+  const artwork = await createMusicArtwork({ baseUrl: 'https://stream.example.com/player/',
+    workerId: 'one', title: 'Long mix', getPosition: () => position,
+    chapters: [{ title: 'Intro', startSec: 0, endSec: 30 },
+      { title: 'First track', startSec: 30, endSec: 60 },
+      { title: 'Second track', startSec: 60, endSec: 90 }],
+    queue: [{ title: 'Another mix' }] });
+  try {
+    assert.equal(artwork.chaptered, true);
+    assert.equal(artwork.chapterIndex, 0);
+    assert.equal((await sharp(artwork.queueFrame).metadata()).width, 1920);
+    const base = await fs.readFile(artwork.file);
+    const first = artwork.queueFrame;
+    position = 35;
+    await updateMusicQueue(artwork, [{ title: 'Another mix' }]);
+    assert.equal(artwork.chapterIndex, 1);
+    assert.notDeepEqual(artwork.queueFrame, first);
+    assert.deepEqual(await fs.readFile(artwork.file), base);
+  } finally {
+    stopMusicQueueFrames(artwork);
+    await fs.rm(artwork.directory, { recursive: true, force: true });
+  }
+});
+
 test('music screen composites the worker avatar, current thumbnail, and queued thumbnails', async () => {
   const colors = { avatar: '#eb5e8a', current: '#2196f3', queued: '#ffb020' };
   const bytes = Object.fromEntries(await Promise.all(Object.entries(colors).map(async ([key, color]) =>

@@ -11,6 +11,16 @@ const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek'
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
+function parseExternalChannels(value) {
+  const seen = new Set();
+  return String(value || '').split(',').map(entry => entry.trim()).flatMap(entry => {
+    const match = /^(\d{17,20}):(\d{17,20})$/.exec(entry);
+    if (!match || seen.has(entry)) return [];
+    seen.add(entry);
+    return [{ guildId: match[1], id: match[2] }];
+  });
+}
+
 function sameToken(expected, actual) {
   const a = Buffer.from(String(expected || ''));
   const b = Buffer.from(String(actual || ''));
@@ -33,11 +43,16 @@ function publicStatus(status) {
     isFiller: !!status.isFiller, isLive: !!status.isLive,
     positionSec: status.positionSec, progressOverlay: !!status.progressOverlay,
     musicMode: !!status.musicMode,
+    musicChapters: Array.isArray(status.musicChapters) ? status.musicChapters.map(chapter => ({
+      title: chapter.title, startSec: chapter.startSec, endSec: chapter.endSec })) : null,
+    currentChapter: status.currentChapter && { title: status.currentChapter.title,
+      startSec: status.currentChapter.startSec, endSec: status.currentChapter.endSec,
+      index: status.currentChapter.index },
     current: item(status.current), queue: Array.isArray(status.queue) ? status.queue.map(item) : [],
     stats: status.stats || null };
 }
 
-function createStreamDashboard({ broker, client, token, secretQuestion, secretAnswer, configuredWorkerIds = [], channelIds = [], host = '0.0.0.0', port = 8082,
+function createStreamDashboard({ broker, client, token, secretQuestion, secretAnswer, configuredWorkerIds = [], channelIds = [], externalChannels = [], host = '0.0.0.0', port = 8082,
   staticDir = path.resolve(__dirname, '../web/dist'), log = console.log } = {}) {
   if (!secretAnswer && !token) return null;
   const profileCache = new Map();
@@ -131,11 +146,22 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
         if (!guild) return json(res, 404, { error: 'Server unavailable to the CS bot; use manual IDs.' });
         const channels = await guild.channels.fetch();
         const allowed = new Set(channelIds);
-        return json(res, 200, { channels: [...channels.values()]
+        const local = [...channels.values()]
           .filter(channel => channel && (channel.type === 2 || channel.type === 13) &&
             (!allowed.size || allowed.has(channel.id)))
-          .map(channel => ({ id: channel.id, name: channel.name, type: channel.type }))
-          .sort((a, b) => a.name.localeCompare(b.name)) });
+          .map(channel => ({ guildId: guild.id, guildName: guild.name,
+            id: channel.id, name: channel.name, type: channel.type, external: false }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const external = await Promise.all(externalChannels.map(async entry => {
+          if (entry.guildId === guild.id && local.some(channel => channel.id === entry.id)) return null;
+          const otherGuild = client.guilds.cache.get(entry.guildId)
+            || await client.guilds.fetch(entry.guildId).catch(() => null);
+          const channel = otherGuild && await otherGuild.channels.fetch(entry.id).catch(() => null);
+          return { guildId: entry.guildId, guildName: otherGuild?.name || entry.guildId,
+            id: entry.id, name: channel?.name || entry.id, type: channel?.type || null,
+            external: true };
+        }));
+        return json(res, 200, { channels: [...local, ...external.filter(Boolean)] });
       }
       const actionMatch = /^\/api\/workers\/([A-Za-z0-9_-]{1,32})\/actions$/.exec(url.pathname);
       if (req.method === 'POST' && actionMatch) {
@@ -223,4 +249,4 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
   };
 }
 
-module.exports = { createStreamDashboard, publicStatus, sameToken, sameAnswer };
+module.exports = { createStreamDashboard, parseExternalChannels, publicStatus, sameToken, sameAnswer };

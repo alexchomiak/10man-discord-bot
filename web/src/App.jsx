@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -66,16 +66,75 @@ function SortableQueueItem({ item, index, canControl, onRemove }) {
   </div>;
 }
 
+const channelKey = channel => `${channel.guildId}:${channel.id}`;
+
+function ChannelPicker({ workerId, channels, selected, onSelect, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [active, setActive] = useState(0);
+  const root = useRef(null);
+  const search = useRef(null);
+  const chosen = channels.find(channel => channelKey(channel) === selected);
+  const matches = channels.filter(channel =>
+    `${channel.guildName} ${channel.name}`.toLowerCase().includes(query.toLowerCase()));
+  const localMatches = matches.filter(channel => !channel.external);
+  const externalMatches = matches.filter(channel => channel.external);
+  useEffect(() => {
+    if (!open) return;
+    search.current?.focus();
+    const dismiss = event => { if (!root.current?.contains(event.target)) setOpen(false); };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [open]);
+  const choose = channel => { onSelect(channelKey(channel)); setOpen(false); setQuery(''); };
+  const onKeyDown = event => {
+    if (event.key === 'Escape') { setOpen(false); return; }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActive(index => Math.max(0, Math.min(matches.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1))));
+    }
+    if (event.key === 'Enter' && matches[active]) { event.preventDefault(); choose(matches[active]); }
+  };
+  return <div className="channel-picker" ref={root}>
+    <button type="button" className="channel-picker-trigger" aria-label={`Destination voice channel for ${workerId}`}
+      aria-expanded={open} aria-haspopup="listbox" disabled={disabled || !channels.length}
+      onClick={() => { setOpen(value => !value); setQuery(''); setActive(0); }}>
+      <span className="channel-picker-label">
+        <strong>{chosen ? `# ${chosen.name}` : 'Choose a voice channel'}</strong>
+        {chosen && <small>{chosen.guildName}</small>}
+      </span><span className="channel-picker-chevron">⌄</span>
+    </button>
+    {open && <div className="channel-picker-menu">
+      <input ref={search} className="channel-picker-search" value={query} placeholder="Search servers or channels…"
+        aria-label="Search voice channels" onChange={event => { setQuery(event.target.value); setActive(0); }} onKeyDown={onKeyDown} />
+      <div className="channel-picker-options" role="listbox" aria-label="Voice channels">
+        {localMatches.length > 0 && <div className="channel-picker-group">CURRENT SERVER</div>}
+        {localMatches.map((channel, index) => <button type="button" role="option"
+          aria-selected={selected === channelKey(channel)} key={channelKey(channel)} onClick={() => choose(channel)}
+          className={`channel-picker-option ${active === index ? 'keyboard-active' : ''}`}><span># {channel.name}</span><small>{channel.guildName}</small></button>)}
+        {externalMatches.length > 0 && <div className="channel-picker-group">EXTERNAL SERVERS</div>}
+        {externalMatches.map((channel, index) => <button type="button" role="option"
+          aria-selected={selected === channelKey(channel)} key={channelKey(channel)} onClick={() => choose(channel)}
+          className={`channel-picker-option ${active === localMatches.length + index ? 'keyboard-active' : ''}`}><span># {channel.name}</span><small>{channel.guildName}</small></button>)}
+        {!matches.length && <div className="channel-picker-empty">No matching channels</div>}
+      </div>
+    </div>}
+  </div>;
+}
+
 function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, expanded = false }) {
   const status = worker.status;
   const musicMode = worker.musicMode === true || status?.musicMode === true;
   const queue = status?.queue || [];
   const realQueue = queue.filter(item => !item.isFiller);
   const current = status?.current;
+  const currentChapter = musicMode ? status?.currentChapter : null;
+  const chapters = musicMode && Array.isArray(status?.musicChapters) ? status.musicChapters : [];
+  const upcomingChapters = chapters.slice((currentChapter?.index ?? -1) + 1);
   const duration = current?.durationSec;
   const position = Number(status?.positionSec) || 0;
   const [source, setSource] = useState('');
-  const [channelId, setChannelId] = useState('');
+  const [destinationKey, setDestinationKey] = useState('');
   const [seek, setSeek] = useState(null);
   const [previewIds, setPreviewIds] = useState(null);
   const [seeking, setSeeking] = useState(false);
@@ -94,11 +153,11 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
     const timer = setTimeout(() => setPreviewIds(null), 10000);
     return () => clearTimeout(timer);
   }, [actualQueueIds, previewIds]);
-  const preferred = channelId || (status?.guildId === guildId ? status?.channelId : '');
-  const selected = channels.some(channel => channel.id === preferred) ? preferred : channels[0]?.id || '';
+  const preferred = destinationKey || (status?.guildId && status?.channelId ? `${status.guildId}:${status.channelId}` : '');
+  const selected = channels.find(channel => channelKey(channel) === preferred) || channels[0];
   const canControl = worker.online && !busy;
-  const channelName = channels.find(channel => channel.id === status?.channelId)?.name;
-  const destination = () => ({ guildId, channelId: selected });
+  const channelName = channels.find(channel => channel.guildId === status?.guildId && channel.id === status?.channelId)?.name;
+  const destination = () => ({ guildId: selected?.guildId, channelId: selected?.id });
   const send = (operation, payload = {}) => action(worker.id, operation, payload);
   const play = async event => {
     event.preventDefault();
@@ -168,8 +227,8 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
       <div className="section-topline"><span className="live-dot" /> NOW PLAYING <span className="stage-state">{status?.paused ? 'PAUSED' : status?.isFiller ? 'FILLER' : status?.isLive ? 'LIVE' : current ? 'PLAYING' : 'IDLE'}</span></div>
       {current?.thumbnail && <img className="playing-thumb" src={current.thumbnail} alt="" referrerPolicy="no-referrer"
         onError={event => { event.currentTarget.style.display = 'none'; }} />}
-      <div className="playing-title">{current?.title || 'Nothing on air'}</div>
-      <div className="playing-meta">{current ? current.isFiller ? musicMode ? 'Ready for music' : 'Ready for the next video' : musicMode ? 'Audio plays through the bot’s voice' : current.isLive ? 'Live source' : 'Video on demand' : 'Join a voice channel to get started'}</div>
+      <div className="playing-title">{currentChapter?.title || current?.title || 'Nothing on air'}</div>
+      <div className="playing-meta">{currentChapter ? `From ${current.title}` : current ? current.isFiller ? musicMode ? 'Ready for music' : 'Ready for the next video' : musicMode ? 'Audio plays through the bot’s voice' : current.isLive ? 'Live source' : 'Video on demand' : 'Join a voice channel to get started'}</div>
       <div className="progress-row"><span>{fmt(seek ?? position)}</span><span>{duration ? fmt(duration) : status?.isLive ? 'LIVE' : '—:—'}</span></div>
       {duration && !current?.isFiller ? <input className="seek-slider" aria-label="Seek playback position" type="range"
         min="0" max={duration} value={seek ?? position} onChange={event => setSeek(Number(event.target.value))}
@@ -190,14 +249,19 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
     </div>
 
     <div className="card-divider" />
-    <div className="queue-title"><span>UP NEXT</span><span className="queue-count">{realQueue.length}</span></div>
+    <div className="queue-title"><span>UP NEXT</span><span className="queue-count">{upcomingChapters.length + realQueue.length}</span></div>
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={event => void reorder(event)}>
       <SortableContext items={displayQueue.map(item => item.id)} strategy={verticalListSortingStrategy}>
         <div className="queue-list">
+          {upcomingChapters.map((chapter, index) => <div className="queue-item chapter-item" key={`chapter-${chapter.startSec}`}>
+            <span className="queue-index">{String(index + 1).padStart(2, '0')}</span>
+            {current?.thumbnail && <img className="queue-thumb" src={current.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" />}
+            <div className="queue-copy"><strong>{chapter.title}</strong><small>Mix chapter · {chapter.endSec != null ? fmt(chapter.endSec - chapter.startSec) : fmt(chapter.startSec)}</small></div>
+          </div>)}
           {displayQueue.length ? displayQueue.map((item, index) =>
-            <SortableQueueItem key={item.id} item={item} index={index} canControl={canControl}
+            <SortableQueueItem key={item.id} item={item} index={index + upcomingChapters.length} canControl={canControl}
               onRemove={queueId => void send('remove-queued', { queueId })} />)
-            : <div className="queue-empty">{musicMode ? 'No music in the queue yet.' : 'No videos in the queue yet.'}</div>}
+            : !upcomingChapters.length && <div className="queue-empty">{musicMode ? 'No music in the queue yet.' : 'No videos in the queue yet.'}</div>}
         </div>
       </SortableContext>
     </DndContext>
@@ -207,11 +271,9 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
       <div className="input-row"><input id={`source-${worker.id}`} value={source} onChange={event => setSource(event.target.value)} placeholder={musicMode ? 'Paste a music URL' : 'Paste a video URL or ShareTV slug'} disabled={!canControl} /><button className="add-button" disabled={!canControl || !source.trim()} title="Play or queue"><Icon name="plus" /></button></div>
     </form>
     <div className="channel-controls">
-      <select aria-label={`Destination voice channel for ${worker.id}`} value={selected} onChange={event => setChannelId(event.target.value)} disabled={!canControl || !guildId}>
-        {!channels.length && <option value="">Choose a server first</option>}
-        {channels.map(channel => <option value={channel.id} key={channel.id}>{channel.name}</option>)}
-      </select>
-      <button className="secondary-button" disabled={!canControl || !selected || !guildId} onClick={() => send(status ? 'move' : 'join', destination())}><Icon name="move" size={15} /> {status ? 'Switch' : 'Join'}</button>
+      <ChannelPicker workerId={worker.id} channels={channels} selected={selected ? channelKey(selected) : ''}
+        onSelect={setDestinationKey} disabled={!canControl || !guildId} />
+      <button className="secondary-button" disabled={!canControl || !selected} onClick={() => send(status ? 'move' : 'join', destination())}><Icon name="move" size={15} /> {status ? 'Switch' : 'Join'}</button>
       <button className="text-button manual" onClick={() => onModal({ kind: 'channel', worker, guildId, guilds })} disabled={!canControl}>Use IDs</button>
     </div>
   </article>;
@@ -277,6 +339,7 @@ export default function App() {
   useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 5000); return () => clearInterval(timer); }, [refresh]);
   useEffect(() => {
     if (!answer || !guildId) { setChannels([]); return; }
+    setChannels([]);
     let live = true;
     api(answer, `/api/guilds/${guildId}/channels`).then(result => { if (live) setChannels(result.channels); })
       .catch(() => { if (live) setChannels([]); });

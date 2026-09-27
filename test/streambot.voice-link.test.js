@@ -881,6 +881,87 @@ test('$skip advances to the next real piece (buffer in between)', async t => {
   await mgr.stop();
 });
 
+test('Music Mode skip advances chapters inside one mix, then advances the real queue', async t => {
+  const { mgr, fv } = fixture(t, { streamBufferSec: 0,
+    dashboardBaseUrl: 'https://example.com/player' });
+  mgr.musicMode = true;
+  mgr._buildDashMerge = (vm, url, audioUrl, offset, options, piece) =>
+    vm.prepareStream(url, options, piece.control.signal);
+  const chapters = [
+    { title: 'Intro', startSec: 0, endSec: 30 },
+    { title: 'Track one', startSec: 30, endSec: 60 },
+    { title: 'Track two', startSec: 60, endSec: 90 }
+  ];
+  const mix = await mgr.start({ guildId: 'g1', channelId: 'c1',
+    streamUrl: 'https://example.com/mix.mp4', title: 'Long mix',
+    totalDurationSec: 90, chapters });
+  assert.equal(mix.ok, true);
+  await mgr.start({ guildId: 'g1', channelId: 'c1',
+    streamUrl: 'https://example.com/next.mp4', title: 'Next source' });
+  assert.equal(mgr.status().currentChapter.title, 'Intro');
+  assert.equal(mgr.status().musicChapters.length, 3);
+  assert.equal((await mgr.skip()).skippedTo, 'Track one');
+  await until(() => mgr.status()?.currentChapter?.title === 'Track one');
+  assert.equal(mgr.status().positionSec >= 30, true);
+  assert.equal((await mgr.skip()).skippedTo, 'Track two');
+  await until(() => mgr.status()?.currentChapter?.title === 'Track two');
+  assert.equal((await mgr.skip()).skippedTo, 'Next source');
+  await until(() => mgr.voiceLink.pipeline.activeWriter?.title === 'Next source');
+  assert.equal(fv.plays.length, 1, 'chapter skips retain the same Go Live connection');
+  assert.equal(fv.calls.stopStream, 0);
+});
+
+test('Music Mode chapter skip while paused updates the held position', async t => {
+  const { mgr, fv } = fixture(t, { streamBufferSec: 0,
+    dashboardBaseUrl: 'https://example.com/player' });
+  mgr.musicMode = true;
+  mgr._buildDashMerge = (vm, url, audioUrl, offset, options, piece) =>
+    vm.prepareStream(url, options, piece.control.signal);
+  await mgr.start({ guildId: 'g1', channelId: 'c1',
+    streamUrl: 'https://example.com/mix.mp4', title: 'Long mix',
+    totalDurationSec: 90, chapters: [
+      { title: 'Intro', startSec: 0, endSec: 30 },
+      { title: 'Track one', startSec: 30, endSec: 90 }
+    ] });
+  await mgr.pause();
+  assert.equal((await mgr.skip()).skippedTo, 'Track one');
+  assert.equal(mgr.status().currentChapter.title, 'Track one');
+  assert.equal(mgr.voiceLink.pausedPositionSec, 30);
+  await mgr.resume();
+  await until(() => mgr.voiceLink.pipeline.activeWriter?.startOffsetSec === 30);
+  assert.equal(fv.plays.length, 1);
+});
+
+test('switching a chaptered mix to video mode hides chapters and preserves normal seek and skip', async t => {
+  const { mgr, fv } = fixture(t, { streamBufferSec: 0,
+    dashboardBaseUrl: 'https://example.com/player' });
+  mgr.musicMode = true;
+  mgr._buildDashMerge = (vm, url, audioUrl, offset, options, piece) =>
+    vm.prepareStream(url, options, piece.control.signal);
+  await mgr.start({ guildId: 'g1', channelId: 'c1',
+    streamUrl: 'https://example.com/mix.mp4', title: 'Mix', totalDurationSec: 90,
+    chapters: [{ title: 'Intro', startSec: 0, endSec: 30 },
+      { title: 'Track one', startSec: 30, endSec: 90 }] });
+  await mgr.start({ guildId: 'g1', channelId: 'c1',
+    streamUrl: 'https://example.com/next.mp4', title: 'Next source' });
+  assert.equal(mgr.status().currentChapter.title, 'Intro');
+  assert.equal((await mgr.toggleMusicMode()).enabled, false);
+  await until(() => mgr.voiceLink.pipeline.activeWriter?.musicMode === false);
+  assert.equal(mgr.status().musicChapters, null);
+  assert.equal(mgr.status().currentChapter, null);
+  await mgr.seekTo(12);
+  await until(() => mgr.voiceLink.pipeline.activeWriter?.startOffsetSec === 12);
+  assert.equal(mgr.status().musicChapters, null);
+  assert.equal((await mgr.toggleMusicMode()).enabled, true);
+  await until(() => mgr.voiceLink.pipeline.activeWriter?.musicMode === true);
+  assert.equal(mgr.status().currentChapter.title, 'Intro');
+  assert.equal((await mgr.skip()).skippedTo, 'Track one');
+  assert.equal((await mgr.toggleMusicMode()).enabled, false);
+  await until(() => mgr.voiceLink.pipeline.activeWriter?.musicMode === false);
+  assert.equal((await mgr.skip()).skippedTo, 'Next source');
+  assert.equal(fv.plays.length, 1);
+});
+
 test('$skip with an empty queue falls back to the filler placeholder', async t => {
   const {mgr,fv,start}=fixture(t,{streamBufferSec:0});
   await start('a');

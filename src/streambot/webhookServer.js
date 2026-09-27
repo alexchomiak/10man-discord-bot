@@ -162,7 +162,8 @@ function createWebhookServer({ config, streamManager, sources }) {
         return send(res, 400, { error: 'no target guild; pass guild_id or set SBOT_GUILD_ID' });
       }
 
-      const resolved = await sources.resolveSource(input, config);
+      const sourceConfig = { ...config, musicMode: streamManager.musicMode === true };
+      const resolved = await sources.resolveSource(input, sourceConfig);
       if (!resolved || resolved.available === false) {
         return send(res, 502, {
           ok: false,
@@ -172,7 +173,7 @@ function createWebhookServer({ config, streamManager, sources }) {
       }
 
       if (resolved.kind === 'youtube-playlist') {
-        const first = await sources.resolveSource(resolved.entries[0].sourceInput, config);
+        const first = await sources.resolveSource(resolved.entries[0].sourceInput, sourceConfig);
         if (!first?.available) return send(res, 502, { ok: false,
           error: first?.note || 'The first playlist video is unavailable.', kind: resolved.kind });
         const result = await streamManager.startPlaylist({ guildId, channelId,
@@ -192,9 +193,11 @@ function createWebhookServer({ config, streamManager, sources }) {
         videoUrl: resolved.videoUrl || null,
         audioUrl: resolved.audioUrl || null,
         title,
+        thumbnail: resolved.thumbnail || null,
         startOffsetSec: resolved.startOffsetSec || null,
         isLive: resolved.isLive === true,
-        totalDurationSec: resolved.totalDurationSec != null ? resolved.totalDurationSec : null
+        totalDurationSec: resolved.totalDurationSec != null ? resolved.totalDurationSec : null,
+        chapters: resolved.chapters || null
       });
       if (result && result.ok) {
         return send(res, 200, {

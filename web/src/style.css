@@ -6,6 +6,24 @@
 .playing-thumb{display:block;width:100%;aspect-ratio:16/9;max-height:220px;object-fit:cover;margin-top:14px;border-radius:7px;background:#111923}
 .queue-thumb{width:52px;height:36px;flex:0 0 52px;object-fit:cover;border-radius:4px;background:#111923}
 .queue-copy{flex:1}
+.chapter-item{border-color:#455c47;background:#1c302d}
+.chapter-item .queue-index{color:#c7ef7b;min-width:27px}
+.channel-picker{position:relative;flex:1;min-width:0;z-index:5}
+.channel-picker-trigger{width:100%;min-height:41px;display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;padding:6px 12px;background:#141e2a;border:1px solid #3a4a5b;border-radius:8px;color:#e7edf4}
+.channel-picker-trigger:hover,.channel-picker-trigger[aria-expanded="true"]{border-color:#b8e66a;background:#1c2a32}
+.channel-picker-label{min-width:0;display:flex;flex-direction:column;gap:2px}
+.channel-picker-label strong,.channel-picker-label small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;font-size:12px}
+.channel-picker-label small{font-size:10px;color:#9cabb9}
+.channel-picker-chevron{font-size:20px;color:#bde76f;line-height:1}
+.channel-picker-menu{position:absolute;bottom:calc(100% + 7px);left:0;width:max(100%,260px);max-width:min(420px,calc(100vw - 32px));padding:8px;background:#121c28;border:1px solid #475d62;border-radius:11px;box-shadow:0 18px 45px #000a;z-index:40}
+.channel-picker-search{width:100%;height:39px;padding:0 11px;background:#0b141e;border:1px solid #344755;border-radius:7px;color:#edf4f8;font-size:13px}
+.channel-picker-options{max-height:min(280px,45vh);overflow-y:auto;margin-top:6px}
+.channel-picker-group{padding:10px 9px 5px;font-size:9px;font-weight:700;letter-spacing:.16em;color:#9eba90}
+.channel-picker-option{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:9px 11px;border:0;border-radius:7px;background:transparent;color:#e8f0f4;text-align:left}
+.channel-picker-option:hover,.channel-picker-option:focus-visible,.channel-picker-option.keyboard-active,.channel-picker-option[aria-selected="true"]{background:#263b32;color:#d9ff62}
+.channel-picker-option span,.channel-picker-option small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.channel-picker-option span{font-size:12px;font-weight:600}.channel-picker-option small{font-size:10px;color:#a7b9be}
+.channel-picker-empty{padding:15px 10px;color:#a7b9be;font-size:12px}
 .queue-item{position:relative;will-change:transform}
 .queue-item.dragging{opacity:.9;z-index:3;border-color:#d9ff62;box-shadow:0 12px 26px #0008}
 .drag-handle{border:0;background:transparent;padding:3px 5px;color:#aab9c9;touch-action:none;line-height:1;cursor:grab}
@@ -163,6 +181,9 @@
   .transport-spacer{display:none}
   .transport-main,.transport-button,.worker-card.expanded .transport-main,.worker-card.expanded .transport-button{width:100%;height:48px;min-width:0;padding:0 3px;font-size:12px}
   .channel-controls,.worker-card.expanded>.channel-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:12px 12px 18px}
+  .channel-picker{grid-column:1/-1;width:100%}
+  .channel-picker-trigger{min-height:48px}
+  .channel-picker-menu{width:100%;max-width:none}
   .channel-controls select{grid-column:1/-1;width:100%;min-width:0}
   .channel-controls .secondary-button,.worker-card.expanded .channel-controls .secondary-button{width:100%;height:44px;font-size:13px}
   .channel-controls .manual{width:100%;height:44px;margin:0;border:1px solid #435469;border-radius:7px;color:#dce7ef;font-size:13px;font-weight:700}

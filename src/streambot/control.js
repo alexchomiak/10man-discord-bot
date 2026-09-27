@@ -127,10 +127,11 @@ class StreamControl {
         if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);
         const input = String(payload.source || '').trim();
         if (!input) return this._result(false, M.STREAM_USAGE);
-        const resolved = await resolveSource(input, this.config);
+        const sourceConfig = { ...this.config, musicMode: this.streamManager.musicMode === true };
+        const resolved = await resolveSource(input, sourceConfig);
         if (!resolved?.available) return this._result(false, resolved?.note || M.SOURCE_UNRECOGNIZED);
         if (resolved.kind === 'youtube-playlist') {
-          const first = await resolveSource(resolved.entries[0].sourceInput, this.config);
+          const first = await resolveSource(resolved.entries[0].sourceInput, sourceConfig);
           if (!first?.available) return this._result(false, first?.note || 'The first playlist video is unavailable.');
           const r = await this.streamManager.startPlaylist({ guildId, channelId,
             entries: resolved.entries, firstResolved: first });
@@ -150,6 +151,7 @@ class StreamControl {
           audioUrl: resolved.audioUrl || null,
           title: resolved.title || null,
           thumbnail: resolved.thumbnail || null,
+          chapters: resolved.chapters || null,
           startOffsetSec: resolved.startOffsetSec || null,
           isLive: resolved.isLive === true,
           totalDurationSec: resolved.totalDurationSec ?? null

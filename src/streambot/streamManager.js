@@ -508,7 +508,7 @@ class StreamManager {
     const videoFilter = musicMode && piece?.musicArtwork
       ? `[0:v]${baseVideoFilter}[base];movie=${piece.musicArtwork.file}[art];` +
         `[base][art]overlay=0:0:eof_action=repeat[stage];[2:v]format=rgba[queue];` +
-        `[stage][queue]overlay=1000:265:repeatlast=1:shortest=0` +
+        `[stage][queue]overlay=${piece.musicArtwork.chaptered ? 0 : 1000}:265:repeatlast=1:shortest=0` +
         (cfg.videoEncoder === 'vaapi' ? ',format=nv12,hwupload' : '') + '[v]'
       : showProgress
       ? progressOverlayFilter({
@@ -1143,7 +1143,8 @@ class StreamManager {
           if (!piece.isFiller && piece.sourceInput && !piece.streamUrl && !piece.videoUrl) {
             // Playlist entries keep page URLs in the queue. Resolve the signed
             // media URL only when playback reaches that entry, not hours early.
-            const resolved = await require('./sources').resolveSource(piece.sourceInput, this.config);
+            const resolved = await require('./sources').resolveSource(piece.sourceInput,
+              { ...this.config, musicMode: piece.musicMode });
             piece.control.signal.throwIfAborted();
             if (!resolved?.available || resolved.kind === 'youtube-playlist') {
               const error = new Error(resolved?.note || 'Queued playlist video is unavailable');
@@ -1156,6 +1157,7 @@ class StreamManager {
             piece.isDash = !!(piece.videoUrl && piece.audioUrl);
             piece.isLive = resolved.isLive === true;
             piece.totalDurationSec = resolved.totalDurationSec ?? piece.totalDurationSec;
+            piece.chapters = piece.musicMode ? resolved.chapters || null : null;
             piece.title ||= resolved.title;
             piece.thumbnail ||= resolved.thumbnail;
           }
@@ -1172,6 +1174,8 @@ class StreamManager {
               thumbnail: piece.isFiller ? null : piece.thumbnail,
               avatarUrl,
               queue: p.enqueue,
+              chapters: piece.chapters,
+              getPosition: () => this.positionOf(piece),
               width: this.config.streamWidth || 1920,
               height: this.config.streamHeight || 1080,
               signal: piece.control.signal
@@ -1203,7 +1207,8 @@ class StreamManager {
           if (piece.recoveryAttempt) {
             await sleep(piece.retryDelayMs, undefined, { signal: piece.control.signal });
             if (piece.sourceInput) {
-              const resolved = await require('./sources').resolveSource(piece.sourceInput, this.config);
+              const resolved = await require('./sources').resolveSource(piece.sourceInput,
+                { ...this.config, musicMode: piece.musicMode });
               piece.control.signal.throwIfAborted();
               if (!resolved?.available || resolved.isLive !== piece.isLive) {
                 throw new Error(resolved?.note || 'Source unavailable during recovery');
@@ -1542,7 +1547,7 @@ class StreamManager {
   status() {
     const link = this.voiceLink;
     if (!link) return null;
-    const piece = link.paused ? link.pausedSession || this.session : this.session;
+    const piece = link.paused ? link.pausedSession : this.session;
     const rtcBytesSent = link.pipeline?.feeder?.rtcBytesSent || 0;
     const now = Date.now();
     const previous = this._statusRateSample;
@@ -1565,6 +1570,10 @@ class StreamManager {
       positionSec: piece ? Math.round(link.paused && Number.isFinite(link.pausedPositionSec)
         ? link.pausedPositionSec : this.positionOf(piece)) : null,
       current: piece ? this._queueItem(piece) : null,
+      musicChapters: this.musicMode && !piece?.isFiller ? piece?.chapters || null : null,
+      currentChapter: this.musicMode && !piece?.isFiller
+        ? this._currentChapter(piece, link.paused && Number.isFinite(link.pausedPositionSec)
+          ? link.pausedPositionSec : this.positionOf(piece)) : null,
       queue: (link.pipeline?.enqueue || [])
         .filter(item => !piece || item.queueId !== piece.queueId)
         .map(item => this._queueItem(item)),
@@ -1582,6 +1591,15 @@ class StreamManager {
       thumbnail: piece.thumbnail || null,
       isFiller: !!piece.isFiller, isLive: !!piece.isLive,
       durationSec: Number.isFinite(piece.totalDurationSec) ? piece.totalDurationSec : null };
+  }
+
+  _currentChapter(piece, positionSec) {
+    const chapters = piece?.chapters;
+    if (!Array.isArray(chapters)) return null;
+    for (let i = chapters.length - 1; i >= 0; i--) {
+      if (positionSec >= chapters[i].startSec) return { ...chapters[i], index: i };
+    }
+    return null;
   }
 
   async _refreshMusicQueue(link) {
@@ -1699,6 +1717,7 @@ class StreamManager {
         return { ok: false, message: 'The stream queue is full. Wait for a video to finish or use $stop.' };
       }
       const piece = this._piece(link, args);
+      piece.chapters = this.musicMode ? args.chapters || null : null;
       const queued = !!p.activeWriter && !p.activeWriter.isFiller;
       // Insert a short filler buffer immediately BEFORE the new real piece
       // when a REAL piece is already active or queued (so playback is
@@ -1752,6 +1771,7 @@ class StreamManager {
         audioUrl: index === 0 ? firstResolved.audioUrl || null : null,
         title: entry.title || (index === 0 ? firstResolved.title : null),
         thumbnail: entry.thumbnail || (index === 0 ? firstResolved.thumbnail : null),
+        chapters: this.musicMode && index === 0 ? firstResolved.chapters || null : null,
         isLive: index === 0 && firstResolved.isLive === true,
         totalDurationSec: entry.totalDurationSec ?? (index === 0 ? firstResolved.totalDurationSec : null)
       }));
@@ -1784,6 +1804,31 @@ class StreamManager {
       const link = this.voiceLink;
       const p = link?.pipeline;
       const active = p?.activeWriter;
+      const pending = active && p.enqueue.find(item => item.queueId === active.queueId && !item.isFiller);
+      const current = link?.paused ? link.pausedSession : pending || active;
+      if (this.musicMode && current && !current.isFiller && !current.isLive &&
+          Array.isArray(current.chapters)) {
+        const position = link.paused && Number.isFinite(link.pausedPositionSec)
+          ? link.pausedPositionSec : this.positionOf(current);
+        const next = current.chapters.find(chapter => chapter.startSec > position);
+        if (next) {
+          if (link.paused) link.pausedPositionSec = next.startSec;
+          else await this._seekSession(link, current, next.startSec);
+          return { ok: true, noOp: false, skippedTo: next.title,
+            fellBackToFiller: false, queued: p.enqueue.length };
+        }
+        for (let i = p.enqueue.length - 1; i >= 0; i--) {
+          if (!p.enqueue[i].isFiller && p.enqueue[i].queueId === current.queueId) p.enqueue.splice(i, 1);
+        }
+        if (link.paused) {
+          const index = p.enqueue.findIndex(item => !item.isFiller);
+          const nextPiece = index >= 0 ? p.enqueue.splice(0, index + 1).at(-1) : null;
+          link.pausedSession = nextPiece;
+          link.pausedPositionSec = nextPiece?.startOffsetSec || 0;
+          return { ok: true, noOp: false, skippedTo: nextPiece?.title || 'placeholder',
+            fellBackToFiller: !nextPiece, queued: p.enqueue.length };
+        }
+      }
       if (!active && !(p?.enqueue && p.enqueue.length)) {
         return { ok: true, noOp: true, skippedTo: null, fellBackToFiller: false, queued: p ? p.enqueue.length : 0 };
       }
@@ -1840,6 +1885,7 @@ class StreamManager {
       durationSec: piece.durationSec,
       title: piece.title,
       thumbnail: piece.thumbnail,
+      chapters: piece.chapters,
       queueId: piece.queueId,
       startOffsetSec: off,
       isLive: isLive !== undefined ? isLive : piece.isLive,
@@ -1987,23 +2033,26 @@ class StreamManager {
       if (pos < 0) pos = 0;
       const dur = session.totalDurationSec;
       if (Number.isFinite(dur) && dur > 0 && pos > dur) pos = dur;
-      const piece = this._reopenSession(link, session, { offsetSec: pos });
-      this._cancelPiece(session);
-      this.session = piece;
-      const p = link.pipeline;
-      // Seeking replaces the current video, ahead of the existing queue.
-      // A second seek while the first is still pending replaces that pending
-      // copy instead of leaving duplicate playback later in the queue.
-      for (let i = p.enqueue.length - 1; i >= 0; i--) {
-        if (!p.enqueue[i].isFiller && p.enqueue[i].queueId === piece.queueId) p.enqueue.splice(i, 1);
-      }
-      p.enqueue.unshift(piece);
-      if (!p.writerTask) {
-        const videoModule = await this.preparePlayback(await this._video());
-        this._pump(link, videoModule);
-      }
+      const piece = await this._seekSession(link, session, pos);
       return { ok: true, applied: true, newPosSec: Math.round(pos), title: piece.title };
     });
+  }
+
+  async _seekSession(link, session, positionSec) {
+    const piece = this._reopenSession(link, session, { offsetSec: positionSec });
+    this._cancelPiece(session);
+    this.session = piece;
+    const p = link.pipeline;
+    // Seeking replaces the current source ahead of other queued sources.
+    for (let i = p.enqueue.length - 1; i >= 0; i--) {
+      if (!p.enqueue[i].isFiller && p.enqueue[i].queueId === piece.queueId) p.enqueue.splice(i, 1);
+    }
+    p.enqueue.unshift(piece);
+    if (!p.writerTask) {
+      const videoModule = await this.preparePlayback(await this._video());
+      this._pump(link, videoModule);
+    }
+    return piece;
   }
 
   async scrub(deltaSec) { return this._seek(deltaSec, true); }

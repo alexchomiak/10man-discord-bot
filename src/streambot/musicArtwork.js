@@ -15,7 +15,7 @@ function shorten(value, limit) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }
-function titleMarkup(title) {
+function titleMarkup(title, y = 847) {
   const words = shorten(title || 'Nothing playing', 76).split(' ');
   const lines = [''];
   for (const word of words) {
@@ -24,9 +24,9 @@ function titleMarkup(title) {
     else lines[lines.length - 1] = line ? `${line} ${word}` : word;
   }
   return lines.map((line, index) =>
-    `<tspan x="500" y="${847 + index * 40}">${escapeXml(shorten(line, 40))}</tspan>`).join('');
+    `<tspan x="500" y="${y + index * 40}">${escapeXml(shorten(line, 40))}</tspan>`).join('');
 }
-function musicSvg(url, workerId, title, hasThumbnail) {
+function musicSvg(url, workerId, title, hasThumbnail, chaptered = false) {
   const displayUrl = escapeXml(shorten(url, 67));
   const worker = escapeXml(shorten(workerId.toUpperCase(), 32));
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080"><style>text{font-family:DejaVu Sans,Arial,sans-serif}</style>
@@ -40,30 +40,45 @@ function musicSvg(url, workerId, title, hasThumbnail) {
     <rect x="300" y="555" width="400" height="225" rx="16" fill="#0b141c" stroke="#3b5549" stroke-width="2"/>
     ${hasThumbnail ? '' : '<text x="500" y="678" text-anchor="middle" font-size="26" fill="#90a3ae">CURRENT TRACK</text>'}
     <text x="500" y="813" text-anchor="middle" font-size="21" letter-spacing="3" fill="#d9ff62">NOW PLAYING</text>
-    <text text-anchor="middle" font-size="30" font-weight="700" fill="#f0f4f6">${titleMarkup(title)}</text>
+    ${chaptered ? '' : `<text text-anchor="middle" font-size="30" font-weight="700" fill="#f0f4f6">${titleMarkup(title)}</text>`}
     <text x="500" y="930" text-anchor="middle" font-size="22" fill="#e9f0f4">Scan the QR code or visit</text>
     <text x="500" y="965" text-anchor="middle" font-size="21" fill="#d9ff62">${displayUrl}</text>
     <text x="500" y="997" text-anchor="middle" font-size="21" fill="#a9bdbe">to add music to the queue.</text>
     <text x="1030" y="225" font-size="29" font-weight="700" letter-spacing="3" fill="#d9ff62">UP NEXT</text>
   </svg>`);
 }
-function queueSvg(items) {
+function queueSvg(items, { chaptered = false, currentTitle = null } = {}) {
   const all = (items || []).filter(item => !item.isFiller);
   const songs = all.slice(0, 10);
-  if (!songs.length) return Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="820" height="700"><text x="15" y="45" font-family="DejaVu Sans,Arial" font-size="25" fill="#a9bdbe">Nothing queued yet</text></svg>');
+  const x = chaptered ? 1000 : 0;
+  const width = chaptered ? 1920 : 820;
+  const title = chaptered ? `<text text-anchor="middle" font-family="DejaVu Sans,Arial" font-size="30" font-weight="700" fill="#f0f4f6">${titleMarkup(currentTitle, 582)}</text>` : '';
+  if (!songs.length) return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="700">${title}<text x="${x + 15}" y="45" font-family="DejaVu Sans,Arial" font-size="25" fill="#a9bdbe">Nothing queued yet</text></svg>`);
   const cards = songs.map((item, index) => {
     const y = index * 64;
-    return `<rect x="0" y="${y}" width="810" height="58" rx="8" fill="#20313b" stroke="#3b5549" stroke-width="1"/>
-      <text x="10" y="${y + 38}" font-family="DejaVu Sans,Arial" font-size="20" fill="#a9bdbe">${String(index + 1).padStart(2, '0')}</text>
-      <rect x="45" y="${y + 7}" width="80" height="45" rx="5" fill="#0b141c"/>
-      <text x="139" y="${y + 38}" font-family="DejaVu Sans,Arial" font-size="23" fill="#f0f4f6">${escapeXml(shorten(item.title || 'Untitled', 47))}</text>`;
+    return `<rect x="${x}" y="${y}" width="810" height="58" rx="8" fill="#20313b" stroke="#3b5549" stroke-width="1"/>
+      <text x="${x + 10}" y="${y + 38}" font-family="DejaVu Sans,Arial" font-size="20" fill="#a9bdbe">${String(index + 1).padStart(2, '0')}</text>
+      <rect x="${x + 45}" y="${y + 7}" width="80" height="45" rx="5" fill="#0b141c"/>
+      <text x="${x + 139}" y="${y + 38}" font-family="DejaVu Sans,Arial" font-size="23" fill="#f0f4f6">${escapeXml(shorten(item.title || 'Untitled', 47))}</text>`;
   }).join('');
   const more = all.length > songs.length
-    ? `<text x="12" y="${songs.length * 64 + 29}" font-family="DejaVu Sans,Arial" font-size="22" fill="#d9ff62">+${all.length - songs.length} more queued</text>` : '';
-  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="820" height="700">${cards}${more}</svg>`);
+    ? `<text x="${x + 12}" y="${songs.length * 64 + 29}" font-family="DejaVu Sans,Arial" font-size="22" fill="#d9ff62">+${all.length - songs.length} more queued</text>` : '';
+  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="700">${title}${cards}${more}</svg>`);
+}
+function chapterIndex(artwork) {
+  if (!artwork.chaptered) return -1;
+  const position = artwork.getPosition?.() || 0;
+  for (let i = artwork.chapters.length - 1; i >= 0; i--) {
+    if (position >= artwork.chapters[i].startSec) return i;
+  }
+  return -1;
 }
 async function queueFrame(artwork, items, signal) {
-  const all = (items || []).filter(item => !item.isFiller);
+  const chapter = chapterIndex(artwork);
+  const chapterItems = artwork.chaptered ? artwork.chapters.slice(chapter + 1).map(item => ({
+    title: item.title, thumbnail: artwork.thumbnail })) : [];
+  const displayItems = [...chapterItems, ...(items || [])];
+  const all = displayItems.filter(item => !item.isFiller);
   const songs = all.slice(0, 10);
   const images = await Promise.all(songs.map(async item => {
     if (!item.thumbnail) return null;
@@ -79,8 +94,12 @@ async function queueFrame(artwork, items, signal) {
     if (!used.has(url)) artwork.thumbnailCache.delete(url);
   }
   const composites = images.flatMap((image, index) => image ? [{ input: image,
-    left: 45, top: index * 64 + 7 }] : []);
-  return sharp(queueSvg(items)).composite(composites).png().toBuffer();
+    left: (artwork.chaptered ? 1000 : 0) + 45, top: index * 64 + 7 }] : []);
+  const currentTitle = chapter >= 0 ? artwork.chapters[chapter].title : artwork.title;
+  const frame = await sharp(queueSvg(displayItems, { chaptered: artwork.chaptered, currentTitle }))
+    .composite(composites).png().toBuffer();
+  artwork.chapterIndex = chapter;
+  return frame;
 }
 function startMusicQueueFrames(artwork) {
   if (artwork.timer) return;
@@ -92,16 +111,26 @@ function startMusicQueueFrames(artwork) {
   push();
   artwork.timer = setInterval(push, 100);
   artwork.timer.unref?.();
+  if (artwork.chaptered) {
+    artwork.chapterTimer = setInterval(() => {
+      if (chapterIndex(artwork) !== artwork.chapterIndex) {
+        void updateMusicQueue(artwork, artwork.queueItems, artwork.signal).catch(() => {});
+      }
+    }, 500);
+    artwork.chapterTimer.unref?.();
+  }
 }
 function stopMusicQueueFrames(artwork) {
   if (!artwork) return;
   clearInterval(artwork.timer);
+  clearInterval(artwork.chapterTimer);
   artwork.timer = null;
+  artwork.chapterTimer = null;
   artwork.queueStream?.destroy();
   artwork.thumbnailCache?.clear();
 }
 async function createMusicArtwork({ baseUrl, workerId, title, thumbnail = null, avatarUrl = null,
-  queue = [], width = 1920, height = 1080, signal }) {
+  queue = [], chapters = null, getPosition = null, width = 1920, height = 1080, signal }) {
   const url = workerDashboardUrl(baseUrl, workerId);
   if (!url) throw new Error('STREAM_DASHBOARD_BASE_URL must be an http(s) dashboard URL for Music Mode');
   signal?.throwIfAborted();
@@ -120,7 +149,8 @@ async function createMusicArtwork({ baseUrl, workerId, title, thumbnail = null, 
     composites.push({ input: ring, left: 456, top: 301 });
     composites.push({ input: avatar, left: 464, top: 309 });
   }
-  const image = await sharp(musicSvg(url, workerId, title, !!currentThumbnail))
+  const chaptered = Array.isArray(chapters) && chapters.length > 1;
+  const image = await sharp(musicSvg(url, workerId, title, !!currentThumbnail, chaptered))
     .composite(composites).resize(width, height).png().toBuffer();
   signal?.throwIfAborted();
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sbot-music-'));
@@ -128,7 +158,8 @@ async function createMusicArtwork({ baseUrl, workerId, title, thumbnail = null, 
     const file = path.join(directory, 'frame.png');
     await fs.writeFile(file, image, { mode: 0o600 });
     const artwork = { file, directory, url, queueStream: new PassThrough({ highWaterMark: 512 * 1024 }),
-      thumbnailCache: new Map(), queueFrame: null, timer: null };
+      title, thumbnail, chapters, chaptered, chapterIndex: -1, getPosition,
+      queueItems: [...queue], signal, thumbnailCache: new Map(), queueFrame: null, timer: null };
     artwork.queueFrame = await queueFrame(artwork, queue, signal);
     return artwork;
   } catch (error) {
@@ -138,7 +169,16 @@ async function createMusicArtwork({ baseUrl, workerId, title, thumbnail = null, 
 }
 async function updateMusicQueue(artwork, queue, signal) {
   if (!artwork?.queueStream || artwork.queueStream.destroyed) return;
-  artwork.queueFrame = await queueFrame(artwork, queue, signal);
+  artwork.queueItems = [...queue];
+  if (artwork.rendering) { artwork.dirty = true; return; }
+  artwork.rendering = true;
+  try {
+    do {
+      artwork.dirty = false;
+      const frame = await queueFrame(artwork, artwork.queueItems, signal);
+      if (!artwork.queueStream.destroyed) artwork.queueFrame = frame;
+    } while (artwork.dirty && !artwork.queueStream.destroyed);
+  } finally { artwork.rendering = false; }
 }
 module.exports = { createMusicArtwork, updateMusicQueue, startMusicQueueFrames,
   stopMusicQueueFrames };

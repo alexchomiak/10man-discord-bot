@@ -222,6 +222,7 @@ async function resolveShareTv(raw, cfg) {
         // the platform itself is live, which yt-dlp would mark as live.
         isLive: ytdlp.isLive === true,
         totalDurationSec: ytdlp.totalDurationSec != null ? ytdlp.totalDurationSec : null,
+        chapters: ytdlp.chapters || null,
         note: ytdlp.note || 'platform share resolved via yt-dlp'
       };
       if (ytdlp.streamType === 'dash') {
@@ -502,6 +503,25 @@ function ytdlpDumpJson(cfg, url, useCookies = false) {
   return spawnYtdlp(cfg, args, timeoutMs);
 }
 
+function musicChapters(data, durationSec) {
+  if (!Array.isArray(data) || data.length < 2) return null;
+  const chapters = data.slice(0, 200).map(entry => {
+    const startSec = Number(entry?.start_time);
+    const endSec = Number(entry?.end_time);
+    const title = String(entry?.title || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+    if (!Number.isFinite(startSec) || startSec < 0 || !title ||
+        Number.isFinite(durationSec) && startSec >= durationSec) return null;
+    return { startSec, endSec: Number.isFinite(endSec) && endSec > startSec ? endSec : null, title };
+  }).filter(Boolean).sort((a, b) => a.startSec - b.startSec);
+  const unique = chapters.filter((chapter, index) => index === 0 || chapter.startSec > chapters[index - 1].startSec);
+  if (unique.length < 2) return null;
+  return unique.map((chapter, index) => {
+    const upper = unique[index + 1]?.startSec ?? durationSec ?? null;
+    return { title: chapter.title, startSec: chapter.startSec,
+      endSec: upper == null ? chapter.endSec : Math.min(chapter.endSec ?? upper, upper) };
+  });
+}
+
 // vcodec preference: lower index = better; unknown vcodec codes sort last.
 // yt-dlp sometimes reports fourcc-style codes (avc1.640028, hev1.1.6...) —
 // normalize the common prefixes to canonical names for ranking purposes.
@@ -756,6 +776,7 @@ async function resolveYtdlp(raw, cfg) {
 
   const vodDuration = !isLive && Number.isFinite(data.duration) && data.duration > 0 ? Math.round(data.duration) : null;
   const thumbnail = thumbnailUrl(data.thumbnail || data.thumbnails?.at(-1)?.url);
+  const chapters = config.musicMode === true && !isLive ? musicChapters(data.chapters, vodDuration) : null;
 
   if (bestManifest) {
     // YouTube gives every HLS rendition the same master manifest_url. Its
@@ -774,6 +795,7 @@ async function resolveYtdlp(raw, cfg) {
       startOffsetSec,
       isLive,
       totalDurationSec: vodDuration,
+      chapters,
       note: 'combined A+V manifest (progressive, zero-disk)'
     };
   }
@@ -803,6 +825,7 @@ async function resolveYtdlp(raw, cfg) {
         title: data.title || null, available: true, startOffsetSec, isLive,
         thumbnail,
         totalDurationSec: vodDuration,
+        chapters,
         note: 'separate YouTube HLS A+V merged in-memory (progressive, zero-disk)'
       };
     }
@@ -819,6 +842,7 @@ async function resolveYtdlp(raw, cfg) {
       startOffsetSec,
       isLive,
       totalDurationSec: vodDuration,
+      chapters,
       note: 'combined A+V stream (progressive, zero-disk)'
     };
   }
@@ -879,6 +903,7 @@ async function resolveYtdlp(raw, cfg) {
       startOffsetSec,
       isLive,
       totalDurationSec: vodDuration,
+      chapters,
       note: 'separate A+V merged in-memory (progressive, zero-disk)'
     };
   }
