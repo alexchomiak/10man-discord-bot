@@ -291,6 +291,36 @@ test('persistent track feeder creates one go-live connection across sequential c
   await feeder.close();
 });
 
+test('Music Mode sends Opus through voice while video stays on Go Live', async () => {
+  const { PassThrough } = require('node:stream');
+  const { PersistentTrackFeeder } = require('../src/streambot/persistentTrackFeeder');
+  const sent = { goLiveVideo: 0, goLiveAudio: 0, voiceAudio: 0, voicePacketizers: 0, speaking: [] };
+  const goLive = { ready: true, setPacketizer() {},
+    mediaConnection: { setSpeaking() {}, setVideoAttributes() {} },
+    sendVideoFrame() { sent.goLiveVideo++; }, sendAudioFrame() { sent.goLiveAudio++; } };
+  const voice = { ready: true, setPacketizer() { sent.voicePacketizers++; },
+    mediaConnection: { setSpeaking(value) { sent.speaking.push(value); } },
+    sendAudioFrame() { sent.voiceAudio++; } };
+  const packet = (pts, duration, den) => ({ data: Buffer.from([1]), pts: BigInt(pts),
+    duration: BigInt(duration), timeBase: { num: 1, den }, free() {} });
+  const videoModule = { demux: async () => {
+    const video = new PassThrough({ objectMode: true });
+    const audio = new PassThrough({ objectMode: true });
+    queueMicrotask(() => { video.end(packet(0, 1, 30)); audio.end(packet(0, 960, 48000)); });
+    return { video: { stream: video }, audio: { stream: audio } };
+  } };
+  const feeder = new PersistentTrackFeeder({
+    streamer: { createStream: async () => goLive, voiceConnection: { webRtcConn: voice } }, videoModule
+  });
+  await feeder.append(new PassThrough(), new AbortController().signal, null, { voiceAudio: true });
+  assert.equal(sent.goLiveVideo, 1);
+  assert.equal(sent.goLiveAudio, 0);
+  assert.equal(sent.voiceAudio, 1);
+  assert.equal(sent.voicePacketizers, 1);
+  assert.deepEqual(sent.speaking, [true, false]);
+  await feeder.close();
+});
+
 test('persistent track feeder configures the requested H.265 and AV1 packetizers', async () => {
   const codecs = [];
   for (const videoCodec of ['H265', 'AV1']) {

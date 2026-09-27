@@ -286,6 +286,20 @@ class CommandRegistry {
       return;
     }
 
+    if (resolved.kind === 'youtube-playlist') {
+      const first = await resolveSource(resolved.entries[0].sourceInput, config);
+      if (!first?.available) {
+        await this.reply(message, first?.note || 'The first playlist video is unavailable.');
+        return;
+      }
+      const result = await this.streamManager.startPlaylist({ guildId, channelId,
+        entries: resolved.entries, firstResolved: first });
+      await this.reply(message, result.ok
+        ? `Queued ${result.count} videos from ${resolved.title || 'the YouTube playlist'}.`
+        : result.message || M.STREAM_START_FAILED);
+      return;
+    }
+
     const label =
       resolved.kind === 'sharetv' && resolved.channel
         ? resolved.channel

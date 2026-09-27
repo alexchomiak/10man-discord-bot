@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const test = require('node:test');
 const sharp = require('sharp');
 const { workerDashboardUrl, createFillerArtwork, fillerCountdownFilter } = require('../src/streambot/fillerArtwork');
+const { createMusicArtwork, updateMusicQueue, stopMusicQueueFrames } = require('../src/streambot/musicArtwork');
 
 test('filler links target the selected worker, preserving a reverse-proxy path', () => {
   assert.equal(workerDashboardUrl('https://stream.example.com/player/', 'one'),
@@ -65,5 +66,51 @@ test('worker avatar is centered in the blue and neon QR code', async () => {
   } finally {
     global.fetch = originalFetch;
     if (artwork) await fs.rm(artwork.directory, { recursive: true, force: true });
+  }
+});
+
+test('music artwork links to its worker and updates the live queue image', async () => {
+  const artwork = await createMusicArtwork({ baseUrl: 'https://stream.example.com/player/',
+    workerId: 'two', title: 'Current song', queue: [{ title: 'First song' }] });
+  try {
+    const metadata = await sharp(artwork.file).metadata();
+    assert.equal(metadata.width, 1920);
+    assert.equal(metadata.height, 1080);
+    assert.equal(artwork.url, 'https://stream.example.com/player/#/two');
+    assert(artwork.queueFrame.length > 0);
+    const first = artwork.queueFrame;
+    await updateMusicQueue(artwork, [{ title: 'Second song' }]);
+    assert.notDeepEqual(artwork.queueFrame, first);
+  } finally {
+    stopMusicQueueFrames(artwork);
+    await fs.rm(artwork.directory, { recursive: true, force: true });
+  }
+});
+
+test('music screen composites the worker avatar, current thumbnail, and queued thumbnails', async () => {
+  const colors = { avatar: '#eb5e8a', current: '#2196f3', queued: '#ffb020' };
+  const bytes = Object.fromEntries(await Promise.all(Object.entries(colors).map(async ([key, color]) =>
+    [key, await sharp({ create: { width: 64, height: 64, channels: 3, background: color } }).png().toBuffer()])));
+  const originalFetch = global.fetch;
+  global.fetch = async url => new Response(bytes[String(url).split('/').pop()],
+    { headers: { 'content-type': 'image/png' } });
+  let artwork;
+  try {
+    artwork = await createMusicArtwork({ baseUrl: 'https://stream.example.com/', workerId: 'one',
+      title: 'Playing now', thumbnail: 'https://images.example/current',
+      avatarUrl: 'https://images.example/avatar',
+      queue: [{ title: 'Coming next', thumbnail: 'https://images.example/queued' }] });
+    const avatar = await sharp(artwork.file).extract({ left: 500, top: 345, width: 1, height: 1 }).raw().toBuffer();
+    const current = await sharp(artwork.file).extract({ left: 500, top: 670, width: 1, height: 1 }).raw().toBuffer();
+    const queued = await sharp(artwork.queueFrame).extract({ left: 70, top: 30, width: 1, height: 1 }).raw().toBuffer();
+    assert.deepEqual([...avatar.subarray(0, 3)], [235, 94, 138]);
+    assert.deepEqual([...current.subarray(0, 3)], [33, 150, 243]);
+    assert.deepEqual([...queued.subarray(0, 3)], [255, 176, 32]);
+  } finally {
+    global.fetch = originalFetch;
+    if (artwork) {
+      stopMusicQueueFrames(artwork);
+      await fs.rm(artwork.directory, { recursive: true, force: true });
+    }
   }
 });

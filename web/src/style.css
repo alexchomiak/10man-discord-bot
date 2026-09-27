@@ -81,6 +81,10 @@
 }
 
 /* The dedicated player reads top-to-bottom: playback first, queue below it. */
+.mode-toggle{border:1px solid #405044;border-radius:8px;background:#1b2a2a;color:#afc6bb;min-height:32px;padding:0 9px;display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;white-space:nowrap}
+.mode-toggle.active{background:#d9ff62;color:#17232d;border-color:#d9ff62}
+.mode-toggle:hover:not(:disabled){border-color:#d9ff62}
+@media(max-width:490px){.mode-toggle span{display:none}.mode-toggle{font-size:19px;padding:0 9px}}
 .detail-intro{align-items:center;padding:20px 0}
 .back-link{margin-bottom:10px}
 .worker-card.expanded{display:flex;flex-direction:column;gap:0;padding-bottom:24px}

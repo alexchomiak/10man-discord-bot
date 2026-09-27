@@ -16,7 +16,9 @@ const telemetry = require('./telemetry');
 const { isYoutubeHlsUrl } = require('./sources');
 const { createAlertSink } = require('./alerts');
 const { progressOverlayFilter } = require('./progressOverlay');
-const { createFillerArtwork, fillerCountdownFilter } = require('./fillerArtwork');
+const { createFillerArtwork, fillerCountdownFilter, workerDashboardUrl } = require('./fillerArtwork');
+const { createMusicArtwork, updateMusicQueue, startMusicQueueFrames,
+  stopMusicQueueFrames } = require('./musicArtwork');
 
 function log(level, ...parts) {
   if (level === 'error') console.error(TAG, ...parts);
@@ -94,6 +96,7 @@ class StreamManager {
     }
     this.session = null;
     this.progressOverlay = false;
+    this.musicMode = false;
     this._videoModule = null;
     this._vaapiReady = null;
     // A single shared Streamer for the manager's lifetime: `new Streamer()`
@@ -112,6 +115,7 @@ class StreamManager {
     this._timerFactory = null;
     this._operations = Promise.resolve();
     this._requestedMove = null;
+    this._voiceMoveTarget = null;
     this._statusRateSample = null;
     this._statusRtcKbps = null;
     this._feederFactory = (streamer, videoModule) => new PersistentTrackFeeder({
@@ -390,8 +394,9 @@ class StreamManager {
     const producerBufferBytes = Math.max(1, Math.round((cfg.pipelineBufferMb || 8) * 1024 * 1024));
     const output = new MeteredPassThrough({ highWaterMark: producerBufferBytes });
     const offset = Number.isFinite(startOffsetSec) && startOffsetSec > 0 ? Math.round(startOffsetSec) : 0;
-    const useVaapiFrames = cfg.videoEncoder === 'vaapi' && cfg.hardwareDecode === true && piece?.inputFormat !== 'lavfi';
-    const showProgress = this.progressOverlay && !piece?.isLive && !piece?.isFiller &&
+    const musicMode = piece?.musicMode === true;
+    const useVaapiFrames = !musicMode && cfg.videoEncoder === 'vaapi' && cfg.hardwareDecode === true && piece?.inputFormat !== 'lavfi';
+    const showProgress = !musicMode && this.progressOverlay && !piece?.isLive && !piece?.isFiller &&
       Number.isFinite(piece?.totalDurationSec) && piece.totalDurationSec > 0;
     const artworkFiller = piece?.isFiller && !!piece?.fillerArtwork;
 
@@ -421,7 +426,8 @@ class StreamManager {
         const burstSec = Math.max(4, Math.ceil(Number(cfg.jitterBufferSec) || 4));
         // Leave headroom to refill after transient network/encoder stalls.
         // The bounded input queue and output pipe prevent unlimited prefetch.
-        command.inputOptions(['-readrate', '1.15', '-readrate_initial_burst', String(burstSec)]);
+        command.inputOptions(['-readrate', musicMode ? '1.0' : '1.15',
+          '-readrate_initial_burst', String(burstSec)]);
       }
       if (!/m3u8?/i.test(url)) {
         // VOD must finish at clean EOF. Live HTTP proxies can rotate or close
@@ -435,8 +441,9 @@ class StreamManager {
     };
 
     // Primary input (video) with its own -ss when an offset is set.
-    const command = ff(videoUrl);
-    if (singleOptions?.customInputOptions?.length) command.inputOptions(singleOptions.customInputOptions);
+    const command = ff(musicMode ? `color=c=0x17232d:s=${cfg.streamWidth || 1920}x${height}:r=${fps}` : videoUrl);
+    if (musicMode) command.inputOptions(['-f', 'lavfi', '-re']);
+    else if (singleOptions?.customInputOptions?.length) command.inputOptions(singleOptions.customInputOptions);
     else if (offset > 0) command.inputOptions(['-ss', String(offset)]);
     if (useVaapiFrames) {
       const device = cfg.vaapiDevice || '/dev/dri/renderD128';
@@ -446,18 +453,26 @@ class StreamManager {
         '-hwaccel_output_format', 'vaapi'
       ]);
     }
-    configureInput(command, videoUrl, { localRealtime: piece?.inputFormat === 'lavfi' });
+    if (!musicMode) configureInput(command, videoUrl, { localRealtime: piece?.inputFormat === 'lavfi' });
     // A second input is needed for split DASH audio and for the synthetic
     // video-only filler. Do not attach a realtime anullsrc to ordinary
     // combined A/V media: FFmpeg can decode that VOD far ahead of the paced
     // synthetic track and retain every encoded video packet in its muxer,
     // growing native RSS without bound (observed at >17 GiB in 26 seconds).
     const needsSilentAudio = !audioUrl && piece?.inputFormat === 'lavfi';
-    if (audioUrl || needsSilentAudio) {
-      command.input(audioUrl || 'anullsrc=channel_layout=stereo:sample_rate=48000');
-      if (needsSilentAudio) command.inputOptions(['-f', 'lavfi']);
-      if (audioUrl && offset > 0) command.inputOptions(['-ss', String(offset)]);
-      configureInput(command, audioUrl, { localRealtime: needsSilentAudio });
+    const musicAudioUrl = musicMode && !piece?.isFiller ? (audioUrl || videoUrl) : null;
+    if (audioUrl || needsSilentAudio || musicMode) {
+      command.input(musicAudioUrl || audioUrl || 'anullsrc=channel_layout=stereo:sample_rate=48000');
+      if (needsSilentAudio || musicMode && piece?.isFiller) command.inputOptions(['-f', 'lavfi']);
+      if (musicAudioUrl && offset > 0) command.inputOptions(['-ss', String(offset)]);
+      else if (audioUrl && offset > 0) command.inputOptions(['-ss', String(offset)]);
+      configureInput(command, musicAudioUrl || audioUrl, { localRealtime: needsSilentAudio });
+    }
+    if (musicMode && piece?.musicArtwork) {
+      command.input(piece.musicArtwork.queueStream)
+        .inputOptions(['-f', 'image2pipe', '-c:v', 'png', '-framerate', '10',
+          '-probesize', '32768', '-analyzeduration', '0', '-thread_queue_size', '2']);
+      startMusicQueueFrames(piece.musicArtwork);
     }
 
     // fluent-ffmpeg's old `ffmpeg -formats` parser does not understand the
@@ -465,7 +480,7 @@ class StreamManager {
     // rejects a valid lavfi input during its preflight. Teach this command's
     // capability view about lavfi while preserving every other codec/format
     // check. No dependency patching or global monkey-patch is needed.
-    if ((!audioUrl || piece?.inputFormat === 'lavfi') && typeof command.availableFormats === 'function') {
+    if ((!audioUrl || piece?.inputFormat === 'lavfi' || musicMode) && typeof command.availableFormats === 'function') {
       const availableFormats = command.availableFormats.bind(command);
       command.availableFormats = (callback) => availableFormats((error, formats) => {
         if (!error && formats && !formats.lavfi) {
@@ -490,7 +505,12 @@ class StreamManager {
         `pad=${cfg.streamWidth || 1920}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
     // A GPU-to-CPU transfer is needed only while a finite VOD overlay is
     // visible. With the preference off, retain the original all-VAAPI path.
-    const videoFilter = showProgress
+    const videoFilter = musicMode && piece?.musicArtwork
+      ? `[0:v]${baseVideoFilter}[base];movie=${piece.musicArtwork.file}[art];` +
+        `[base][art]overlay=0:0:eof_action=repeat[stage];[2:v]format=rgba[queue];` +
+        `[stage][queue]overlay=1000:265:repeatlast=1:shortest=0` +
+        (cfg.videoEncoder === 'vaapi' ? ',format=nv12,hwupload' : '') + '[v]'
+      : showProgress
       ? progressOverlayFilter({
           baseFilter: baseVideoFilter + (useVaapiFrames ? ',hwdownload,format=nv12' : ''),
           durationSec: piece.totalDurationSec, offsetSec: offset
@@ -500,12 +520,11 @@ class StreamManager {
           `[base][art]overlay=0:0:eof_action=repeat` +
           (piece.upNext ? `,${fillerCountdownFilter(piece.durationSec, cfg.streamWidth || 1920, height)}` : '')
         : baseVideoFilter;
+    command.output(output).outputFormat('nut');
+    if (musicMode && piece?.musicArtwork) command.complexFilter(videoFilter, 'v');
+    else command.addOutputOption('-map 0:v:0').videoFilter(videoFilter);
     command
-      .output(output)
-      .outputFormat('nut')
-      .addOutputOption('-map 0:v:0')
-      .addOutputOption((audioUrl || needsSilentAudio) ? '-map 1:a:0' : '-map 0:a:0?')
-      .videoFilter(videoFilter)
+      .addOutputOption((audioUrl || needsSilentAudio || musicMode) ? '-map 1:a:0' : '-map 0:a:0?')
       .fpsOutput(fps)
       .addOutputOption([
         '-fps_mode', 'cfr', '-b:v', `${bitrate}k`, '-maxrate:v', `${bitrateMax}k`,
@@ -520,7 +539,11 @@ class StreamManager {
     // upstream of this output pipe. Pair padding/shortest only on the
     // existing live/filler path; endless apad would otherwise prevent VOD EOF.
     const padAudio = !!(piece?.isLive || piece?.isFiller || piece?.inputFormat === 'lavfi');
-    if (padAudio) command.addOutputOption('-shortest');
+    if (padAudio || musicMode && !piece?.isFiller && !piece?.isLive) {
+      command.addOutputOption('-shortest');
+      if (musicMode) command.addOutputOption('-shortest_buf_duration', '1');
+    }
+    if (musicMode && piece?.isFiller) command.addOutputOption('-t', String(Math.round(piece.durationSec || 300)));
     command.addOutputOption('-force_key_frames', `expr:gte(t,n_forced*${keyframeIntervalSec})`);
 
     // An H.265/AV1 sender must never receive H.264 packets through a silent codec
@@ -541,9 +564,9 @@ class StreamManager {
       throw new Error(`${codec} VAAPI encoder settings are unavailable; refusing to send H.264 as ${codec}`);
     }
     if (encoderSettings) {
+      command.videoCodec(encoderSettings.name);
+      if (!musicMode) command.videoFilter(encoderSettings.outFilters ?? []);
       command
-        .videoCodec(encoderSettings.name)
-        .videoFilter(encoderSettings.outFilters ?? [])
         .outputOptions(encoderSettings.options)
         .outputOptions(encoderSettings.globalOptions ?? []);
     } else {
@@ -855,7 +878,7 @@ class StreamManager {
       if (this.voiceLink !== link || link.pipeline?.activeWriter || link.pipeline?.enqueue.length) return;
       try { void this.alertSink.notify('grace-left', M.STREAM_GRACE_LEFT).catch(() => {}); } catch {}
       await this._leaveVoiceLink(link);
-    });
+    }).catch(error => log('error', `voice: grace leave failed: ${this._sanitize(error?.message || error)}`));
     const timer = this._timerFactory ? this._timerFactory(this._graceMs()) : setTimeout(fire, this._graceMs());
     if (this._timerFactory) timer?.then(fire);
     timer?.unref?.();
@@ -978,7 +1001,8 @@ class StreamManager {
       if (pipeline.closed) return;
       this._notifyError(`persistent playStream failed: ${error.message}`);
       pipeline.resolveReady(false);
-      void this._serialize(() => this._leaveVoiceLink(link));
+      void this._serialize(() => this._leaveVoiceLink(link)).catch(error =>
+        log('error', `voice: failed-start cleanup failed: ${this._sanitize(error?.message || error)}`));
     };
     pipeline.playPromise.catch(fail);
     return pipeline;
@@ -1083,6 +1107,11 @@ class StreamManager {
         await fs.promises.rm(piece.fillerArtwork.directory, { recursive: true, force: true }).catch(() => {});
         piece.fillerArtwork = null;
       }
+      if (piece.musicArtwork?.directory) {
+        stopMusicQueueFrames(piece.musicArtwork);
+        await fs.promises.rm(piece.musicArtwork.directory, { recursive: true, force: true }).catch(() => {});
+        piece.musicArtwork = null;
+      }
     }
   }
 
@@ -1095,6 +1124,7 @@ class StreamManager {
       // grace). $resume clears the flag, re-enqueues the held session, pumps.
       while (!p.closed && !link.paused && p.enqueue.length) {
         const piece = p.enqueue.shift();
+        piece.musicMode = this.musicMode;
         // Queue time is not playback time. This also makes recovery after an
         // external channel move resume from the position viewers last saw.
         piece.startedAt = Date.now();
@@ -1110,7 +1140,44 @@ class StreamManager {
         let stallWatchdog = null;
         let lastVideoFrameAt = 0;
         try {
-          if (piece.isFiller && this.config.dashboardBaseUrl) {
+          if (!piece.isFiller && piece.sourceInput && !piece.streamUrl && !piece.videoUrl) {
+            // Playlist entries keep page URLs in the queue. Resolve the signed
+            // media URL only when playback reaches that entry, not hours early.
+            const resolved = await require('./sources').resolveSource(piece.sourceInput, this.config);
+            piece.control.signal.throwIfAborted();
+            if (!resolved?.available || resolved.kind === 'youtube-playlist') {
+              const error = new Error(resolved?.note || 'Queued playlist video is unavailable');
+              error.code = 'SOURCE_UNAVAILABLE';
+              throw error;
+            }
+            piece.streamUrl = resolved.streamUrl || null;
+            piece.videoUrl = resolved.videoUrl || null;
+            piece.audioUrl = resolved.audioUrl || null;
+            piece.isDash = !!(piece.videoUrl && piece.audioUrl);
+            piece.isLive = resolved.isLive === true;
+            piece.totalDurationSec = resolved.totalDurationSec ?? piece.totalDurationSec;
+            piece.title ||= resolved.title;
+            piece.thumbnail ||= resolved.thumbnail;
+          }
+          if (piece.musicMode) {
+            let avatarUrl = null;
+            try {
+              avatarUrl = this.client?.user?.displayAvatarURL?.({ size: 256, extension: 'png', format: 'png' }) ||
+                this.client?.user?.avatarURL?.({ size: 256, format: 'png' }) || null;
+            } catch { /* Profile image is optional. */ }
+            piece.musicArtwork = await createMusicArtwork({
+              baseUrl: this.config.dashboardBaseUrl,
+              workerId: this.config.workerId || this.config.defaultWorkerId || 'primary',
+              title: piece.isFiller ? null : piece.title,
+              thumbnail: piece.isFiller ? null : piece.thumbnail,
+              avatarUrl,
+              queue: p.enqueue,
+              width: this.config.streamWidth || 1920,
+              height: this.config.streamHeight || 1080,
+              signal: piece.control.signal
+            });
+          }
+          if (piece.isFiller && !piece.musicMode && this.config.dashboardBaseUrl) {
             try {
               let avatarUrl = null;
               try {
@@ -1147,7 +1214,10 @@ class StreamManager {
               piece.isDash = !!(piece.videoUrl && piece.audioUrl);
             }
           }
-          const result = piece.isDash
+          const result = piece.musicMode
+            ? this._buildDashMerge(videoModule, piece.streamUrl || piece.videoUrl, piece.audioUrl,
+              piece.startOffsetSec, this.setupStreamOptions(videoModule, piece.startOffsetSec), piece)
+            : piece.isDash
             ? this._buildDashMerge(videoModule, piece.videoUrl, piece.audioUrl, piece.startOffsetSec,
               this.setupStreamOptions(videoModule, piece.startOffsetSec), piece)
             : this._prepareSingle(videoModule, piece);
@@ -1196,7 +1266,7 @@ class StreamManager {
               piece.playedSec = (piece.playedSec || 0) + frameMs / 1000;
               lastVideoFrameAt = Date.now();
             }
-          }, { syncVideoToAudio: piece.isLive || piece.isFiller });
+          }, { syncVideoToAudio: piece.isLive || piece.isFiller, voiceAudio: piece.musicMode && !piece.isFiller });
           if (!piece.isLive && !piece.isFiller && piece.sourceInput) {
             const configuredMs = Number(this.config.vodStallTimeoutMs);
             const timeoutMs = Number.isFinite(configuredMs) && configuredMs > 0 ? configuredMs : 8000;
@@ -1227,6 +1297,9 @@ class StreamManager {
         } catch (error) {
           if (!piece.control.signal.aborted && !p.closed) {
             if (piece.isLive) { recoverLive = true; liveError = error; }
+            else if (error.code === 'SOURCE_UNAVAILABLE') {
+              this._notifyError(`Playlist item skipped: ${piece.title || piece.sourceInput}: ${error.message}`);
+            }
             else if (piece.sourceInput && !piece.isFiller) {
               recoverVod = true;
               vodRecoveryReason = error.code === 'AV_SYNC_LOST' ? 'audio/video sync lost'
@@ -1488,7 +1561,7 @@ class StreamManager {
       alive: !link.closing && !link.disconnectFailed, inChannel: true, isFiller: !!piece?.isFiller,
       queued: link.pipeline?.enqueue.length || 0,
       paused: !!link.paused, isLive: !!piece?.isLive,
-      progressOverlay: this.progressOverlay,
+      progressOverlay: this.progressOverlay, musicMode: this.musicMode,
       positionSec: piece ? Math.round(link.paused && Number.isFinite(link.pausedPositionSec)
         ? link.pausedPositionSec : this.positionOf(piece)) : null,
       current: piece ? this._queueItem(piece) : null,
@@ -1511,6 +1584,40 @@ class StreamManager {
       durationSec: Number.isFinite(piece.totalDurationSec) ? piece.totalDurationSec : null };
   }
 
+  async _refreshMusicQueue(link) {
+    const active = link?.pipeline?.activeWriter;
+    if (!active?.musicArtwork) return;
+    try { await updateMusicQueue(active.musicArtwork, link.pipeline.enqueue, active.control.signal); }
+    catch (error) { this._verbose(`music queue artwork update skipped: ${error.message}`); }
+  }
+
+  async toggleMusicMode() {
+    return this._serialize(async () => {
+      const enabled = !this.musicMode;
+      if (enabled && !workerDashboardUrl(this.config.dashboardBaseUrl,
+        this.config.workerId || this.config.defaultWorkerId || 'primary')) {
+        return { ok: false, message: 'Set STREAM_DASHBOARD_BASE_URL to the public dashboard URL before enabling Music Mode.' };
+      }
+      this.musicMode = enabled;
+      const link = this.voiceLink;
+      const pipeline = link?.pipeline;
+      if (enabled && pipeline) {
+        for (let i = pipeline.enqueue.length - 1; i >= 0; i--) {
+          if (pipeline.enqueue[i].isFiller && pipeline.enqueue[i].title === 'buffer') pipeline.enqueue.splice(i, 1);
+        }
+      }
+      const active = pipeline?.activeWriter;
+      if (active && !link.paused) {
+        const replacement = active.isFiller ? this._placeholder(link)
+          : this._reopenSession(link, active, { offsetSec: active.isLive ? 0 : this.positionOf(active) });
+        pipeline.enqueue.unshift(replacement);
+        this._cancelPiece(active);
+        if (!pipeline.writerTask) this._pump(link, await this.preparePlayback(await this._video()));
+      }
+      return { ok: true, enabled, restarted: !!active };
+    });
+  }
+
   async reorderQueue(ids) {
     return this._serialize(async () => {
       const queue = this.voiceLink?.pipeline?.enqueue;
@@ -1530,6 +1637,7 @@ class StreamManager {
         const group = byId.get(id);
         return [...group.before, group.piece];
       }), ...before);
+      await this._refreshMusicQueue(this.voiceLink);
       return { ok: true, queued: groups.length };
     });
   }
@@ -1544,6 +1652,7 @@ class StreamManager {
       let start = index;
       while (start > 0 && queue[start - 1].isFiller && queue[start - 1].title === 'buffer') start--;
       queue.splice(start, index - start + 1);
+      await this._refreshMusicQueue(this.voiceLink);
       return { ok: true, title };
     });
   }
@@ -1586,7 +1695,7 @@ class StreamManager {
       if (!r.ok) return r;
       const link = r.voiceLink;
       const p = this._ensurePipeline(link, videoModule);
-      if (p.enqueue.length >= (this.config.streamQueueLimit || 20)) {
+      if (p.enqueue.length >= (this.config.streamQueueLimit || 100)) {
         return { ok: false, message: 'The stream queue is full. Wait for a video to finish or use $stop.' };
       }
       const piece = this._piece(link, args);
@@ -1598,13 +1707,66 @@ class StreamManager {
       // isFiller and must not count as real-ahead). The buffer is a separate
       // FIFO piece, so $skip (cancel active) lands on it, then the next real.
       const realAhead = (p.activeWriter && !p.activeWriter.isFiller) || p.enqueue.some(q => !q.isFiller);
-      const bufferInserted = realAhead && this._gapFillerEnabled();
+      const bufferInserted = realAhead && !this.musicMode && this._gapFillerEnabled();
       if (bufferInserted) p.enqueue.push(this._gapFiller(link, piece));
       p.enqueue.push(piece);
+      await this._refreshMusicQueue(link);
       // Only the placeholder is interruptible. Real content is always FIFO.
       if (p.activeWriter?.isFiller) this._cancelPiece(p.activeWriter);
       this._pump(link, videoModule);
       return { ok: true, session: piece, pipeline: p, chained: !!r.reused, queued, bufferInserted };
+    });
+    if (result.ok && !await result.pipeline.ready) return { ok: false, message: M.STREAM_PLAY_STREAM_HANG };
+    return result;
+  }
+
+  async startPlaylist({ guildId, channelId, entries, firstResolved } = {}) {
+    if (!guildId || !channelId) return { ok: false, message: M.STREAM_NEED_CHANNEL };
+    if (!Array.isArray(entries) || !entries.length || !firstResolved?.available) {
+      return { ok: false, message: 'The YouTube playlist has no playable entries.' };
+    }
+    const result = await this._serialize(async () => {
+      const channel = this.client.channels.cache.get(channelId) || await this.client.channels.fetch(channelId);
+      if (!channel) return { ok: false, message: M.STREAM_NO_CHANNEL };
+      const existing = this.voiceLink?.guildId === guildId && this.voiceLink?.channelId === channelId
+        ? this.voiceLink.pipeline : null;
+      const realAhead = (existing?.activeWriter && !existing.activeWriter.isFiller) ||
+        existing?.enqueue?.some(piece => !piece.isFiller);
+      const gaps = !this.musicMode && this._gapFillerEnabled()
+        ? entries.length - 1 + (realAhead ? 1 : 0) : 0;
+      const limit = this.config.streamQueueLimit || 100;
+      const needed = entries.length + gaps;
+      const available = limit - (existing?.enqueue?.length || 0);
+      if (needed > available) return { ok: false,
+        message: `Playlist needs ${needed} queue slots, but only ${available} are free. Increase STREAM_QUEUE_LIMIT or clear the queue.` };
+      const videoModule = await this.preparePlayback(await this._video());
+      const r = await this._ensureVoiceLink(guildId, channelId, videoModule);
+      if (!r.ok) return r;
+      const link = r.voiceLink;
+      const p = this._ensurePipeline(link, videoModule);
+      const queued = !!p.activeWriter && !p.activeWriter.isFiller;
+      const pieces = entries.map((entry, index) => this._piece(link, {
+        sourceInput: entry.sourceInput,
+        streamUrl: index === 0 ? firstResolved.streamUrl || null : null,
+        videoUrl: index === 0 ? firstResolved.videoUrl || null : null,
+        audioUrl: index === 0 ? firstResolved.audioUrl || null : null,
+        title: entry.title || (index === 0 ? firstResolved.title : null),
+        thumbnail: entry.thumbnail || (index === 0 ? firstResolved.thumbnail : null),
+        isLive: index === 0 && firstResolved.isLive === true,
+        totalDurationSec: entry.totalDurationSec ?? (index === 0 ? firstResolved.totalDurationSec : null)
+      }));
+      for (const piece of pieces) {
+        if (!this.musicMode && this._gapFillerEnabled() &&
+            ((p.activeWriter && !p.activeWriter.isFiller) || p.enqueue.some(item => !item.isFiller))) {
+          p.enqueue.push(this._gapFiller(link, piece));
+        }
+        p.enqueue.push(piece);
+      }
+      await this._refreshMusicQueue(link);
+      if (p.activeWriter?.isFiller) this._cancelPiece(p.activeWriter);
+      this._pump(link, videoModule);
+      return { ok: true, pipeline: p, queued, count: pieces.length, gaps,
+        chained: !!r.reused };
     });
     if (result.ok && !await result.pipeline.ready) return { ok: false, message: M.STREAM_PLAY_STREAM_HANG };
     return result;
@@ -1717,9 +1879,16 @@ class StreamManager {
       return { ok: true, ignored: true };
     }
     if (!state.channel_id) {
+      // Rebuilding Go Live deliberately clears voice before joining the new
+      // channel. Its gateway ACK is not an external disconnect. It may arrive
+      // while the move holds the operation queue, or after that queue drains.
+      if (this._voiceMoveTarget?.guildId === state.guild_id) {
+        return { ok: true, ignored: true };
+      }
+      const observedLink = this.voiceLink;
       return this._serialize(async () => {
         const link = this.voiceLink;
-        if (!link || link.guildId !== state.guild_id) return { ok: true, ignored: true };
+        if (!link || link !== observedLink || link.guildId !== state.guild_id) return { ok: true, ignored: true };
         await this._leaveVoiceLink(link);
         return { ok: true, disconnected: true };
       });
@@ -1731,7 +1900,7 @@ class StreamManager {
     if (!guildId || !channelId) return { ok: false, message: M.STREAM_NEED_CHANNEL };
     const channel = this.client.channels.cache.get(channelId) || await this.client.channels.fetch(channelId).catch(() => null);
     if (!channel || channel.guildId && channel.guildId !== guildId ||
-        channel.type != null && channel.type !== 2 && channel.type !== 13) {
+        channel.type != null && ![2, 13, 'GUILD_VOICE', 'GUILD_STAGE_VOICE'].includes(channel.type)) {
       return { ok: false, message: M.STREAM_NO_CHANNEL };
     }
     if (!this.voiceLink) return this.ensureChannel(guildId, channelId);
@@ -1758,32 +1927,37 @@ class StreamManager {
         : (pausedSession && !pausedSession.isLive ? this.positionOf(pausedSession) : 0);
 
       log('info', `voice: ${reason} move ${oldLink.channelId} -> ${channelId}; reopening Go Live session`);
-      const videoModule = await this.preparePlayback(await this._video());
-      const joined = await this._ensureVoiceLink(guildId, channelId, videoModule);
-      if (!joined.ok) return joined;
-      const newLink = joined.voiceLink;
+      this._voiceMoveTarget = { guildId, channelId };
+      try {
+        const videoModule = await this.preparePlayback(await this._video());
+        const joined = await this._ensureVoiceLink(guildId, channelId, videoModule);
+        if (!joined.ok) return joined;
+        const newLink = joined.voiceLink;
 
-      // A voice-only join has no Go Live session to restore.
-      if (!oldPipeline) return { ok: true, moved: true, voiceLink: newLink };
+        // A voice-only join has no Go Live session to restore.
+        if (!oldPipeline) return { ok: true, moved: true, voiceLink: newLink };
 
-      const pipeline = this._ensurePipeline(newLink, videoModule);
-      if (wasPaused) {
-        newLink.paused = true;
-        newLink.pausedAt = oldLink.pausedAt || Date.now();
-        newLink.pausedPositionSec = pausedPosition;
-        newLink.pausedSession = pausedSession ? this._copyQueuedPiece(newLink, pausedSession) : null;
-      } else if (active) {
-        pipeline.enqueue.push(active.isFiller
-          ? this._copyQueuedPiece(newLink, active)
-          : this._reopenSession(newLink, active, { offsetSec: active.isLive ? 0 : activePosition }));
-      } else if (queued.length === 0) {
-        pipeline.enqueue.push(this._placeholder(newLink));
+        const pipeline = this._ensurePipeline(newLink, videoModule);
+        if (wasPaused) {
+          newLink.paused = true;
+          newLink.pausedAt = oldLink.pausedAt || Date.now();
+          newLink.pausedPositionSec = pausedPosition;
+          newLink.pausedSession = pausedSession ? this._copyQueuedPiece(newLink, pausedSession) : null;
+        } else if (active) {
+          pipeline.enqueue.push(active.isFiller
+            ? this._copyQueuedPiece(newLink, active)
+            : this._reopenSession(newLink, active, { offsetSec: active.isLive ? 0 : activePosition }));
+        } else if (queued.length === 0) {
+          pipeline.enqueue.push(this._placeholder(newLink));
+        }
+        for (const piece of queued) pipeline.enqueue.push(this._copyQueuedPiece(newLink, piece));
+        if (!wasPaused) this._pump(newLink, videoModule);
+        if (!await pipeline.ready) return { ok: false, message: M.STREAM_PLAY_STREAM_HANG };
+        log('info', `voice: move recovery ready in ${channelId}; restored=${active?.title || (wasPaused ? pausedSession?.title : 'filler') || 'filler'} queued=${queued.length}`);
+        return { ok: true, moved: true, voiceLink: newLink, pipeline };
+      } finally {
+        this._voiceMoveTarget = null;
       }
-      for (const piece of queued) pipeline.enqueue.push(this._copyQueuedPiece(newLink, piece));
-      if (!wasPaused) this._pump(newLink, videoModule);
-      if (!await pipeline.ready) return { ok: false, message: M.STREAM_PLAY_STREAM_HANG };
-      log('info', `voice: move recovery ready in ${channelId}; restored=${active?.title || (wasPaused ? pausedSession?.title : 'filler') || 'filler'} queued=${queued.length}`);
-      return { ok: true, moved: true, voiceLink: newLink, pipeline };
   }
 
   // Resolve the active real (non-filler) writer for the current voice link,

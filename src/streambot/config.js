@@ -146,7 +146,7 @@ function loadConfig() {
     // this long so viewers can chain the next stream without re-joining.
     // A new stream within the window cancels the leave; an explicit $stop
     // always leaves immediately (no grace).
-    streamQueueLimit: parsePositiveInt(process.env.STREAM_QUEUE_LIMIT, 20),
+    streamQueueLimit: parsePositiveInt(process.env.STREAM_QUEUE_LIMIT, 100),
     streamGraceMs: parsePositiveInt(process.env.STREAM_GRACE_MS, 300000),
     // The library's "initial burst" disables BOTH A/V sync and wall-clock
     // sleeping, so a long value sends buffered frames as a packet burst. Keep

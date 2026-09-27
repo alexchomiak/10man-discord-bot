@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
-const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'reorder', 'remove-queued', 'set-name']);
+const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-name']);
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
@@ -32,6 +32,7 @@ function publicStatus(status) {
     title: status.title, alive: !!status.alive, paused: !!status.paused,
     isFiller: !!status.isFiller, isLive: !!status.isLive,
     positionSec: status.positionSec, progressOverlay: !!status.progressOverlay,
+    musicMode: !!status.musicMode,
     current: item(status.current), queue: Array.isArray(status.queue) ? status.queue.map(item) : [],
     stats: status.stats || null };
 }
@@ -117,6 +118,7 @@ function createStreamDashboard({ broker, client, token, secretQuestion, secretAn
           id, online: online.has(id), userId: online.get(id)?.userId || null,
           connectedAt: online.get(id)?.connectedAt || null,
           status: publicStatus(online.get(id)?.status),
+          musicMode: online.get(id)?.musicMode === true,
           profile: online.get(id)?.userId ? await profile(online.get(id).userId, guildId) : null
         })));
         const guilds = [...client.guilds.cache.values()].map(guild => ({ id: guild.id, name: guild.name }))

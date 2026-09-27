@@ -130,4 +130,5 @@ function fillerCountdownFilter(durationSec, width = 1920, height = 1080) {
   return `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='Up next in ${expression}s':fontsize=${size}:fontcolor=white:x=${x}:y=${y}`;
 }
 
-module.exports = { workerDashboardUrl, createFillerArtwork, fillerCountdownFilter };
+module.exports = { workerDashboardUrl, createFillerArtwork, fillerCountdownFilter,
+  fetchArtworkImage, circularAvatar };

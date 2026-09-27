@@ -2,7 +2,7 @@
 
 const { WebSocket } = require('ws');
 
-const CAPABILITIES = ['play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'reorder', 'remove-queued', 'set-global-name'];
+const CAPABILITIES = ['play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name'];
 
 class StreamBrokerClient {
   constructor({ url, secret, workerId, control, streamManager, log = console.log } = {}) {
@@ -39,9 +39,10 @@ class StreamBrokerClient {
         workerId: this.workerId,
         userId: this.streamManager?.client?.user?.id || null,
         capabilities: CAPABILITIES,
-        status: this.streamManager.status()
+        status: this.streamManager.status(), musicMode: this.streamManager.musicMode === true
       });
-      this.statusTimer = setInterval(() => this._send({ type: 'status', status: this.streamManager.status() }), 5000);
+      this.statusTimer = setInterval(() => this._send({ type: 'status', status: this.streamManager.status(),
+        musicMode: this.streamManager.musicMode === true }), 5000);
       this.statusTimer.unref?.();
     });
     socket.on('message', raw => void this._message(raw));
@@ -101,7 +102,8 @@ class StreamBrokerClient {
       this.results.set(message.requestId, response);
       if (this.results.size > 100) this.results.delete(this.results.keys().next().value);
     }
-    this._send({ type: 'status', status: this.streamManager.status() });
+    this._send({ type: 'status', status: this.streamManager.status(),
+      musicMode: this.streamManager.musicMode === true });
   }
 
   close() {

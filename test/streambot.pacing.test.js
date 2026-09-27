@@ -216,6 +216,65 @@ test('finite split VOD avoids shortest synchronization and infinite audio paddin
   }
 });
 
+test('Music Mode uses a static video page and progressive source audio', () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', { streamWidth: 1920, streamHeight: 1080,
+    streamFrameRate: 30, streamBitrate: 4000 });
+  const piece = { musicMode: true, isLive: false, isFiller: false,
+    musicArtwork: { file: '/tmp/music-frame.png', queueFrame: Buffer.from('png'),
+      queueStream: new PassThrough() } };
+  const argv = argvOf(mgr._buildDashMerge({}, 'https://cdn.example/video.mp4',
+    'https://cdn.example/audio.m4a', 30, null, piece).command);
+  assert.equal(argv.filter(arg => arg === '-i').length, 3);
+  assert(argv.some(arg => arg.includes('color=c=0x17232d')));
+  assert(argv.includes('https://cdn.example/audio.m4a'));
+  assert(argv.includes('1:a:0'));
+  assert(argv.includes('-shortest'));
+  assert.equal(argv.filter(arg => arg === '-ss').length, 1, 'seek only the audio source');
+  assert(argv.some(arg => arg.includes('overlay=1000:265')));
+  clearInterval(piece.musicArtwork.timer);
+  piece.musicArtwork.queueStream.destroy();
+});
+
+test('Music Mode keeps VAAPI upload inside its complex artwork filter', () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    videoEncoder: 'vaapi', videoCodec: 'H264', vaapiDevice: '/dev/dri/renderD128'
+  });
+  const artwork = { file: '/tmp/music-frame.png', queueFrame: Buffer.from('png'),
+    queueStream: new PassThrough() };
+  try {
+    const argv = argvOf(mgr._buildDashMerge({}, 'https://cdn.example/song.mp4', null,
+      0, null, { musicMode: true, isLive: false, musicArtwork: artwork }).command);
+    assert(argv.includes('h264_vaapi'));
+    assert(argv.some(arg => arg.includes('overlay=1000:265') && arg.includes('format=nv12,hwupload')));
+    assert(!argv.includes('-filter:v'), 'a mapped complex stream cannot also use a simple video filter');
+  } finally {
+    clearInterval(artwork.timer);
+    artwork.queueStream.destroy();
+  }
+});
+
+test('Music Mode playback passes the current piece and seek offset to the FFmpeg builder', async () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    dashboardBaseUrl: 'https://stream.example.com/', workerId: 'one'
+  });
+  mgr.musicMode = true;
+  const piece = { title: 'Current song', streamUrl: 'https://cdn.example/song.mp4',
+    startOffsetSec: 42, control: new AbortController(), isLive: false, isFiller: false };
+  const link = { paused: false, pipeline: { closed: false, enqueue: [piece], writerTask: null,
+    activeWriter: null, feeder: {} } };
+  let args;
+  mgr._buildDashMerge = (...received) => { args ||= received; throw new Error('probe stop'); };
+  let failure;
+  mgr._notifyError = message => { failure = message; };
+  mgr._startGraceTimer = () => {};
+  mgr._pump(link, {});
+  await link.pipeline.writerTask;
+  assert.ok(args, failure || 'FFmpeg builder was not called');
+  assert.equal(args[3], 42);
+  assert.strictEqual(args[5], piece);
+  assert.equal(piece.musicMode, true);
+});
+
 test('YouTube HLS permits extensionless segments only on its manifest host', () => {
   const mgr = new StreamManager({ token: 't' }, 'c1', {});
   for (const host of ['manifest.googlevideo.com', 'manifest.googlevideo.com.evil.example']) {

@@ -12,7 +12,8 @@ const {
   resolveSource,
   resolveShareTv,
   resolveDirect,
-  resolveYtdlp
+  resolveYtdlp,
+  youtubePlaylistId
 } = require('../src/streambot/sources');
 const { M } = require('../src/streambot/messages');
 const { StreamManager, isBenignEnd } = require('../src/streambot/streamManager');
@@ -220,6 +221,14 @@ const SCENARIOS = {
     ]
   }
 };
+if (argv.includes('--dump-single-json')) {
+  process.stdout.write(JSON.stringify({ title: 'Series playlist', entries: [
+    { id: 'v6r69BBtWOA', title: 'Episode one', duration: 101 },
+    { id: 'xa5LcRo0uyA', title: 'Episode two', duration: 105 },
+    { id: 'bad', title: 'Unavailable' }
+  ] }) + '\\n');
+  process.exit(0);
+}
 if (argv.includes('--dump-json')) {
   if ((scenario === 'authRequired' || scenario === 'ageSafari') && !argv.includes('--cookies')) {
     process.stderr.write('ERROR: Sign in to confirm your age\\n');
@@ -269,6 +278,28 @@ const BASE = 'http://localhost:8080';
 const SLUG = 'dlp-test';
 const SIGNED_HLS = `${BASE}/api/public/stream/${SLUG}?viewer=AAAA&vsig=BBBB&hls=1`;
 const SIGNED_RAW = `${BASE}/api/public/stream/${SLUG}?viewer=CCCC&vsig=DDDD`;
+
+test('YouTube playlists expand in order without resolving every signed media URL upfront', async () => {
+  const playlist = 'https://www.youtube.com/playlist?list=PL0ljr-TPGCA4J-2YT02ODUBj8Ummtz6cw';
+  assert.equal(youtubePlaylistId(playlist), 'PL0ljr-TPGCA4J-2YT02ODUBj8Ummtz6cw');
+  assert.equal(youtubePlaylistId('https://evil.example/playlist?list=PL0ljr-TPGCA4J-2YT02ODUBj8Ummtz6cw'), null);
+  const previousLog = fs.existsSync(FAKE_LOG) ? fs.readFileSync(FAKE_LOG, 'utf8') : '';
+  try {
+    const before = readFakeLog().length;
+    const result = await resolveSource(playlist, CfgPlain);
+    assert.equal(result.available, true);
+    assert.equal(result.kind, 'youtube-playlist');
+    assert.equal(result.entries.length, 2);
+    assert.deepEqual(result.entries.map(item => item.title), ['Episode one', 'Episode two']);
+    assert.equal(result.entries[0].sourceInput, 'https://www.youtube.com/watch?v=v6r69BBtWOA');
+    assert.match(result.entries[0].thumbnail, /i\.ytimg\.com\/vi\/v6r69BBtWOA/);
+    const calls = readFakeLog().slice(before);
+    assert.equal(calls.length, 1);
+    assert(calls[0].argv.includes('--flat-playlist'));
+    assert(calls[0].argv.includes('--dump-single-json'));
+    assert(!calls[0].argv.includes('-o'));
+  } finally { fs.writeFileSync(FAKE_LOG, previousLog); }
+});
 
 const SHARE_ORDINARY = {
   slug: SLUG,

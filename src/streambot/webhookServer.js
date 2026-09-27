@@ -171,6 +171,18 @@ function createWebhookServer({ config, streamManager, sources }) {
         });
       }
 
+      if (resolved.kind === 'youtube-playlist') {
+        const first = await sources.resolveSource(resolved.entries[0].sourceInput, config);
+        if (!first?.available) return send(res, 502, { ok: false,
+          error: first?.note || 'The first playlist video is unavailable.', kind: resolved.kind });
+        const result = await streamManager.startPlaylist({ guildId, channelId,
+          entries: resolved.entries, firstResolved: first });
+        return send(res, result.ok ? 200 : 502, result.ok
+          ? { ok: true, kind: resolved.kind, title: resolved.title || null,
+            count: result.count, channel_id: channelId, note: 'playlist queued' }
+          : { ok: false, kind: resolved.kind, error: result.message || 'failed to queue playlist' });
+      }
+
       const title = firstString(payload.title) || resolved.title || '';
       const result = await streamManager.start({
         guildId,

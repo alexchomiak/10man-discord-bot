@@ -238,7 +238,7 @@ test('config: grace, filler and queue defaults retain existing env names', () =>
   try {
     const cfg = require('../src/streambot/config').loadConfig();
     assert.equal(cfg.streamGraceMs, Number(process.env.STREAM_GRACE_MS) || 300000);
-    assert.equal(cfg.streamQueueLimit, Number(process.env.STREAM_QUEUE_LIMIT) || 20);
+    assert.equal(cfg.streamQueueLimit, Number(process.env.STREAM_QUEUE_LIMIT) || 100);
   } finally { if (old === undefined) delete process.env.SELF_BOT_TOKEN; else process.env.SELF_BOT_TOKEN=old; }
 });
 
@@ -426,6 +426,39 @@ test('dashboard channel move restarts Go Live at the current position and keeps 
   assert.deepEqual(mgr.status().queue.filter(item=>!item.isFiller).map(item=>item.title),['b']);
 });
 
+test('dashboard move accepts the selfbot client string voice channel type', async t => {
+  const { mgr, start } = fixture(t, { streamBufferSec: 0 });
+  await start('a');
+  mgr.client.channels.cache.get = id => id === 'c2'
+    ? { id, guildId: 'g1', type: 'GUILD_VOICE' } : null;
+  const moved = await mgr.moveChannel('g1', 'c2');
+  assert.equal(moved.ok, true);
+  assert.equal(mgr.voiceLink.channelId, 'c2');
+});
+
+test('a delayed voice-clear ACK during external move cannot disconnect the recovered call', async t => {
+  const { mgr, fv, start } = fixture(t, { streamBufferSec: 0 });
+  await start('a');
+  let staleDisconnect;
+  const originalOpcode = fv.streamer.sendOpcode;
+  fv.streamer.sendOpcode = (op, data) => {
+    originalOpcode(op, data);
+    if (op === 4 && data.channel_id === null && !staleDisconnect) {
+      staleDisconnect = mgr.handleVoiceStateUpdate({
+        t: 'VOICE_STATE_UPDATE', d: { user_id: 'u1', guild_id: 'g1', channel_id: null }
+      });
+    }
+  };
+  const moved = await mgr.handleVoiceStateUpdate({
+    t: 'VOICE_STATE_UPDATE', d: { user_id: 'u1', guild_id: 'g1', channel_id: 'c2' }
+  });
+  assert.equal(moved.ok, true);
+  await staleDisconnect;
+  assert.equal(mgr.voiceLink.channelId, 'c2');
+  assert.equal(fv.calls.leaveVoice, 1);
+  assert.equal(mgr.session.title, 'a');
+});
+
 test('queue reorder keeps each transition filler attached and rejects stale order', async t => {
   const {mgr,start}=fixture(t);
   await start('a'); await start('b'); await start('c');
@@ -596,6 +629,57 @@ test('queue limit rejects overflow without interrupting playback', async t => {
   const {mgr,fv,start}=fixture(t,{streamQueueLimit:1});
   await start('a');assert((await start('b')).ok);assert(!(await start('c')).ok);
   assert.equal(mgr.session.title,'a');assert.equal(fv.calls.stopStream,0);
+});
+
+test('playlist queues entries atomically and resolves later media only when its turn starts', async t => {
+  const { mgr, fv } = fixture(t, { streamBufferSec: 0, streamQueueLimit: 100 });
+  const sources = require('../src/streambot/sources');
+  const original = sources.resolveSource;
+  const lookedUp = [];
+  sources.resolveSource = async input => {
+    lookedUp.push(input);
+    return { available: true, kind: 'ytdlp', streamUrl: `https://cdn.example/${input.slice(-11)}.mp4`,
+      isLive: false, totalDurationSec: 120 };
+  };
+  t.after(() => { sources.resolveSource = original; });
+  const entries = ['v6r69BBtWOA', 'xa5LcRo0uyA', 'ABCDEFGHIJK'].map((id, index) => ({
+    sourceInput: `https://www.youtube.com/watch?v=${id}`, title: `Episode ${index + 1}` }));
+  const result = await mgr.startPlaylist({ guildId: 'g1', channelId: 'c1', entries,
+    firstResolved: { available: true, streamUrl: 'https://cdn.example/first.mp4', isLive: false } });
+  assert.equal(result.ok, true);
+  assert.equal(result.count, 3);
+  assert.deepEqual(mgr.status().queue.filter(item => !item.isFiller).map(item => item.title),
+    ['Episode 2', 'Episode 3']);
+  assert.deepEqual(lookedUp, [], 'later signed URLs must not be resolved at enqueue time');
+  fv.pieces[0].end();
+  await until(() => fv.pieces.length === 2);
+  assert.deepEqual(lookedUp, [entries[1].sourceInput]);
+  assert.equal(fv.plays.length, 1, 'the same Go Live connection serves both items');
+});
+
+test('playlist overflow rejects the whole batch before joining voice', async t => {
+  const { mgr, fv } = fixture(t, { streamBufferSec: 0, streamQueueLimit: 1 });
+  const entries = [1, 2].map(index => ({ sourceInput: `https://www.youtube.com/watch?v=ABCDEFGHIJ${index}`,
+    title: `Episode ${index}` }));
+  const result = await mgr.startPlaylist({ guildId: 'g1', channelId: 'c1', entries,
+    firstResolved: { available: true, streamUrl: 'https://cdn.example/first.mp4' } });
+  assert.equal(result.ok, false);
+  assert.match(result.message, /STREAM_QUEUE_LIMIT/);
+  assert.equal(fv.calls.joinVoice, 0);
+});
+
+test('a 23-video playlist fits the default queue with between-video filler', async t => {
+  const { mgr } = fixture(t, { streamQueueLimit: 100, streamBufferSec: 15 });
+  const entries = Array.from({ length: 23 }, (_, index) => ({
+    sourceInput: `https://www.youtube.com/watch?v=${String(index).padStart(11, '0')}`,
+    title: `Episode ${index + 1}`
+  }));
+  const result = await mgr.startPlaylist({ guildId: 'g1', channelId: 'c1', entries,
+    firstResolved: { available: true, streamUrl: 'https://cdn.example/first.mp4' } });
+  assert.equal(result.ok, true);
+  assert.equal(result.count, 23);
+  assert.equal(result.gaps, 22);
+  assert.equal(mgr.voiceLink.pipeline.enqueue.length, 44);
 });
 
 test('one persistent track session is used regardless of legacy startup burst setting', async t => {

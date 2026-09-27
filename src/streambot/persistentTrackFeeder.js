@@ -144,6 +144,7 @@ class PersistentTrackFeeder {
     this.videoCodec = videoCodec;
     this.diagnostics = diagnostics;
     this.connection = null;
+    this.voiceAudioConnection = null;
     this.startPromise = null;
     this.startAbort = null;
     this.closed = false;
@@ -190,11 +191,23 @@ class PersistentTrackFeeder {
     }
   }
 
-  async append(input, signal, onVideoFrame, { syncVideoToAudio = true } = {}) {
+  async append(input, signal, onVideoFrame, { syncVideoToAudio = true, voiceAudio = false } = {}) {
     if (this.closed) throw new Error('Persistent track feeder is closed');
     if (this.active) throw new Error('Concurrent track feeders are not allowed');
     const connection = await this.start();
     signal?.throwIfAborted();
+    let audioConnection = connection;
+    if (voiceAudio) {
+      audioConnection = this.streamer.voiceConnection?.webRtcConn;
+      if (!audioConnection?.ready || audioConnection === connection) {
+        throw new Error('Discord voice audio connection is not ready for Music Mode');
+      }
+      if (this.voiceAudioConnection !== audioConnection) {
+        audioConnection.setPacketizer(this.videoCodec);
+        this.voiceAudioConnection = audioConnection;
+      }
+      audioConnection.mediaConnection.setSpeaking(true);
+    }
     let active = null;
     const cancel = () => {
       input.destroy();
@@ -218,9 +231,9 @@ class PersistentTrackFeeder {
         onVideoFrame?.(ms);
       };
       const sendAudio = (frame, ms) => {
-        if (!connection.ready) return false;
+        if (!audioConnection.ready) return false;
         this.rtcBytesSent += frame.length;
-        connection.sendAudioFrame(frame, ms);
+        audioConnection.sendAudioFrame(frame, ms);
       };
       const video = new TimedTrack(sendVideo, 'video', { defaultDurationMs: 1000 / this.frameRate, diagnostics: this.diagnostics });
       const audio = new TimedTrack(sendAudio, 'audio', { diagnostics: this.diagnostics });
@@ -244,6 +257,9 @@ class PersistentTrackFeeder {
     } finally {
       signal?.removeEventListener('abort', cancel);
       if (this.active === active) this.active = null;
+      if (voiceAudio) {
+        try { audioConnection.mediaConnection.setSpeaking(false); } catch { /* voice link may have closed */ }
+      }
     }
   }
 

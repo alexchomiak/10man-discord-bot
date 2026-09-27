@@ -71,13 +71,17 @@ class StreamBroker {
         socket.workerId = id;
         const userId = String(message.userId || '');
         if (!DISCORD_USER_ID.test(userId)) { socket.close(1008, 'invalid Discord user id'); return; }
-        this.workers.set(id, { id, userId, socket, status: message.status || null, capabilities: message.capabilities || [], connectedAt: Date.now() });
+        this.workers.set(id, { id, userId, socket, status: message.status || null,
+          musicMode: message.musicMode === true, capabilities: message.capabilities || [], connectedAt: Date.now() });
         this.log(`[stream-broker] worker connected: ${id}`);
         return;
       }
       if (!socket.workerId) return;
       const worker = this.workers.get(socket.workerId);
-      if (message.type === 'status' && worker) worker.status = message.status || null;
+      if (message.type === 'status' && worker) {
+        worker.status = message.status || null;
+        worker.musicMode = message.musicMode === true;
+      }
       if (message.type === 'result' && message.requestId) {
         const pending = this.pending.get(message.requestId);
         if (pending && pending.workerId === socket.workerId) {
@@ -85,6 +89,7 @@ class StreamBroker {
           this.pending.delete(message.requestId);
           if (worker && message.result && Object.hasOwn(message.result, 'status')) {
             worker.status = message.result.status;
+            worker.musicMode = message.result.musicMode === true;
           }
           pending.resolve(message.result || { ok: false, message: 'Worker returned no result.' });
         }
@@ -107,15 +112,15 @@ class StreamBroker {
   }
 
   listWorkers() {
-    return [...this.workers.values()].map(({ id, userId, status, capabilities, connectedAt }) => ({ id, userId, status, capabilities, connectedAt }));
+    return [...this.workers.values()].map(({ id, userId, status, musicMode, capabilities, connectedAt }) => ({ id, userId, status, musicMode, capabilities, connectedAt }));
   }
 
   getWorker(requested) {
     const workerId = this.resolveWorkerId(requested);
     const worker = this.workers.get(workerId);
     if (!worker || worker.socket.readyState !== WebSocket.OPEN) return null;
-    const { id, userId, status, capabilities, connectedAt } = worker;
-    return { id, userId, status, capabilities, connectedAt };
+    const { id, userId, status, musicMode, capabilities, connectedAt } = worker;
+    return { id, userId, status, musicMode, capabilities, connectedAt };
   }
 
   resolveWorkerId(requested) {

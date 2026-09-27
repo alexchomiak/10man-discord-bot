@@ -12,7 +12,8 @@ class StreamControl {
 
   _result(ok, message, extra = {}) {
     return { ok, message, status: this.streamManager.status(),
-      progressOverlay: this.streamManager.progressOverlay === true, ...extra };
+      progressOverlay: this.streamManager.progressOverlay === true,
+      musicMode: this.streamManager.musicMode === true, ...extra };
   }
 
   // Broker responses cross a JSON boundary. StreamManager results also carry
@@ -32,6 +33,12 @@ class StreamControl {
     const channelId = payload.channelId || this.config.streamChannelId;
     switch (operation) {
       case 'ping': return this._result(true, M.PONG);
+      case 'toggle-music-mode': {
+        const r = await this.streamManager.toggleMusicMode();
+        return this._result(r.ok === true, r.message || `Music Mode ${r.enabled ? 'on' : 'off'}.`, {
+          detail: this._detail(r, ['enabled', 'restarted'])
+        });
+      }
       case 'toggle-overlay': {
         const r = await this.streamManager.toggleProgressOverlay();
         const state = r.enabled ? 'on' : 'off';
@@ -122,6 +129,16 @@ class StreamControl {
         if (!input) return this._result(false, M.STREAM_USAGE);
         const resolved = await resolveSource(input, this.config);
         if (!resolved?.available) return this._result(false, resolved?.note || M.SOURCE_UNRECOGNIZED);
+        if (resolved.kind === 'youtube-playlist') {
+          const first = await resolveSource(resolved.entries[0].sourceInput, this.config);
+          if (!first?.available) return this._result(false, first?.note || 'The first playlist video is unavailable.');
+          const r = await this.streamManager.startPlaylist({ guildId, channelId,
+            entries: resolved.entries, firstResolved: first });
+          return this._result(r.ok === true,
+            r.ok ? `Queued ${r.count} videos from ${resolved.title || 'the YouTube playlist'}.` : r.message,
+            { detail: this._detail(r, ['count', 'queued', 'chained', 'gaps']),
+              source: { kind: resolved.kind, label: resolved.title || input } });
+        }
         const label = resolved.kind === 'sharetv' && resolved.channel
           ? resolved.channel
           : (resolved.title || resolved.streamUrl || resolved.videoUrl || input);

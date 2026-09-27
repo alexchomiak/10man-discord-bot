@@ -22,6 +22,16 @@ function isYoutubeHlsUrl(value) {
   } catch { return false; }
 }
 
+function youtubePlaylistId(value) {
+  try {
+    const url = new URL(String(value));
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    if (!['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com'].includes(url.hostname.toLowerCase())) return null;
+    const id = url.searchParams.get('list');
+    return id && /^[A-Za-z0-9_-]{10,}$/.test(id) ? id : null;
+  } catch { return null; }
+}
+
 function stripTrailingSlash(value) {
   return String(value || '').replace(/\/+$/, '');
 }
@@ -295,7 +305,7 @@ function lastNonEmptyLine(text) {
   return lines.length ? lines[lines.length - 1] : null;
 }
 
-function spawnYtdlp(cfg, args, timeoutMs) {
+function spawnYtdlp(cfg, args, timeoutMs, maxOutputBytes = Infinity) {
   const bin = String(cfg.ytdlpPath || 'yt-dlp').trim() || 'yt-dlp';
   return new Promise((resolve) => {
     let proc;
@@ -307,6 +317,8 @@ function spawnYtdlp(cfg, args, timeoutMs) {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let tooLarge = false;
+    let outputBytes = 0;
     const timer = setTimeout(() => {
       if (proc.exitCode === null) {
         timedOut = true;
@@ -314,16 +326,59 @@ function spawnYtdlp(cfg, args, timeoutMs) {
       }
     }, timeoutMs);
 
-    proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.stdout.on('data', (d) => {
+      outputBytes += d.length;
+      if (outputBytes > maxOutputBytes) {
+        tooLarge = true;
+        try { proc.kill('SIGKILL'); } catch { /* process already ended */ }
+      } else if (!tooLarge) stdout += d.toString();
+    });
+    proc.stderr.on('data', (d) => { if (stderr.length < 65536) stderr += d.toString(); });
     let spawnErr = null;
     proc.on('error', (err) => { spawnErr = err; });
     proc.on('close', (code) => {
       clearTimeout(timer);
-      if (spawnErr) return resolve({ ok: false, code: code == null ? -1 : code, stdout, stderr, spawnErr, timedOut });
-      resolve({ ok: code === 0, code, stdout, stderr, timedOut });
+      if (spawnErr) return resolve({ ok: false, code: code == null ? -1 : code, stdout, stderr, spawnErr, timedOut, tooLarge });
+      resolve({ ok: code === 0 && !tooLarge, code, stdout, stderr, timedOut, tooLarge });
     });
   });
+}
+
+async function resolveYoutubePlaylist(raw, cfg = {}) {
+  const id = youtubePlaylistId(raw);
+  if (!id) return null;
+  const url = `https://www.youtube.com/playlist?list=${id}`;
+  const timeoutMs = Math.max(20000, Number(cfg.ytdlpTimeoutMs) || 20000);
+  const lookup = cookies => spawnYtdlp(cfg, [
+    '--js-runtimes', 'node', '--flat-playlist', '--dump-single-json', '--no-warnings',
+    ...(cookies && cfg.ytdlpCookiesFile ? ['--cookies', cfg.ytdlpCookiesFile] : []), url
+  ], timeoutMs, 4 * 1024 * 1024);
+  let result = await lookup(false);
+  if (!result.ok && !result.spawnErr && !result.timedOut && !result.tooLarge && cfg.ytdlpCookiesFile) {
+    result = await lookup(true);
+  }
+  if (result.spawnErr?.code === 'ENOENT') return { kind: 'youtube-playlist', available: false, note: M.YTDLP_BINARY_MISSING };
+  if (result.tooLarge) return { kind: 'youtube-playlist', available: false, note: 'YouTube playlist metadata is too large.' };
+  if (!result.ok) return { kind: 'youtube-playlist', available: false,
+    note: M.YTDLP_RESOLVE_FAILED(result.timedOut ? 'playlist lookup timed out' : lastNonEmptyLine(result.stderr)) };
+  let data;
+  try { data = JSON.parse(result.stdout); } catch { /* malformed or truncated playlist */ }
+  if (!Array.isArray(data?.entries)) return { kind: 'youtube-playlist', available: false, note: 'Could not read YouTube playlist entries.' };
+  if (data.entries.length > 500) return { kind: 'youtube-playlist', available: false,
+    note: 'Playlist exceeds the 500-item safety limit.' };
+  const entries = data.entries.flatMap(entry => {
+    if (!entry || ['private', 'needs_auth', 'unavailable'].includes(entry.availability)) return [];
+    const videoId = String(entry.id || '').trim();
+    if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return [];
+    return [{ sourceInput: `https://www.youtube.com/watch?v=${videoId}`,
+      title: typeof entry.title === 'string' ? entry.title : 'YouTube video',
+      thumbnail: thumbnailUrl(entry.thumbnail) || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      totalDurationSec: Number.isFinite(entry.duration) && entry.duration > 0 ? entry.duration : null }];
+  });
+  return entries.length ? { kind: 'youtube-playlist', available: true,
+    title: typeof data.title === 'string' ? data.title : null, entries,
+    skipped: data.entries.length - entries.length }
+    : { kind: 'youtube-playlist', available: false, note: 'This YouTube playlist has no playable entries.' };
 }
 
 // True when a direct http(s) media URL is a CONTINUOUS live feed (HLS .m3u8
@@ -892,6 +947,9 @@ async function resolveSource(input, config) {
   const raw = String(input || '').trim();
   if (!raw) return { kind: 'unknown', available: false, note: M.SOURCE_UNRECOGNIZED };
 
+  const playlist = await resolveYoutubePlaylist(raw, cfg);
+  if (playlist) return playlist;
+
   const sharetv = await resolveShareTv(raw, cfg);
   if (sharetv) return sharetv;
 
@@ -931,6 +989,8 @@ async function resolveSource(input, config) {
 
 module.exports = {
   resolveSource,
+  resolveYoutubePlaylist,
+  youtubePlaylistId,
   // Exposed for tests / advanced consumers:
   resolveShareTv,
   resolveDirect,

@@ -68,6 +68,7 @@ function SortableQueueItem({ item, index, canControl, onRemove }) {
 
 function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, expanded = false }) {
   const status = worker.status;
+  const musicMode = worker.musicMode === true || status?.musicMode === true;
   const queue = status?.queue || [];
   const realQueue = queue.filter(item => !item.isFiller);
   const current = status?.current;
@@ -138,6 +139,12 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
         <div className="worker-subtitle">{worker.online ? status?.channelId ? <><Icon name="audio" size={13} /> {channelName || `Voice ${status.channelId}`}</> : 'Standing by' : 'Offline'}</div>
       </div>
       <div className="worker-header-actions">
+        <button type="button" className={`mode-toggle ${musicMode ? 'active' : ''}`}
+          aria-label={`Turn Music Mode ${musicMode ? 'off' : 'on'} for ${worker.id}`}
+          aria-pressed={musicMode} disabled={!canControl}
+          onClick={() => send('toggle-music-mode')}>
+          ♫ <span>{musicMode ? 'Music on' : 'Music mode'}</span>
+        </button>
         <button className="icon-button" title="Change display name" aria-label="Change display name" onClick={() => onModal({ kind: 'name', worker })} disabled={!worker.online}><Icon name="edit" /></button>
         <div className="stats-wrap">
           <button className="icon-button" title="Stream stats" aria-label="Stream stats" onClick={event => event.currentTarget.parentElement.classList.toggle('open')}><Icon name="info" /></button>
@@ -162,7 +169,7 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
       {current?.thumbnail && <img className="playing-thumb" src={current.thumbnail} alt="" referrerPolicy="no-referrer"
         onError={event => { event.currentTarget.style.display = 'none'; }} />}
       <div className="playing-title">{current?.title || 'Nothing on air'}</div>
-      <div className="playing-meta">{current ? current.isFiller ? 'Ready for the next video' : current.isLive ? 'Live source' : 'Video on demand' : 'Join a voice channel to get started'}</div>
+      <div className="playing-meta">{current ? current.isFiller ? musicMode ? 'Ready for music' : 'Ready for the next video' : musicMode ? 'Audio plays through the bot’s voice' : current.isLive ? 'Live source' : 'Video on demand' : 'Join a voice channel to get started'}</div>
       <div className="progress-row"><span>{fmt(seek ?? position)}</span><span>{duration ? fmt(duration) : status?.isLive ? 'LIVE' : '—:—'}</span></div>
       {duration && !current?.isFiller ? <input className="seek-slider" aria-label="Seek playback position" type="range"
         min="0" max={duration} value={seek ?? position} onChange={event => setSeek(Number(event.target.value))}
@@ -190,14 +197,14 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
           {displayQueue.length ? displayQueue.map((item, index) =>
             <SortableQueueItem key={item.id} item={item} index={index} canControl={canControl}
               onRemove={queueId => void send('remove-queued', { queueId })} />)
-            : <div className="queue-empty">No videos in the queue yet.</div>}
+            : <div className="queue-empty">{musicMode ? 'No music in the queue yet.' : 'No videos in the queue yet.'}</div>}
         </div>
       </SortableContext>
     </DndContext>
 
     <form className="add-form" onSubmit={play}>
       <label htmlFor={`source-${worker.id}`}>ADD TO QUEUE</label>
-      <div className="input-row"><input id={`source-${worker.id}`} value={source} onChange={event => setSource(event.target.value)} placeholder="Paste a video URL or ShareTV slug" disabled={!canControl} /><button className="add-button" disabled={!canControl || !source.trim()} title="Play or queue"><Icon name="plus" /></button></div>
+      <div className="input-row"><input id={`source-${worker.id}`} value={source} onChange={event => setSource(event.target.value)} placeholder={musicMode ? 'Paste a music URL' : 'Paste a video URL or ShareTV slug'} disabled={!canControl} /><button className="add-button" disabled={!canControl || !source.trim()} title="Play or queue"><Icon name="plus" /></button></div>
     </form>
     <div className="channel-controls">
       <select aria-label={`Destination voice channel for ${worker.id}`} value={selected} onChange={event => setChannelId(event.target.value)} disabled={!canControl || !guildId}>
@@ -282,7 +289,7 @@ export default function App() {
     try {
       const result = await api(answer, `/api/workers/${encodeURIComponent(workerId)}/actions`,
         { method: 'POST', body: JSON.stringify({ operation, ...payload }) });
-      toast.success(operation === 'play' ? 'Playback request accepted.' : result.message || 'Done.');
+      toast.success(result.message || 'Done.');
       setError('');
       await refresh();
       return result;
