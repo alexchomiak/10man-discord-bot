@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const { execFileSync } = require('node:child_process');
 const test = require('node:test');
 const sharp = require('sharp');
 const { workerDashboardUrl, createFillerArtwork, fillerCountdownFilter } = require('../src/streambot/fillerArtwork');
@@ -108,14 +109,31 @@ test('music visualizer artwork keeps its background translucent and reuses one F
     assert.equal((filter.match(/showfreqs=/g) || []).length, 1);
     assert.match(filter, /vflip/);
     assert.match(filter, /volume=8/);
-    assert.match(filter, /averaging=2/);
+    assert.match(filter, /averaging=1/);
     assert.match(filter, /gradients=.*nb_colors=2:c0=0xbca3d4:c1=0x88bdd3/);
     assert.match(filter, /overlay=96:626/);
     assert.match(filter, /overlay=96:799/);
+    assert.equal((filter.match(/eof_action=pass:repeatlast=0/g) || []).length, 2);
   } finally {
     stopMusicQueueFrames(artwork);
     await fs.rm(artwork.directory, { recursive: true, force: true });
   }
+});
+
+test('music visualizer clears its bars when the audio input ends before the background', () => {
+  const hashes = (args) => execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...args,
+    '-f', 'framehash', 'pipe:1'], { encoding: 'utf8' })
+    .split('\n').filter((line) => line && !line.startsWith('#'))
+    .map((line) => line.split(',').at(-1).trim());
+  const background = ['-f', 'lavfi', '-i', 'color=c=0x14232c:s=320x180:r=30:d=2'];
+  const baseHash = hashes([...background, '-vf', 'format=rgb24', '-frames:v', '1'])[0];
+  const filter = '[0:v]null[base];' + musicVisualizerFilter({ width: 320, height: 180, fps: 30 }) +
+    '[visual]format=rgb24[out]';
+  const frames = hashes([...background, '-f', 'lavfi', '-i',
+    'anoisesrc=color=pink:sample_rate=48000:d=0.5', '-filter_complex', filter,
+    '-map', '[out]', '-t', '2']);
+  assert.notEqual(frames[5], baseHash, 'bars react while audio is present');
+  assert.equal(frames[45], baseHash, 'ended audio must not leave frozen bars');
 });
 
 test('chaptered music updates current track and upcoming overlay without replacing the base stream', async () => {
