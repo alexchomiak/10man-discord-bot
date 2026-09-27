@@ -29,16 +29,20 @@ function superviseChildren(specs, { label = 'supervisor', baseDelayMs = 1000, ma
     });
     state.child = child;
     let lastPong = Date.now();
+    let terminationReason = 'child-exit';
     child.on('message', message => { if (message === 'supervisor:pong') lastPong = Date.now(); });
     state.heartbeat = setInterval(() => {
       if (Date.now() - lastPong > heartbeatTimeoutMs) {
+        terminationReason = 'heartbeat-timeout';
         console.error(`[${label}] ${spec.name} stopped responding; restarting`);
         signalTree(child, 'SIGKILL');
         return;
       }
       try {
-        child.send('supervisor:ping', error => { if (error) signalTree(child, 'SIGKILL'); });
-      } catch { signalTree(child, 'SIGKILL'); }
+        child.send('supervisor:ping', error => {
+          if (error) { terminationReason = 'heartbeat-send-error'; signalTree(child, 'SIGKILL'); }
+        });
+      } catch { terminationReason = 'heartbeat-send-error'; signalTree(child, 'SIGKILL'); }
     }, heartbeatIntervalMs);
     let finished = false;
     const restart = (code, signal, error) => {
@@ -52,7 +56,7 @@ function superviseChildren(specs, { label = 'supervisor', baseDelayMs = 1000, ma
       if (stopping) return;
       if (Date.now() - state.startedAt >= 60000) state.failures = 0;
       const delay = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.min(state.failures++, 10));
-      console.error(`[${label}] ${spec.name} exited code=${code ?? 'none'} signal=${signal || 'none'}${error ? ` error=${error.message}` : ''}; restarting in ${delay}ms`);
+      console.error(`[${label}] ${spec.name} exited code=${code ?? 'none'} signal=${signal || 'none'} reason=${terminationReason} uptime_ms=${Date.now() - state.startedAt} last_pong_age_ms=${Date.now() - lastPong}${error ? ` error=${error.message}` : ''}; restarting in ${delay}ms`);
       state.timer = setTimeout(() => {
         state.timer = null;
         launch(state);

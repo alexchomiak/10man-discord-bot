@@ -4,12 +4,15 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { searchYoutube: defaultSearchYoutube } = require('./youtubeSearch');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
-const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-name']);
-const PUBLIC_ACTIONS = new Set(['play', 'skip', 'scrub', 'seek', 'pause', 'resume', 'reorder', 'remove-queued']);
+const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'clear-queue', 'set-name']);
+const PUBLIC_ACTIONS = new Set(['play', 'skip', 'scrub', 'seek', 'pause', 'resume', 'reorder', 'remove-queued', 'clear-queue']);
 const ACCESS_CODE = /^[a-z]{6}$/;
+const MAX_REORDER_ITEMS = 1000;
+const MAX_ACTION_BODY_BYTES = 64 * 1024;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
@@ -70,7 +73,7 @@ function scopedStatus(status) {
 }
 
 function createStreamDashboard({ broker, client, password, token, randomCodes = false, configuredWorkerIds = [], channelIds = [], externalChannels = [], host = '0.0.0.0', port = 8082,
-  staticDir = path.resolve(__dirname, '../web/dist'), log = console.log } = {}) {
+  staticDir = path.resolve(__dirname, '../web/dist'), log = console.log, searchYoutube = defaultSearchYoutube } = {}) {
   const adminPassword = password || token;
   if (!adminPassword) return null;
   const publicWorkerFor = publicId => {
@@ -84,6 +87,8 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
   const profileCache = new Map();
   const invalidCodes = new Map();
   const authFailures = new Map();
+  const publicSearches = new Map();
+  let searchesInFlight = 0;
   const recordFailure = (req, attempts) => {
     const key = req.socket.remoteAddress || 'unknown';
     const now = Date.now();
@@ -106,7 +111,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
     let size = 0; let oversized = false; const chunks = [];
     req.on('data', chunk => {
       size += chunk.length;
-      if (size > 16 * 1024) { oversized = true; return; }
+      if (size > MAX_ACTION_BODY_BYTES) { oversized = true; return; }
       chunks.push(chunk);
     });
     req.on('end', () => {
@@ -158,7 +163,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
   async function handle(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     if (url.pathname.startsWith('/api/')) {
-      const scopedMatch = /^\/api\/public\/([A-Za-z0-9_-]{1,32})\/(state|actions)$/.exec(url.pathname);
+      const scopedMatch = /^\/api\/public\/([A-Za-z0-9_-]{1,32})\/(state|actions|search)$/.exec(url.pathname);
       let scopedWorker = null;
       if (scopedMatch) {
         scopedWorker = publicWorkerFor(scopedMatch[1]);
@@ -172,7 +177,9 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
             status: scopedStatus(scopedWorker.status),
             profile: workerProfile } });
         }
-        if (req.method !== 'POST' || scopedMatch[2] !== 'actions') return json(res, 405, { error: 'Method not allowed.' });
+        if (scopedMatch[2] !== 'search' && (req.method !== 'POST' || scopedMatch[2] !== 'actions')) {
+          return json(res, 405, { error: 'Method not allowed.' });
+        }
       } else {
         const auth = String(req.headers.authorization || '');
         const supplied = auth.startsWith('Bearer ') ? auth.slice(7) : '';
@@ -182,6 +189,31 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
             { error: count > 30 ? 'Too many password attempts.' : 'Incorrect password.' });
         }
         authFailures.delete(req.socket.remoteAddress || 'unknown');
+      }
+      const searchMatch = scopedMatch?.[2] === 'search' ? [null, scopedWorker.id]
+        : scopedWorker ? null : /^\/api\/workers\/([A-Za-z0-9_-]{1,32})\/search$/.exec(url.pathname);
+      if (searchMatch) {
+        if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
+        if (!scopedWorker && !broker.getWorker(searchMatch[1])) return json(res, 404, { error: 'Worker unavailable.' });
+        const query = String(url.searchParams.get('q') || '').trim();
+        if (query.length < 2 || query.length > 120) return json(res, 400, { error: 'Search must be 2–120 characters.' });
+        if (scopedWorker && recordFailure(req, publicSearches) > 20) {
+          return json(res, 429, { error: 'Too many searches. Try again in a minute.' });
+        }
+        if (searchesInFlight >= 3) return json(res, 429, { error: 'Search is busy. Try again shortly.' });
+        searchesInFlight++;
+        try {
+          const results = await searchYoutube(query);
+          if (scopedWorker) {
+            const current = publicWorkerFor(scopedMatch[1]);
+            if (!current || current.id !== scopedWorker.id || current.connectedAt !== scopedWorker.connectedAt) {
+              return json(res, 404, { error: 'Player unavailable.' });
+            }
+          }
+          return json(res, 200, { results });
+        } catch (error) {
+          return json(res, 502, { error: error.message || 'YouTube search failed.' });
+        } finally { searchesInFlight--; }
       }
       if (!scopedWorker && req.method === 'GET' && url.pathname === '/api/state') {
         const guildId = url.searchParams.get('guildId') || null;
@@ -265,7 +297,8 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           payload.positionSec = position;
         }
         if (operation === 'reorder') {
-          if (!Array.isArray(body.ids) || body.ids.length > 50 || body.ids.some(id => typeof id !== 'string' || id.length > 64)) {
+          if (!Array.isArray(body.ids) || body.ids.length > MAX_REORDER_ITEMS ||
+              body.ids.some(id => typeof id !== 'string' || id.length > 64)) {
             return json(res, 400, { error: 'Invalid queue order.' });
           }
           payload.ids = body.ids;

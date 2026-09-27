@@ -111,6 +111,8 @@ class StreamManager {
     // can skip joinVoice entirely. `streamer.voiceConnection` truthy = the
     // voice WS is live.
     this.voiceLink = null;
+    // Last voice teardown step, for worker-exit diagnostics after a crash.
+    this.voiceTeardownPhase = 'idle';
     // Test seam for the grace window (node:test has no fake timers).
     this._timerFactory = null;
     this._operations = Promise.resolve();
@@ -1380,7 +1382,13 @@ class StreamManager {
   async _leaveVoiceLink(link) {
     if (!link) return;
     if (link.closing) return link.closing;
+    const startedAt = Date.now();
+    const trace = phase => {
+      this.voiceTeardownPhase = phase;
+      log('info', `voice: teardown phase=${phase} guild=${link.guildId} channel=${link.channelId} elapsed_ms=${Date.now() - startedAt}`);
+    };
     const closing = (async () => {
+      trace('begin');
       this._clearGraceTimer(link);
       const p = link.pipeline;
       if (p) {
@@ -1389,6 +1397,7 @@ class StreamManager {
         clearInterval(p.watchdog);
         if (p.burstEndTimer) { clearTimeout(p.burstEndTimer); p.burstEndTimer = null; }
         p.resolveReady(false);
+        trace('abort-pipeline');
         p.control.abort(); // playStream's normal cleanup owns stopStream
         // Before its abort listener exists (demux/handshake), explicitly stop.
         if (link.streamer.voiceConnection?.streamConnection) {
@@ -1398,15 +1407,18 @@ class StreamManager {
         }
         this._cancelPiece(p.activeWriter);
         p.feeder.interrupt();
+        trace('pipeline-interrupted');
       }
       // Leaving voice must not depend on native demuxer/FFmpeg cleanup. A
       // stalled writer can take the full cleanup timeout (or block in native
       // code), while the user has already asked to leave the call.
       if (this.session?.voiceLink === link) this.session = null;
       log('info', `voice: leave requested guild=${link.guildId} channel=${link.channelId}`);
+      trace('leave-voice');
       try { link.streamer.leaveVoice(); } catch (error) {
         log('error', `voice: leaveVoice failed: ${error.message}`);
       }
+      trace('send-voice-clear');
       this._sendGuildVoiceClear(link.streamer, link.guildId);
       const leaveConfirmation = this._confirmVoiceLeave(link).then(left => {
         link.disconnectFailed = !left;
@@ -1420,6 +1432,7 @@ class StreamManager {
         // Start native demux cleanup BEFORE waiting for writerTask. The writer
         // can itself be blocked in demux(), so the old ordering deadlocked:
         // writer waited for demux close while teardown waited for writer.
+        trace('cleanup-media');
         const demuxCleanup = demuxGuard.closeAllDemuxers();
         const cleanupTimeoutMs = this._cleanupTimeoutMs();
         try {
@@ -1434,10 +1447,16 @@ class StreamManager {
           log('error', `voice: ${error.message}; continuing forced teardown`);
         }
       }
-      return leaveConfirmation;
+      const left = await leaveConfirmation;
+      trace(`complete left=${left}`);
+      return left;
     })();
     link.closing = closing;
     try { return await closing; }
+    catch (error) {
+      log('error', `voice: teardown failed phase=${this.voiceTeardownPhase} guild=${link.guildId} channel=${link.channelId}: ${this._sanitize(error?.message || String(error))}`);
+      throw error;
+    }
     finally { if (link.closing === closing) link.closing = null; }
   }
 
@@ -1676,6 +1695,28 @@ class StreamManager {
       queue.splice(start, index - start + 1);
       await this._refreshMusicQueue(this.voiceLink);
       return { ok: true, title };
+    });
+  }
+
+  async clearQueue() {
+    return this._serialize(async () => {
+      const link = this.voiceLink;
+      const queue = link?.pipeline?.enqueue;
+      if (!queue) return { ok: false, message: 'No queue to clear.' };
+      const activeId = (link.paused ? link.pausedSession : this.session)?.queueId;
+      const kept = [];
+      let precedingFiller = [];
+      let cleared = 0;
+      for (const piece of queue) {
+        if (piece.isFiller) { precedingFiller.push(piece); continue; }
+        if (piece.queueId === activeId) kept.push(...precedingFiller, piece);
+        else { kept.push(...precedingFiller.filter(filler => filler.title !== 'buffer')); cleared++; }
+        precedingFiller = [];
+      }
+      kept.push(...precedingFiller.filter(filler => filler.title !== 'buffer'));
+      queue.splice(0, queue.length, ...kept);
+      if (cleared) await this._refreshMusicQueue(link);
+      return { ok: true, cleared };
     });
   }
 

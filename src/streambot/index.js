@@ -118,6 +118,15 @@ function safe(str) {
   return redactToken(String(str || ''), config.token);
 }
 
+function safeFailure(error) {
+  const name = error?.name || 'Error';
+  const code = error?.code ? ` code=${error.code}` : '';
+  const message = String(error?.message || error || 'unknown error').replace(/https?:\/\/\S+/g, '[url]');
+  const frames = String(error?.stack || '').split('\n').slice(1, 7)
+    .filter(line => /^\s*at /.test(line)).join(' | ');
+  return safe(`${name}${code}: ${message}${frames ? ` | ${frames}` : ''}`).slice(0, 2000);
+}
+
 function onReady() {
   clearTimeout(readyTimer);
   readyTimer = null;
@@ -209,7 +218,7 @@ async function shutdown(reason, exitCode = 0) {
   try { brokerClient.close(); } catch (e) {}
   try {
     await streamManager.stop();
-  } catch (e) {}
+  } catch (e) { logError(`shutdown stop failed phase=${streamManager.voiceTeardownPhase}:`, safeFailure(e)); }
   try {
     await client.destroy();
   } catch (e) {}
@@ -223,10 +232,18 @@ async function shutdown(reason, exitCode = 0) {
 });
 
 process.on('unhandledRejection', (reason) => {
-  logError('unhandledRejection:', safe(reason && reason.message));
+  logError(`unhandledRejection phase=${streamManager.voiceTeardownPhase}:`, safeFailure(reason));
   // Unknown async state is unsafe to keep using for a Discord voice session.
   // The supervisor will restart only this worker after cleanup.
   void shutdown('unhandled-rejection', 1).catch(() => process.exit(1));
+});
+
+// Observe uncaught errors without replacing Node's default fatal handling.
+process.on('uncaughtExceptionMonitor', (error, origin) => {
+  logError(`uncaughtException origin=${origin} phase=${streamManager.voiceTeardownPhase}:`, safeFailure(error));
+});
+process.on('exit', code => {
+  log(`process exit code=${code} shutdown=${shuttingDown} voice_teardown_phase=${streamManager.voiceTeardownPhase}`);
 });
 
 void (async () => {

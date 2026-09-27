@@ -61,6 +61,11 @@ class StreamControl {
         const r = await this.streamManager.removeQueued(payload.queueId);
         return this._result(r.ok === true, r.ok ? `Removed ${r.title} from the queue.` : r.message);
       }
+      case 'clear-queue': {
+        const r = await this.streamManager.clearQueue();
+        return this._result(r.ok === true, r.ok
+          ? `Cleared ${r.cleared} queued ${r.cleared === 1 ? 'item' : 'items'}.` : r.message);
+      }
       case 'move': {
         if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);
         const r = await this.streamManager.moveChannel(guildId, channelId);

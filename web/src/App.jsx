@@ -3,6 +3,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Toaster, toast } from 'sonner';
+import { createPortal } from 'react-dom';
 
 const TIMEOUT_MS = 65000;
 const publicId = document.querySelector('meta[name="stream-public-id"]')?.content || null;
@@ -52,12 +53,14 @@ function Icon({ name, size = 17 }) {
     info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5m0-8h.01" /></>,
     edit: <><path d="m4 17-.5 3.5L7 20l11-11-3-3L4 17Z" /><path d="m13 8 3 3" /></>,
     plus: <path d="M12 5v14M5 12h14" />,
+    search: <><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></>,
+    top: <><path d="M5 4h14M12 20V8m-5 5 5-5 5 5" /></>,
     refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M5.6 9A7 7 0 0 1 18 7l2 5M4 12l2 5a7 7 0 0 0 12.4-2" /></>
   };
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-function SortableQueueItem({ item, index, canControl, onRemove }) {
+function SortableQueueItem({ item, index, canControl, onRemove, onTop, isFirst }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: !canControl });
   return <div ref={setNodeRef} className={`queue-item ${isDragging ? 'dragging' : ''}`}
     style={{ transform: CSS.Transform.toString(transform), transition }}>
@@ -67,8 +70,12 @@ function SortableQueueItem({ item, index, canControl, onRemove }) {
     {item.thumbnail && <img className="queue-thumb" src={item.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer"
       onError={event => { event.currentTarget.style.display = 'none'; }} />}
     <div className="queue-copy"><strong>{item.title}</strong><small>{item.isLive ? 'Live' : item.durationSec ? fmt(item.durationSec) : 'Video'}</small></div>
-    <button type="button" className="queue-remove" aria-label={`Remove ${item.title} from queue`}
-      title="Remove from queue" disabled={!canControl} onClick={() => onRemove(item.id)}>×</button>
+    <div className="queue-actions">
+      <button type="button" className="queue-top" aria-label={`Move ${item.title} to top of queue`}
+        title="Move to top" disabled={!canControl || isFirst} onClick={() => onTop(item.id)}><Icon name="top" size={17} /></button>
+      <button type="button" className="queue-remove" aria-label={`Remove ${item.title} from queue`}
+        title="Remove from queue" disabled={!canControl} onClick={() => onRemove(item.id)}>×</button>
+    </div>
   </div>;
 }
 
@@ -128,7 +135,7 @@ function ChannelPicker({ workerId, channels, selected, onSelect, disabled }) {
   </div>;
 }
 
-function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, expanded = false, publicView = false }) {
+function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, onModal, busy, expanded = false, publicView = false }) {
   const status = worker.status;
   const musicMode = worker.musicMode === true || status?.musicMode === true;
   const queue = status?.queue || [];
@@ -144,6 +151,8 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
   const [seek, setSeek] = useState(null);
   const [previewIds, setPreviewIds] = useState(null);
   const [seeking, setSeeking] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   const displayQueue = useMemo(() => {
@@ -166,13 +175,16 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
   const channelName = channels.find(channel => channel.guildId === status?.guildId && channel.id === status?.channelId)?.name;
   const destination = () => ({ guildId: selected?.guildId, channelId: selected?.id });
   const send = (operation, payload = {}) => action(worker.id, operation, payload);
-  const play = async event => {
-    event.preventDefault();
-    if (!source.trim()) return;
+  const playSource = value => {
     const where = publicView ? {} : status?.guildId && status?.channelId
       ? { guildId: status.guildId, channelId: status.channelId }
       : destination();
-    if (await send('play', { ...where, source: source.trim() })) setSource('');
+    return send('play', { ...where, source: value });
+  };
+  const play = async event => {
+    event.preventDefault();
+    if (!source.trim()) return;
+    if (await playSource(source.trim())) setSource('');
   };
   const reorder = async ({ active, over }) => {
     if (!over || active.id === over.id) return;
@@ -180,6 +192,13 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
     const from = ids.indexOf(active.id), to = ids.indexOf(over.id);
     if (from < 0 || to < 0) return;
     const next = arrayMove(ids, from, to);
+    setPreviewIds(next);
+    if (!await send('reorder', { ids: next })) setPreviewIds(null);
+  };
+  const moveToTop = async id => {
+    const ids = displayQueue.map(item => item.id);
+    if (ids[0] === id || !ids.includes(id)) return;
+    const next = [id, ...ids.filter(itemId => itemId !== id)];
     setPreviewIds(next);
     if (!await send('reorder', { ids: next })) setPreviewIds(null);
   };
@@ -256,7 +275,8 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
     </div>
 
     <div className="card-divider" />
-    <div className="queue-title"><span>UP NEXT</span><span className="queue-count">{upcomingChapters.length + realQueue.length}</span></div>
+    <div className="queue-title"><span>UP NEXT</span><span className="queue-count">{upcomingChapters.length + realQueue.length}</span>
+      {realQueue.length > 0 && <button type="button" className="clear-queue-trigger" disabled={!canControl} onClick={() => setClearOpen(true)}>Clear queue</button>}</div>
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={event => void reorder(event)}>
       <SortableContext items={displayQueue.map(item => item.id)} strategy={verticalListSortingStrategy}>
         <div className="queue-list">
@@ -267,6 +287,7 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
           </div>)}
           {displayQueue.length ? displayQueue.map((item, index) =>
             <SortableQueueItem key={item.id} item={item} index={index + upcomingChapters.length} canControl={canControl}
+              isFirst={index === 0} onTop={queueId => void moveToTop(queueId)}
               onRemove={queueId => void send('remove-queued', { queueId })} />)
             : !upcomingChapters.length && <div className="queue-empty">{musicMode ? 'No music in the queue yet.' : 'No videos in the queue yet.'}</div>}
         </div>
@@ -276,6 +297,7 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
     <form className="add-form" onSubmit={play}>
       <label htmlFor={`source-${worker.id}`}>ADD TO QUEUE</label>
       <div className="input-row"><input id={`source-${worker.id}`} value={source} onChange={event => setSource(event.target.value)} placeholder={musicMode ? 'Paste a music URL' : 'Paste a video URL or ShareTV slug'} disabled={!canAdd} /><button className="add-button" disabled={!canAdd || !source.trim()} title="Play or queue"><Icon name="plus" /></button></div>
+      {expanded && <button type="button" className="youtube-search-trigger" disabled={!canAdd} onClick={() => setSearchOpen(true)}><Icon name="search" size={17} /> Search YouTube</button>}
       {publicView && !status?.inVoiceChannel && <p className="public-hint">Ask the stream owner to join a voice channel before adding media.</p>}
     </form>
     {!publicView && <div className="channel-controls">
@@ -284,7 +306,87 @@ function WorkerCard({ worker, guildId, guilds, channels, action, onModal, busy, 
       <button className="secondary-button" disabled={!canControl || !selected} onClick={() => send(status ? 'move' : 'join', destination())}><Icon name="move" size={15} /> {status ? 'Switch' : 'Join'}</button>
       <button className="text-button manual" onClick={() => onModal({ kind: 'channel', worker, guildId, guilds })} disabled={!canControl}>Use IDs</button>
     </div>}
+    {searchOpen && createPortal(<YoutubeSearchModal workerName={worker.profile?.displayName || worker.id}
+      close={() => setSearchOpen(false)} search={query => searchYoutube(worker.id, query)} add={playSource} />, document.body)}
+    {clearOpen && createPortal(<ClearQueueModal count={realQueue.length} close={() => setClearOpen(false)}
+      confirm={async () => { const result = await send('clear-queue'); if (result) setPreviewIds(null); return result; }} />, document.body)}
   </article>;
+}
+
+function ClearQueueModal({ count, close, confirm }) {
+  const [working, setWorking] = useState(false);
+  useEffect(() => {
+    const onKey = event => { if (event.key === 'Escape' && !working) close(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [close, working]);
+  const submit = async () => {
+    if (working) return;
+    setWorking(true);
+    try { if (await confirm()) close(); }
+    finally { setWorking(false); }
+  };
+  return <div className="modal-backdrop clear-queue-backdrop" onMouseDown={() => { if (!working) close(); }}>
+    <section className="modal clear-queue-modal" role="alertdialog" aria-modal="true" aria-labelledby="clear-queue-title" onMouseDown={event => event.stopPropagation()}>
+      <div className="eyebrow">QUEUE MANAGEMENT</div>
+      <h2 id="clear-queue-title">Clear the queue?</h2>
+      <p>This removes {count} upcoming {count === 1 ? 'item' : 'items'}. The current playback keeps going.</p>
+      <div className="modal-actions"><button type="button" className="secondary-button" onClick={close} disabled={working}>Keep queue</button>
+        <button type="button" className="clear-queue-confirm" autoFocus disabled={working} onClick={() => void submit()}>{working ? 'Clearing…' : 'Clear queue'}</button></div>
+    </section>
+  </div>;
+}
+
+function YoutubeSearchModal({ workerName, close, search, add }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [adding, setAdding] = useState(null);
+  const [added, setAdded] = useState([]);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = event => { if (event.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    return () => { document.body.style.overflow = previous; document.removeEventListener('keydown', onKey); };
+  }, [close]);
+  const submit = async event => {
+    event.preventDefault();
+    if (loading || query.trim().length < 2) return;
+    setLoading(true); setError(''); setResults(null); setAdded([]);
+    try { setResults((await search(query.trim())).results || []); }
+    catch (failure) { setError(failure.message || 'Search failed.'); }
+    finally { setLoading(false); }
+  };
+  const addResult = async result => {
+    if (adding) return;
+    setAdding(result.id);
+    try { if (await add(result.url)) setAdded(previous => [...previous, result.id]); }
+    finally { setAdding(null); }
+  };
+  return <div className="modal-backdrop search-backdrop" onMouseDown={close}>
+    <section className="modal youtube-search-modal" role="dialog" aria-modal="true" aria-labelledby="youtube-search-title" onMouseDown={event => event.stopPropagation()}>
+      <div className="search-modal-header"><div><div className="eyebrow">ADD TO {workerName.toUpperCase()}</div><h2 id="youtube-search-title">Search YouTube</h2></div>
+        <button type="button" className="search-close" aria-label="Close search" onClick={close}>×</button></div>
+      <form className="youtube-search-form" onSubmit={submit}>
+        <input aria-label="Search YouTube" autoFocus value={query} maxLength="120" onChange={event => setQuery(event.target.value)} placeholder="Search videos, songs, or artists" />
+        <button className="primary-button" disabled={loading || query.trim().length < 2} type="submit">{loading ? 'Searching…' : 'Search'}</button>
+      </form>
+      <div className="search-results" aria-live="polite">
+        {error && <p className="search-state error-note">{error}</p>}
+        {loading && <p className="search-state">Searching YouTube…</p>}
+        {results && !results.length && <p className="search-state">No videos found. Try another search.</p>}
+        {results?.map(result => <div className="search-result" key={result.id}>
+          <img src={result.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" />
+          <div className="search-result-copy"><strong>{result.title}</strong><small>YouTube{result.durationSec ? ` · ${fmt(result.durationSec)}` : ''}</small>
+            {result.description && <p>{result.description}</p>}</div>
+          <button type="button" className="secondary-button search-add" disabled={!!adding || added.includes(result.id)} onClick={() => void addResult(result)}>
+            {added.includes(result.id) ? 'Added' : adding === result.id ? 'Adding…' : 'Add to queue'}</button>
+        </div>)}
+      </div>
+    </section>
+  </div>;
 }
 
 function Modal({ modal, close, action, guildId }) {
@@ -338,12 +440,13 @@ function PublicWorkerPage() {
       return null;
     } finally { setBusy(false); }
   };
+  const searchYoutube = async (_workerId, query) => api(null, `/api/public/${publicId}/search?q=${encodeURIComponent(query)}`);
   return <div className="app-shell public-shell"><Toaster position="top-right" theme="dark" richColors closeButton />
     <main className="main-content detail-mode">
       <div className="topbar"><div className="topbar-identity"><span className="mobile-brand-mark" aria-hidden="true">▶</span><div className="eyebrow">10MAN / STREAM · PUBLIC PLAYER</div></div></div>
       <div className="detail-view">
         {expired ? <div className="empty-fleet">This player is unavailable. The worker must be active in a server voice channel.</div>
-          : worker ? <WorkerCard worker={worker} guildId="" guilds={[]} channels={[]} action={action}
+          : worker ? <WorkerCard worker={worker} guildId="" guilds={[]} channels={[]} action={action} searchYoutube={searchYoutube}
               onModal={() => {}} busy={busy} expanded publicView />
             : <div className="empty-fleet">Connecting to the stream worker…</div>}
       </div>
@@ -402,6 +505,7 @@ function AdminApp() {
     } catch (failure) { toast.error(failure.message); return null; }
     finally { setBusy(previous => ({ ...previous, [workerId]: false })); }
   };
+  const searchYoutube = async (workerId, query) => api(answer, `/api/workers/${encodeURIComponent(workerId)}/search?q=${encodeURIComponent(query)}`);
   if (!answer) return <div className="login-page"><Toaster position="top-right" theme="dark" richColors closeButton />
     <div className="login-glow" /><div className="login-card">
     <div className="brand-mark">▶</div><div className="eyebrow">10MAN CONTROL ROOM</div>
@@ -424,14 +528,14 @@ function AdminApp() {
           <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
         </section>
         {!state ? <div className="empty-fleet">Connecting to stream workers…</div>
-          : selectedWorker ? <WorkerCard worker={selectedWorker} guildId={guildId} guilds={state.guilds} channels={channels} action={action} onModal={setModal} busy={busy[selectedWorker.id]} expanded />
+          : selectedWorker ? <WorkerCard worker={selectedWorker} guildId={guildId} guilds={state.guilds} channels={channels} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[selectedWorker.id]} expanded />
             : <div className="empty-fleet">Worker “{selectedWorkerId}” is not configured. <a href="#/">View all workers</a></div>}
       </div> : <>
         <section className="page-heading"><div><div className="eyebrow highlight">LIVE OPERATIONS</div><h1>Stream Deck<span className="heading-period">.</span></h1><p>Manage your Discord stream workers and playback queues.</p></div>
           <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
         </section>
         <div className="overview"><div><span className="overview-number">{workers.length}</span><span className="overview-label">WORKERS</span></div><div><span className="overview-number">{workers.filter(worker => worker.online).length}</span><span className="overview-label">ONLINE</span></div><div><span className="overview-number">{workers.filter(worker => worker.status?.current && !worker.status.current.isFiller).length}</span><span className="overview-label">ON AIR</span></div><div className="overview-note"><span className="pulse" /> Auto-refreshing every 5 seconds</div></div>
-        <div className="cards-grid">{workers.map(worker => <div key={worker.id}><WorkerCard worker={worker} guildId={guildId} guilds={state.guilds} channels={channels} action={action} onModal={setModal} busy={busy[worker.id]} /></div>)}</div>
+        <div className="cards-grid">{workers.map(worker => <div key={worker.id}><WorkerCard worker={worker} guildId={guildId} guilds={state.guilds} channels={channels} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[worker.id]} /></div>)}</div>
         {!workers.length && <div className="empty-fleet">No stream workers configured or connected.</div>}
       </>}
       <footer>10MAN STREAM DECK <span>·</span> Persistent Go Live control</footer>

@@ -7,6 +7,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { createStreamDashboard, parseExternalChannels, publicStatus, scopedStatus } = require('../src/streamDashboard');
+const { normalizeResults } = require('../src/youtubeSearch');
 
 const guildId = '111111111111111111';
 const channelId = '222222222222222222';
@@ -40,11 +41,22 @@ test('public worker status omits channel IDs and credential-bearing thumbnails',
   assert.equal(status.queue[0].thumbnail, 'https://i.ytimg.com/vi/example/default.jpg');
 });
 
+test('YouTube search results expose only playable URLs and safe display metadata', () => {
+  const results = normalizeResults([
+    { id: 'abcdefghijk', title: 'A song', description: 'One\n two', duration: 91 },
+    { id: 'invalid', title: 'Bad' },
+    { id: 'lmnopqrstuv', availability: 'private', title: 'Private' }
+  ]);
+  assert.deepEqual(results, [{ id: 'abcdefghijk', url: 'https://www.youtube.com/watch?v=abcdefghijk',
+    title: 'A song', description: 'One two', durationSec: 91,
+    thumbnail: 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg' }]);
+});
+
 test('dashboard authenticates reads and commands, routes moves/reorders, and falls back to nickname', async t => {
   const staticDir = await fs.mkdtemp(path.join(os.tmpdir(), 'stream-dashboard-test-'));
   await fs.writeFile(path.join(staticDir, 'index.html'), '<!doctype html><head></head><body>Player</body>');
   t.after(() => fs.rm(staticDir, { recursive: true, force: true }));
-  const calls = []; const nicknames = [];
+  const calls = []; const nicknames = []; const searches = [];
   const member = { nickname: null, manageable: true, setNickname: async name => nicknames.push(name) };
   const hiddenChannelId = '444444444444444444';
   const guild = { id: guildId, name: 'Test server', members: { cache: new Map(), fetch: async () => member },
@@ -71,7 +83,8 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   const dashboard = createStreamDashboard({ broker, client, password: 'CaseSensitivePassword',
     configuredWorkerIds: ['one','two'], channelIds: [channelId],
     externalChannels: parseExternalChannels(`${externalGuildId}:${externalChannelId}`),
-    host: '127.0.0.1', port: 0, staticDir, log: () => {} });
+    host: '127.0.0.1', port: 0, staticDir, log: () => {},
+    searchYoutube: async query => { searches.push(query); return [{ title: 'Found', url: 'https://www.youtube.com/watch?v=abcdefghijk' }]; } });
   dashboard.listen(); await once(dashboard.server, 'listening');
   t.after(() => dashboard.close());
   const base = `http://127.0.0.1:${dashboard.server.address().port}`;
@@ -82,6 +95,10 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal((await fetch(`${base}/api/auth-question`)).status, 401);
   assert.equal((await request('/api/state', null, 'casesensitivepassword')).status, 401);
   assert.equal((await request('/api/state', null, 'wrong')).status,401);
+  assert.equal((await request('/api/workers/one/search?q=music', null, 'wrong')).status, 401);
+  assert.equal((await request('/api/workers/one/search?q=x')).status, 400);
+  assert.equal((await request('/api/workers/two/search?q=music')).status, 404);
+  assert.deepEqual((await (await request('/api/workers/one/search?q=music')).json()).results.map(item => item.title), ['Found']);
   const state = await (await request(`/api/state?guildId=${guildId}`)).json();
   assert.equal(state.workers.length,2);
   assert.equal(state.workers[1].online,false);
@@ -107,6 +124,13 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(remove.ok,true);
   assert.deepEqual(calls.slice(0,5).map(call=>call.operation),['move','move','reorder','seek','remove-queued']);
   assert.equal(calls[4].payload.queueId,queueId);
+  const clear = await (await request('/api/workers/one/actions', { operation:'clear-queue' })).json();
+  assert.equal(clear.ok,true);
+  assert.equal(calls.at(-1).operation,'clear-queue');
+  const largeOrder = Array.from({ length: 1000 }, (_, index) => String(index).padStart(36, '0'));
+  assert.equal((await request('/api/workers/one/actions', { operation: 'reorder', ids: largeOrder })).status, 200);
+  assert.equal(calls.at(-1).payload.ids.length, 1000);
+  assert.equal((await request('/api/workers/one/actions', { operation: 'reorder', ids: [...largeOrder, 'extra'] })).status, 400);
   assert.equal((await request('/api/workers/one/actions', { operation:'remove-queued', queueId:'bad' })).status,400);
   const name = await (await request('/api/workers/one/actions', { operation:'set-name', guildId, name:'Movie Night' })).json();
   assert.equal(name.scope,'guild');
@@ -125,12 +149,21 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(scoped.worker.status.guildId, undefined);
   assert.equal(scoped.worker.status.channelId, undefined);
   assert.equal(scoped.guilds, undefined);
+  assert.equal((await publicFetch('/api/public/one/search?q=x')).status, 400);
+  assert.deepEqual((await (await publicFetch('/api/public/one/search?q=music')).json()).results.map(item => item.title), ['Found']);
+  assert.deepEqual(searches, ['music', 'music']);
+  assert.equal((await publicFetch('/api/public/two/search?q=music')).status, 404);
   const scopedPlay = await (await publicFetch('/api/public/one/actions', { operation: 'play',
     source: 'https://youtube.com/watch?v=test', guildId: externalGuildId, channelId: externalChannelId })).json();
   assert.equal(scopedPlay.ok, true);
   assert.equal(calls.at(-1).workerId, 'one');
   assert.equal(calls.at(-1).payload.guildId, guildId);
   assert.equal(calls.at(-1).payload.channelId, channelId);
+  const scopedClear = await (await publicFetch('/api/public/one/actions', { operation: 'clear-queue' })).json();
+  assert.equal(scopedClear.ok, true);
+  assert.equal(calls.at(-1).workerId, 'one');
+  assert.equal(calls.at(-1).operation, 'clear-queue');
+  assert.equal((await publicFetch('/api/public/one/actions', { operation: 'reorder', ids: largeOrder })).status, 200);
   assert.equal((await publicFetch('/api/public/one/actions', { operation: 'move',
     guildId: externalGuildId, channelId: externalChannelId })).status, 403);
   assert.equal((await publicFetch('/api/public/one/actions', { operation: 'set-name', name: 'Hijack' })).status, 403);
@@ -141,7 +174,9 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   activeWorker.status = { ...activeWorker.status, alive: false };
   assert.equal((await publicFetch('/one')).status, 404);
   assert.equal((await publicFetch('/api/public/one/state')).status, 404);
+  assert.equal((await publicFetch('/api/public/one/search?q=music')).status, 404);
   assert.equal((await publicFetch('/api/public/one/actions', { operation: 'pause' })).status, 404);
+  assert.equal((await publicFetch('/api/public/one/actions', { operation: 'clear-queue' })).status, 404);
   activeWorker.status = { ...activeWorker.status, alive: true, channelId: null };
   assert.equal((await publicFetch('/one')).status, 404);
   activeWorker.status = { ...activeWorker.status, channelId, inChannel: false };

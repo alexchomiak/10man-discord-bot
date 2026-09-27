@@ -484,6 +484,20 @@ test('removing a queued video also removes its transition filler without touchin
   assert.equal((await mgr.removeQueued(before[0].id)).ok,false);
 });
 
+test('clearing queued videos preserves current playback and removes transition fillers', async t => {
+  const {mgr,start}=fixture(t);
+  await start('a'); await start('b'); await start('c');
+  const link = mgr.voiceLink;
+  const cleared = await mgr.clearQueue();
+  assert.deepEqual(cleared, { ok: true, cleared: 2 });
+  assert.equal(mgr.voiceLink, link);
+  assert.equal(mgr.session.title, 'a');
+  assert.deepEqual(link.pipeline.enqueue.map(item => item.title), []);
+  assert.equal((await mgr.clearQueue()).cleared, 0);
+  await start('d');
+  assert.deepEqual(mgr.status().queue.filter(item => !item.isFiller).map(item => item.title), ['d']);
+});
+
 test('external move cannot wedge stop/play commands when the old media writer never exits', async t => {
   const {mgr,start}=fixture(t,{streamBufferSec:0,streamCleanupTimeoutMs:30},{hangAppend:true});
   await start('a');
