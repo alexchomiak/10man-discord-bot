@@ -8,12 +8,12 @@ const { workerDashboardUrl, createFillerArtwork, fillerCountdownFilter } = requi
 const { createMusicArtwork, updateMusicQueue, stopMusicQueueFrames } = require('../src/streambot/musicArtwork');
 
 test('filler links target the selected worker, preserving a reverse-proxy path', () => {
-  assert.equal(workerDashboardUrl('https://stream.example.com/player/', 'abcdef'),
-    'https://stream.example.com/player/abcdef');
-  assert.equal(workerDashboardUrl('https://stream.example.com/player/', 'ghijkl'),
-    'https://stream.example.com/player/ghijkl');
-  assert.equal(workerDashboardUrl('file:///tmp/dashboard', 'abcdef'), null);
-  assert.equal(workerDashboardUrl('https://stream.example.com/', 'one'), null);
+  assert.equal(workerDashboardUrl('https://stream.example.com/player/', 'one'),
+    'https://stream.example.com/player/one');
+  assert.equal(workerDashboardUrl('https://stream.example.com/player/', 'youtube'),
+    'https://stream.example.com/player/youtube');
+  assert.equal(workerDashboardUrl('file:///tmp/dashboard', 'one'), null);
+  assert.equal(workerDashboardUrl('https://stream.example.com/', '../one'), null);
 });
 
 test('idle and next-up screens render bounded frames, and countdown is time-based', async () => {
@@ -27,7 +27,7 @@ test('idle and next-up screens render bounded frames, and countdown is time-base
       assert.equal(metadata.width, 1920);
       assert.equal(metadata.height, 1080);
       assert.equal(metadata.format, 'png');
-      assert.equal(artwork.url, 'https://stream.example.com/abcdef');
+      assert.equal(artwork.url, 'https://stream.example.com/one');
     } finally {
       await fs.rm(artwork.directory, { recursive: true, force: true });
     }
@@ -45,11 +45,18 @@ test('next-up artwork embeds an available thumbnail', async () => {
       next: { title: 'A new video', thumbnail: 'https://images.example.com/next.png' } });
     const pixel = await sharp(artwork.file).extract({ left: 300, top: 300, width: 1, height: 1 }).raw().toBuffer();
     assert.deepEqual([...pixel.subarray(0, 3)], [255, 0, 0]);
-    assert.equal(artwork.url, 'https://stream.example.com/ghijkl');
+    assert.equal(artwork.url, 'https://stream.example.com/two');
   } finally {
     global.fetch = originalFetch;
     if (artwork) await fs.rm(artwork.directory, { recursive: true, force: true });
   }
+});
+
+test('opt-in random links use the worker session code in QR artwork', async () => {
+  const artwork = await createFillerArtwork({ baseUrl: 'https://stream.example.com/player/',
+    workerId: 'one', accessCode: 'abcdef', randomCodes: true });
+  try { assert.equal(artwork.url, 'https://stream.example.com/player/abcdef'); }
+  finally { await fs.rm(artwork.directory, { recursive: true, force: true }); }
 });
 
 test('worker avatar is centered in the blue and neon QR code', async () => {
@@ -77,7 +84,7 @@ test('music artwork links to its worker and updates the live queue image', async
     const metadata = await sharp(artwork.file).metadata();
     assert.equal(metadata.width, 1920);
     assert.equal(metadata.height, 1080);
-    assert.equal(artwork.url, 'https://stream.example.com/player/ghijkl');
+    assert.equal(artwork.url, 'https://stream.example.com/player/two');
     assert(artwork.queueFrame.length > 0);
     const first = artwork.queueFrame;
     await updateMusicQueue(artwork, [{ title: 'Second song' }]);

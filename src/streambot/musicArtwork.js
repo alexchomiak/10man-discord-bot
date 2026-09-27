@@ -129,9 +129,9 @@ function stopMusicQueueFrames(artwork) {
   artwork.queueStream?.destroy();
   artwork.thumbnailCache?.clear();
 }
-async function createMusicArtwork({ baseUrl, workerId, accessCode, title, thumbnail = null, avatarUrl = null,
+async function createMusicArtwork({ baseUrl, workerId, accessCode, randomCodes = false, title, thumbnail = null, avatarUrl = null,
   queue = [], chapters = null, getPosition = null, width = 1920, height = 1080, signal }) {
-  const url = workerDashboardUrl(baseUrl, accessCode);
+  const url = workerDashboardUrl(baseUrl, randomCodes ? accessCode : workerId);
   if (!url) throw new Error('STREAM_DASHBOARD_BASE_URL must be an http(s) dashboard URL for Music Mode');
   signal?.throwIfAborted();
   const [qr, currentThumbnail, avatarImage] = await Promise.all([

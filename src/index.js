@@ -79,6 +79,7 @@ const config = {
   streamBrokerSecret: process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET || '',
   defaultStreambotId: process.env.STREAMBOT_DEFAULT_ID || 'primary',
   streamDashboardPassword: process.env.STREAM_DASHBOARD_PASSWORD || process.env.STREAM_DASHBOARD_TOKEN || '',
+  streamDashboardRandomCodes: process.env.STREAM_DASHBOARD_RANDOM_CODES?.trim().toLowerCase() === 'true',
   streamDashboardHost: process.env.STREAM_DASHBOARD_HOST || '0.0.0.0',
   streamDashboardPort: Number.parseInt(process.env.STREAM_DASHBOARD_PORT || '8082', 10),
   streamDashboardChannelIds: (process.env.STREAM_DASHBOARD_CHANNEL_IDS || '')
@@ -266,6 +267,7 @@ if (!streamBroker.enabled) {
 }
 const streamDashboard = streamBroker.enabled && config.streamDashboardPassword
   ? createStreamDashboard({ broker: streamBroker, client, password: config.streamDashboardPassword,
+    randomCodes: config.streamDashboardRandomCodes,
     channelIds: config.streamDashboardChannelIds,
     externalChannels: config.streamDashboardExternalChannels,
     configuredWorkerIds: (process.env.STREAMBOT_IDS || '').split(',').map(id => id.trim()).filter(Boolean),

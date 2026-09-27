@@ -1170,6 +1170,7 @@ class StreamManager {
             piece.musicArtwork = await createMusicArtwork({
               baseUrl: this.config.dashboardBaseUrl,
               accessCode: this.config.dashboardAccessCode,
+              randomCodes: this.config.dashboardRandomCodes,
               workerId: this.config.workerId || this.config.defaultWorkerId || 'primary',
               title: piece.isFiller ? null : piece.title,
               thumbnail: piece.isFiller ? null : piece.thumbnail,
@@ -1192,6 +1193,7 @@ class StreamManager {
               const artwork = await createFillerArtwork({
                 baseUrl: this.config.dashboardBaseUrl,
                 accessCode: this.config.dashboardAccessCode,
+                randomCodes: this.config.dashboardRandomCodes,
                 workerId: this.config.workerId || this.config.defaultWorkerId || 'primary',
                 avatarUrl,
                 next: piece.upNext,
@@ -1614,7 +1616,8 @@ class StreamManager {
   async toggleMusicMode() {
     return this._serialize(async () => {
       const enabled = !this.musicMode;
-      if (enabled && !workerDashboardUrl(this.config.dashboardBaseUrl, this.config.dashboardAccessCode)) {
+      if (enabled && !workerDashboardUrl(this.config.dashboardBaseUrl,
+        this.config.dashboardRandomCodes ? this.config.dashboardAccessCode : this.config.workerId || this.config.defaultWorkerId || 'primary')) {
         return { ok: false, message: 'Set STREAM_DASHBOARD_BASE_URL to the public dashboard URL before enabling Music Mode.' };
       }
       this.musicMode = enabled;

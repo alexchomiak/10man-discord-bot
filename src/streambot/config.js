@@ -101,6 +101,7 @@ function loadConfig() {
     workerId,
     defaultWorkerId,
     dashboardBaseUrl: (process.env.STREAM_DASHBOARD_BASE_URL || '').trim(),
+    dashboardRandomCodes: parseBoolean(process.env.STREAM_DASHBOARD_RANDOM_CODES),
     dashboardAccessCode: Array.from({ length: 6 }, () => String.fromCharCode(97 + crypto.randomInt(26))).join(''),
     chatCommands: parseBoolean(chatCommandsValue, workerId.toLowerCase() === defaultWorkerId.toLowerCase()),
     brokerUrl: (process.env.STREAM_BROKER_URL || (process.env.STREAM_BROKER_SECRET || process.env.BROKER_SECRET ? 'ws://127.0.0.1:8090' : '')).trim(),

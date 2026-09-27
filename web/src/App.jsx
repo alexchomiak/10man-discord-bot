@@ -5,9 +5,9 @@ import { CSS } from '@dnd-kit/utilities';
 import { Toaster, toast } from 'sonner';
 
 const TIMEOUT_MS = 65000;
-const publicCode = document.querySelector('meta[name="stream-public-code"]')?.content || null;
-const apiPrefix = publicCode
-  ? window.location.pathname.slice(0, -publicCode.length)
+const publicId = document.querySelector('meta[name="stream-public-id"]')?.content || null;
+const apiPrefix = publicId
+  ? window.location.pathname.slice(0, -publicId.length)
   : window.location.pathname.replace(/[^/]*$/, '');
 const apiRoute = route => `${apiPrefix.replace(/\/$/, '')}${route}`;
 const workerIdFromHash = () => {
@@ -316,7 +316,7 @@ function PublicWorkerPage() {
   const [expired, setExpired] = useState(false);
   const refresh = useCallback(async () => {
     try {
-      const state = await api(null, `/api/public/${publicCode}/state`);
+      const state = await api(null, `/api/public/${publicId}/state`);
       setWorker(state.worker);
     } catch (failure) {
       if ([404, 410, 429].includes(failure.status)) setExpired(true);
@@ -327,7 +327,7 @@ function PublicWorkerPage() {
   const action = async (_workerId, operation, payload = {}) => {
     setBusy(true);
     try {
-      const result = await api(null, `/api/public/${publicCode}/actions`,
+      const result = await api(null, `/api/public/${publicId}/actions`,
         { method: 'POST', body: JSON.stringify({ operation, ...payload }) });
       toast.success(result.message || 'Done.');
       await refresh();
@@ -342,7 +342,7 @@ function PublicWorkerPage() {
     <main className="main-content detail-mode">
       <div className="topbar"><div className="topbar-identity"><span className="mobile-brand-mark" aria-hidden="true">▶</span><div className="eyebrow">10MAN / STREAM · PUBLIC PLAYER</div></div></div>
       <div className="detail-view">
-        {expired ? <div className="empty-fleet">This player link has expired. Scan the worker’s current QR code for a new link.</div>
+        {expired ? <div className="empty-fleet">This player is unavailable. The worker must be active in a server voice channel.</div>
           : worker ? <WorkerCard worker={worker} guildId="" guilds={[]} channels={[]} action={action}
               onModal={() => {}} busy={busy} expanded publicView />
             : <div className="empty-fleet">Connecting to the stream worker…</div>}
@@ -440,4 +440,4 @@ function AdminApp() {
   </div>;
 }
 
-export default function App() { return publicCode ? <PublicWorkerPage /> : <AdminApp />; }
+export default function App() { return publicId ? <PublicWorkerPage /> : <AdminApp />; }

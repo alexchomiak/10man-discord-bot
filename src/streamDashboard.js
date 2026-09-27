@@ -69,10 +69,18 @@ function scopedStatus(status) {
   return value;
 }
 
-function createStreamDashboard({ broker, client, password, token, configuredWorkerIds = [], channelIds = [], externalChannels = [], host = '0.0.0.0', port = 8082,
+function createStreamDashboard({ broker, client, password, token, randomCodes = false, configuredWorkerIds = [], channelIds = [], externalChannels = [], host = '0.0.0.0', port = 8082,
   staticDir = path.resolve(__dirname, '../web/dist'), log = console.log } = {}) {
   const adminPassword = password || token;
   if (!adminPassword) return null;
+  const publicWorkerFor = publicId => {
+    if (!(randomCodes ? ACCESS_CODE : WORKER_ID).test(publicId || '')) return null;
+    const worker = randomCodes ? broker.getWorkerByAccessCode?.(publicId) : broker.getWorker?.(publicId);
+    const status = worker?.status;
+    return status?.alive === true && status?.inChannel === true &&
+      DISCORD_ID.test(String(status.guildId || '')) && DISCORD_ID.test(String(status.channelId || ''))
+      ? worker : null;
+  };
   const profileCache = new Map();
   const invalidCodes = new Map();
   const authFailures = new Map();
@@ -150,16 +158,19 @@ function createStreamDashboard({ broker, client, password, token, configuredWork
   async function handle(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     if (url.pathname.startsWith('/api/')) {
-      const scopedMatch = /^\/api\/public\/([a-z]{6})\/(state|actions)$/.exec(url.pathname);
+      const scopedMatch = /^\/api\/public\/([A-Za-z0-9_-]{1,32})\/(state|actions)$/.exec(url.pathname);
       let scopedWorker = null;
       if (scopedMatch) {
-        scopedWorker = broker.getWorkerByAccessCode?.(scopedMatch[1]) || null;
+        scopedWorker = publicWorkerFor(scopedMatch[1]);
         if (!scopedWorker) return invalidCodeResponse(req, res);
         if (req.method === 'GET' && scopedMatch[2] === 'state') {
+          const workerProfile = scopedWorker.userId ? await profile(scopedWorker.userId, scopedWorker.status?.guildId) : null;
+          const current = publicWorkerFor(scopedMatch[1]);
+          if (!current || current.connectedAt !== scopedWorker.connectedAt) return json(res, 404, { error: 'Player unavailable.' });
           return json(res, 200, { worker: { id: scopedWorker.id, online: true,
             musicMode: scopedWorker.musicMode === true,
             status: scopedStatus(scopedWorker.status),
-            profile: scopedWorker.userId ? await profile(scopedWorker.userId, scopedWorker.status?.guildId) : null } });
+            profile: workerProfile } });
         }
         if (req.method !== 'POST' || scopedMatch[2] !== 'actions') return json(res, 405, { error: 'Method not allowed.' });
       } else {
@@ -266,9 +277,9 @@ function createStreamDashboard({ broker, client, password, token, configuredWork
           payload.queueId = body.queueId;
         }
         if (scopedWorker) {
-          const current = broker.getWorkerByAccessCode?.(scopedMatch[1]);
+          const current = publicWorkerFor(scopedMatch[1]);
           if (!current || current.id !== workerId || current.connectedAt !== scopedWorker.connectedAt) {
-            return json(res, 410, { error: 'Link expired or unavailable.' });
+            return json(res, 404, { error: 'Player unavailable.' });
           }
         }
         const result = await broker.request(operation, payload, workerId);
@@ -279,22 +290,23 @@ function createStreamDashboard({ broker, client, password, token, configuredWork
       return json(res, 404, { error: 'Not found.' });
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'Method not allowed.' });
-    const accessCode = /^\/([a-z]{6})$/.exec(url.pathname)?.[1];
-    if (accessCode && !broker.getWorkerByAccessCode?.(accessCode)) return invalidCodeResponse(req, res);
-    const filename = url.pathname === '/' || accessCode ? 'index.html' : url.pathname.replace(/^\//, '');
+    const publicId = /^\/([A-Za-z0-9_-]{1,32})$/.exec(url.pathname)?.[1];
+    if (publicId && !publicWorkerFor(publicId)) return invalidCodeResponse(req, res);
+    const filename = url.pathname === '/' || publicId ? 'index.html' : url.pathname.replace(/^\//, '');
     if (filename.includes('..') || !/^[A-Za-z0-9_./-]+$/.test(filename)) return json(res, 404, { error: 'Not found.' });
     const file = path.join(staticDir, filename);
     if (!file.startsWith(`${staticDir}${path.sep}`)) return json(res, 404, { error: 'Not found.' });
     let data;
     try { data = await fs.promises.readFile(file); }
     catch { return json(res, 404, { error: 'Dashboard assets unavailable; build the web app.' }); }
+    if (publicId && !publicWorkerFor(publicId)) return invalidCodeResponse(req, res);
     res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream',
       'Cache-Control': filename === 'index.html' ? 'no-store' : 'public, max-age=3600',
       'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow',
       'Content-Security-Policy': "default-src 'self'; img-src 'self' https: http: data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'" });
     if (req.method === 'HEAD') res.end();
-    else if (accessCode && filename === 'index.html') {
-      res.end(data.toString('utf8').replace('</head>', `<meta name="stream-public-code" content="${accessCode}" /></head>`));
+    else if (publicId && filename === 'index.html') {
+      res.end(data.toString('utf8').replace('</head>', `<meta name="stream-public-id" content="${publicId}" /></head>`));
     } else res.end(data);
   }
   const server = http.createServer((req, res) => {
