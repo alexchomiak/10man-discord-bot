@@ -10,7 +10,7 @@ function musicVisualizerFilter({ width, height, fps }) {
   const rate = Math.max(1, Math.round(fps));
   const columnWidth = Math.max(1, Math.round(barWidth / 64));
   return `[1:a]volume=8,showfreqs=s=32x${barHeight}:r=${rate}:mode=bar:ascale=cbrt:fscale=log:` +
-    'win_size=2048:averaging=2:colors=white[spectrum];' +
+    'win_size=2048:averaging=1:colors=white[spectrum];' +
     `gradients=s=32x${barHeight}:r=${rate}:nb_colors=2:` +
     `c0=0xbca3d4:c1=0x88bdd3:x0=0:y0=0:x1=0:y1=${barHeight}:speed=0[palette];` +
     '[spectrum][palette]blend=all_mode=multiply:shortest=1,split[left][right];' +
