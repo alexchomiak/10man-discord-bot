@@ -1007,7 +1007,12 @@ async function resolveSource(input, config) {
         totalDurationSec: metadata.totalDurationSec ?? playback.totalDurationSec }
       : playback;
   }
-  if (isHttp || isPrefixed) return resolveYtdlp(raw, cfg);
+  if (isHttp || isPrefixed) {
+    const resolved = await resolveYtdlp(raw, cfg);
+    if (resolved.available || !isHttp) return resolved;
+    const browser = await require('./browserStream').probeBrowser(raw, cfg);
+    return browser || resolved;
+  }
 
   return { kind: 'unknown', available: false, note: M.SOURCE_UNRECOGNIZED };
 }

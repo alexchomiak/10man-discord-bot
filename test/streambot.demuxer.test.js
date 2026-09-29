@@ -440,6 +440,31 @@ test('timed track rebases a live timestamp discontinuity instead of sleeping for
   track.destroy();
 });
 
+test('live video keeps frame spacing after waiting for delayed audio', async () => {
+  let now = 0;
+  const sentAt = [];
+  const audio = { pts: 0, writableEnded: false };
+  const track = new TimedTrack(() => sentAt.push(now), 'video', {
+    now: () => now,
+    sleep: async ms => {
+      now += ms;
+      // One brief audio delivery delay, then the normal 20ms audio clock.
+      audio.pts = now < 50 ? 0 : Math.floor(now / 20) * 20;
+    }
+  });
+  try {
+    track.syncTrack = audio;
+    for (let pts = 0; pts < 30; pts++) {
+      const packet = { data: Buffer.from([1]), pts: BigInt(pts), duration: 1n,
+        timeBase: { num: 1, den: 30 }, free() {} };
+      await new Promise((resolve, reject) => track.write(packet, error => error ? reject(error) : resolve()));
+    }
+    const gaps = sentAt.slice(1).map((time, i) => time - sentAt[i]);
+    assert.ok(Math.min(...gaps) >= 32, `video frames bunched after audio wait: ${gaps}`);
+    assert.ok(sentAt.at(-1) < 1050, 'a brief audio delay must not accumulate into growing playback lag');
+  } finally { track.destroy(); }
+});
+
 test('video pacing fails a stalled audio clock before sending unsynced frames', async () => {
   const { TimedTrack } = require('../src/streambot/persistentTrackFeeder');
   const sleeps = [];

@@ -311,6 +311,7 @@ class CommandRegistry {
       guildId,
       channelId,
       sourceInput: raw,
+      browserPageUrl: resolved.browserPageUrl || null,
       streamUrl: resolved.streamUrl || null,
       videoUrl: resolved.videoUrl || null,
       audioUrl: resolved.audioUrl || null,

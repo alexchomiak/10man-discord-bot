@@ -39,6 +39,7 @@ let FAKE_SCENARIO;
 
 // Shared config for tests. ytdlpPath is set in before() (FAKE_BIN not known yet).
 const CfgPlain = {
+  browserFallback: false,
   shareTvBase: 'http://localhost:8080',
   shareTvAllowHosts: [],
   ytdlpPath: 'yt-dlp',

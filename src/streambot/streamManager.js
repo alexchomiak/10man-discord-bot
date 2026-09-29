@@ -13,6 +13,7 @@ const { PersistentTrackFeeder } = require('./persistentTrackFeeder');
 // observe the patch.
 const demuxGuard = require('./demuxGuard');
 const telemetry = require('./telemetry');
+const browserStream = require('./browserStream');
 const { isYoutubeHlsUrl } = require('./sources');
 const { createAlertSink } = require('./alerts');
 const { progressOverlayFilter } = require('./progressOverlay');
@@ -1026,6 +1027,7 @@ class StreamManager {
   _cancelPiece(piece) {
     if (!piece || piece.control.signal.aborted) return;
     piece.control.abort();
+    void piece.browserCapture?.stop();
     try { piece.command?.kill('SIGTERM'); } catch {}
     piece.output?.destroy?.();
   }
@@ -1113,6 +1115,8 @@ class StreamManager {
       clearTimeout(escalation);
       piece.telemetry?.stop();
       piece.output?.destroy?.();
+      await piece.browserCapture?.stop();
+      piece.browserCapture = null;
       if (piece.fillerArtwork?.directory) {
         await fs.promises.rm(piece.fillerArtwork.directory, { recursive: true, force: true }).catch(() => {});
         piece.fillerArtwork = null;
@@ -1162,6 +1166,7 @@ class StreamManager {
               throw error;
             }
             piece.streamUrl = resolved.streamUrl || null;
+            piece.browserPageUrl = resolved.browserPageUrl || null;
             piece.videoUrl = resolved.videoUrl || null;
             piece.audioUrl = resolved.audioUrl || null;
             piece.isDash = !!(piece.videoUrl && piece.audioUrl);
@@ -1221,7 +1226,7 @@ class StreamManager {
           }
           if (piece.recoveryAttempt) {
             await sleep(piece.retryDelayMs, undefined, { signal: piece.control.signal });
-            if (piece.sourceInput) {
+            if (piece.sourceInput && !piece.browserPageUrl) {
               const resolved = await require('./sources').resolveSource(piece.sourceInput,
                 { ...this.config, musicMode: piece.musicMode });
               piece.control.signal.throwIfAborted();
@@ -1233,6 +1238,13 @@ class StreamManager {
               piece.audioUrl = resolved.audioUrl || null;
               piece.isDash = !!(piece.videoUrl && piece.audioUrl);
             }
+          }
+          if (piece.browserPageUrl) {
+            piece.browserCapture = await browserStream.startBrowserStream(
+              piece.browserPageUrl, this.config, piece.control.signal);
+            piece.control.signal.throwIfAborted();
+            piece.streamUrl = piece.browserCapture.url;
+            piece.isLive = true;
           }
           const result = piece.musicMode
             ? this._buildDashMerge(videoModule, piece.streamUrl || piece.videoUrl, piece.audioUrl,
@@ -1949,7 +1961,8 @@ class StreamManager {
   _reopenSession(link, piece, { offsetSec, isLive, totalDurationSec } = {}) {
     const off = Number.isFinite(offsetSec) ? Math.max(0, Math.round(offsetSec)) : (Number.isFinite(piece.startOffsetSec) ? piece.startOffsetSec : 0);
     return this._piece(link, {
-      streamUrl: piece.streamUrl,
+      streamUrl: piece.browserPageUrl || piece.streamUrl,
+      browserPageUrl: piece.browserPageUrl,
       videoUrl: piece.videoUrl,
       audioUrl: piece.audioUrl,
       sourceInput: piece.sourceInput,

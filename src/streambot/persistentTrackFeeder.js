@@ -106,7 +106,13 @@ class TimedTrack extends Writable {
       this.startTime ??= started;
       this.startPts ??= this.pts;
       if (waitedForAudio) {
-        this.startTime = this.startPts = undefined;
+        // The sync wait delayed this frame. Start its pacing interval at the
+        // actual send time; otherwise the next queued frame sends immediately
+        // and live video alternates a visible pause with a two-frame burst.
+        this.startTime = ended;
+        this.startPts = this.pts;
+        if (this.diagnostics) this.diagnostics.resets++;
+        await this.sleep(frameMs);
       } else {
         const mediaElapsed = this.pts - this.startPts + frameMs;
         const wallElapsed = ended - this.startTime;
