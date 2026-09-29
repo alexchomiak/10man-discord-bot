@@ -6,6 +6,48 @@ const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
 
 const { createTelemetry } = require('../src/streambot/telemetry');
+const { createOtlpMetrics } = require('../src/streambot/otlpMetrics');
+
+test('OTLP metrics exporter batches bounded samples for the selected worker', async () => {
+  const requests = [];
+  const exporter = createOtlpMetrics({
+    endpoint: 'https://metrics.example.com/api/default',
+    headers: 'Authorization=Basic%20abc123,stream-name=streambot', workerId: 'one',
+    now: () => 1000,
+    fetchImpl: async (url, options) => { requests.push({ url: String(url), options }); return { ok: true }; }
+  });
+  for (let i = 0; i < 9; i++) exporter.record({ video_frames_per_second: 30, rtcp_loss_percent: null });
+  await exporter.flush();
+  assert.strictEqual(requests.length, 1);
+  assert.strictEqual(requests[0].url, 'https://metrics.example.com/api/default/v1/metrics');
+  assert.strictEqual(requests[0].options.headers.Authorization, 'Basic abc123');
+  const payload = JSON.parse(requests[0].options.body);
+  assert.ok(payload.resourceMetrics[0].resource.attributes.some(attribute =>
+    attribute.key === 'streambot.worker.id' && attribute.value.stringValue === 'one'));
+  const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics;
+  assert.deepStrictEqual(metrics.map(metric => metric.name), ['streambot.video_frames_per_second']);
+  assert.strictEqual(metrics[0].gauge.dataPoints.length, 9);
+  assert.strictEqual(metrics[0].gauge.dataPoints[0].timeUnixNano, '1000000000');
+});
+
+test('OTLP telemetry records health without emitting per-second log lines', () => {
+  const points = [];
+  const lines = [];
+  const tel = createTelemetry({
+    log: (_level, line) => lines.push(line), emitLog: false,
+    onMetrics: values => points.push(values),
+    getOutputBytes: () => ({ window: 120, total: 120 }),
+    getRtcBytes: () => 500,
+    timerFactory: () => ({ unref() {} })
+  });
+  tel.start();
+  tel.tick();
+  tel.stop();
+  assert.strictEqual(lines.length, 0);
+  assert.strictEqual(points.length, 1);
+  assert.strictEqual(points[0].output_bytes_per_second, 120);
+  assert.strictEqual(points[0].rtc_bytes_total, 500);
+});
 const {
   StreamManager,
   isBenignEnd,

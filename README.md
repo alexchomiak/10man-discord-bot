@@ -292,6 +292,8 @@ The primary worker keeps these legacy cross-server commands enabled by default. 
   - an **HTML5 player page** when the options above cannot resolve it. The worker checks that headless Chromium can play and capture its video, queues it as **Live Stream**, then reopens the page when playback begins. This path uses `chromium-headless-shell` and `playwright-core` inside the existing container. It records the player's audio and video as a local WebM feed for FFmpeg; it does not expose a reusable HLS URL. Playback depends on the site's player remaining usable in headless Chromium. Set `STREAMBOT_BROWSER_FALLBACK=false` to disable it or `STREAMBOT_BROWSER_PATH` to use another Chromium executable.
 
 To preview a URL locally with the production resolver and browser capture path, install `ffplay` and run `npm run preview-stream -- '<url>'`. The script does not connect to Discord. Close the ffplay window or press Ctrl+C to stop it.
+
+Per-second stream health is available as optional OpenTelemetry metrics instead of `tel:` log lines. Set `STREAMBOT_OTEL_METRICS=true`, `OTEL_EXPORTER_OTLP_ENDPOINT=https://your-openobserve-host/api/default`, and `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20<base64(email:password)>` in the workers' environment. Each worker exports bounded 10-second batches to `/v1/metrics` with its `streambot.worker.id` attribute. `VERBOSE=true` still enables other debugging, but does not turn the per-second health logs back on.
 - `$stream stop` / `$stop` — stop and leave voice.
 - `$stream status` / `$status` — current stream summary.
 - `$ping` — liveness echo.

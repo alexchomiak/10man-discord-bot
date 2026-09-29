@@ -115,6 +115,11 @@ function loadConfig() {
     // Per-frame/media telemetry and gateway diagnostics are intentionally
     // quiet unless the streambot operator opts in with VERBOSE=true.
     verbose: process.env.VERBOSE?.trim().toLowerCase() === 'true',
+    otelMetrics: parseBoolean(process.env.STREAMBOT_OTEL_METRICS),
+    otelMetricsEndpoint: (process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT ||
+      process.env.OTEL_EXPORTER_OTLP_ENDPOINT || '').trim(),
+    otelHeaders: (process.env.OTEL_EXPORTER_OTLP_METRICS_HEADERS ||
+      process.env.OTEL_EXPORTER_OTLP_HEADERS || '').trim(),
     // Empty keeps the existing open-command behavior. When populated, only
     // these Discord users may invoke the selfbot's prefix commands. This
     // setting is consumed only by src/streambot and never by the app bot.

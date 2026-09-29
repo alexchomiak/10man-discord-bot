@@ -137,21 +137,49 @@ function createTelemetry(opts = {}) {
     const fillPct = pipelineCapacityBytes > 0 ? Math.round(pipelineBytes * 100 / pipelineCapacityBytes) : 0;
     const frameDelta = frames === null || previousFrames === null ? 'n/a' : Math.max(0, frames - previousFrames);
     previousFrames = frames;
+    const metrics = {
+      event_loop_p99_ms: p99, event_loop_max_ms: max,
+      output_bytes_per_second: outBytesWindow, output_bytes_total: outBytesTotal,
+      rtc_bytes_per_second: rtcBytesWindow, rtc_bytes_total: rtcBytesTotal,
+      producer_buffer_bytes: producerBytes, pipeline_buffer_bytes: pipelineBytes,
+      pipeline_capacity_bytes: pipelineCapacityBytes,
+      ffmpeg_alive: alive ? 1 : 0, ffmpeg_exit_code: exitCode,
+      ffmpeg_frames_total: frames, ffmpeg_frames_per_second: frameDelta,
+      ffmpeg_progress_age_ms: progressAt === null ? null : Math.round(Math.max(0, now() - progressAt)),
+      ffmpeg_duplicate_frames_total: duplicatedFrames, ffmpeg_dropped_frames_total: droppedFrames,
+      voice_ws_open: wsState.main === 'ok' ? 1 : 0,
+      stream_ws_open: wsState.data === 'ok' ? 1 : 0
+    };
     let trackFields = '';
     try {
       const tracks = opts.getTrackDiagnostics?.();
       if (tracks?.video && tracks?.audio) {
         const number = value => Number.isFinite(value) ? Math.round(value) : 'n/a';
         for (const [prefix, track] of [['v', tracks.video], ['a', tracks.audio]]) {
+          const metricPrefix = prefix === 'v' ? 'video' : 'audio';
+          metrics[`${metricPrefix}_frames_per_second`] = track.frames;
+          metrics[`${metricPrefix}_bytes_per_second`] = track.bytes;
+          metrics[`${metricPrefix}_max_gap_ms`] = track.maxGapMs;
+          metrics[`${metricPrefix}_age_ms`] = track.ageMs;
+          metrics[`${metricPrefix}_clock_resets_total`] = track.resets;
           trackFields += `${prefix}_frames=${number(track.frames)} ${prefix}_bytes=${number(track.bytes)} ` +
             `${prefix}_gap_ms=${number(track.maxGapMs)} ${prefix}_age_ms=${number(track.ageMs)} ` +
             `${prefix}_clock_resets=${number(track.resets)} `;
         }
         const delta = Number.isFinite(tracks.video.lastPts) && Number.isFinite(tracks.audio.lastPts)
           ? tracks.video.lastPts - tracks.audio.lastPts : null;
+        metrics.av_sent_pts_ms = delta;
+        metrics.video_keyframe_age_ms = tracks.video.keyAgeMs;
         trackFields += `av_sent_pts_ms=${number(delta)} v_key_age_ms=${number(tracks.video.keyAgeMs)} `;
         if (tracks.transport) {
           const t = tracks.transport;
+          metrics.rtp_pacing_kbps = t.pacingKbps;
+          metrics.rtcp_report_age_ms = t.reportAgeMs;
+          metrics.rtcp_loss_percent = t.lossPct;
+          metrics.rtcp_lost_packets_total = t.lostTotal;
+          metrics.rtcp_jitter_ms = t.jitterMs;
+          metrics.rtcp_pli_per_second = t.pli;
+          metrics.rtp_playout_max_ms = t.playoutMaxMs;
           trackFields += `rtp_pacing_kbps=${number(t.pacingKbps)} rtcp_report_age_ms=${number(t.reportAgeMs)} ` +
             `rtcp_loss_pct=${Number.isFinite(t.lossPct) ? t.lossPct.toFixed(2) : 'n/a'} ` +
             `rtcp_lost_total=${number(t.lostTotal)} rtcp_jitter_ms=${number(t.jitterMs)} rtcp_pli_1s=${number(t.pli)} ` +
@@ -159,6 +187,7 @@ function createTelemetry(opts = {}) {
         }
       }
     } catch { /* diagnostics must never interrupt playback */ }
+    try { opts.onMetrics?.(metrics); } catch { /* metrics must never interrupt playback */ }
     const line =
       `tel: ` +
       `el_p99_ms=${p99 === null ? 'n/a' : p99} ` +
@@ -171,7 +200,7 @@ function createTelemetry(opts = {}) {
       `ff_progress_age_ms=${progressAt === null ? 'n/a' : Math.round(Math.max(0, now() - progressAt))} ` +
       `ff_dup_frames=${duplicatedFrames ?? 'n/a'} ff_drop_frames=${droppedFrames ?? 'n/a'} ` +
       trackFields + `ws_main=${wsState.main} ws_data=${wsState.data}`;
-    try { log('info', line); } catch { /* logger gone */ }
+    if (opts.emitLog !== false) try { log('info', line); } catch { /* logger gone */ }
     outBytesWindow = 0;
     rtcBytesWindow = 0;
   }

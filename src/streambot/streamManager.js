@@ -13,6 +13,7 @@ const { PersistentTrackFeeder } = require('./persistentTrackFeeder');
 // observe the patch.
 const demuxGuard = require('./demuxGuard');
 const telemetry = require('./telemetry');
+const { createOtlpMetrics } = require('./otlpMetrics');
 const browserStream = require('./browserStream');
 const { isYoutubeHlsUrl } = require('./sources');
 const { createAlertSink } = require('./alerts');
@@ -81,6 +82,10 @@ class StreamManager {
     this.client = client;
     this.defaultChannelId = defaultChannelId;
     this.config = config || {};
+    this.metricSink = this.config.metricSink || (this.config.otelMetrics
+      ? createOtlpMetrics({ endpoint: this.config.otelMetricsEndpoint,
+        headers: this.config.otelHeaders, workerId: this.config.workerId,
+        log: message => log('error', message) }) : null);
     // Outbound alert sink (see alerts.js): the bot account is restricted and
     // cannot send channel messages, so end-of-stream / error feedback is
     // logged locally and optionally POSTed to TELEMETRY_WEBHOOK_URL.
@@ -128,7 +133,7 @@ class StreamManager {
       videoCodec: this._outputCodec(),
       bitrateKbps: this.config.streamBitrate || 5000,
       vbvBufferKbits: this.config.streamVbvBufferKbps,
-      diagnostics: this.config.verbose === true
+      diagnostics: this.config.verbose === true || !!this.metricSink
     });
   }
 
@@ -1280,7 +1285,7 @@ class StreamManager {
           result.output.on('error', failure);
           piece.control.signal.addEventListener('abort', () => finish(), { once: true });
           result.promise?.then(() => finish(), failure);
-          if (this.config.verbose === true) try {
+          if (this.metricSink) try {
             piece.telemetry = telemetry.createTelemetry({ command: result.command,
               getOutputBytes: () => result.output?.takeByteCounts?.(),
               getRtcBytes: () => p.feeder.rtcBytesSent,
@@ -1291,7 +1296,8 @@ class StreamManager {
                 pipelineCapacityBytes: 0
               }),
               getVoiceConnection: () => link.streamer.voiceConnection?.streamConnection,
-              log: (level, message) => log(level, message) });
+              onMetrics: values => this.metricSink.record(values),
+              emitLog: false });
             piece.telemetry.start();
           } catch {}
           await this._prebuffer(result.output, piece);
