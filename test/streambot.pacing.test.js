@@ -20,7 +20,7 @@ test('OTLP metrics exporter batches bounded samples for the selected worker', as
   await exporter.flush();
   assert.strictEqual(requests.length, 1);
   assert.strictEqual(requests[0].url, 'https://metrics.example.com/api/default/v1/metrics');
-  assert.strictEqual(requests[0].options.headers.Authorization, 'Basic abc123');
+  assert.strictEqual(requests[0].options.headers.authorization, 'Basic abc123');
   const payload = JSON.parse(requests[0].options.body);
   assert.ok(payload.resourceMetrics[0].resource.attributes.some(attribute =>
     attribute.key === 'streambot.worker.id' && attribute.value.stringValue === 'one'));
@@ -28,6 +28,37 @@ test('OTLP metrics exporter batches bounded samples for the selected worker', as
   assert.deepStrictEqual(metrics.map(metric => metric.name), ['streambot.video_frames_per_second']);
   assert.strictEqual(metrics[0].gauge.dataPoints.length, 9);
   assert.strictEqual(metrics[0].gauge.dataPoints[0].timeUnixNano, '1000000000');
+});
+
+test('OTLP exporter accepts OpenObserve Basic header value without printing credentials', async () => {
+  const requests = [];
+  const exporter = createOtlpMetrics({
+    endpoint: 'https://metrics.example.com/api/default',
+    headers: "'Basic dGVzdA=='", workerId: 'one',
+    fetchImpl: async (_url, options) => { requests.push(options); return { ok: true }; }
+  });
+  exporter.record({ video_frames_per_second: 30 });
+  await exporter.flush();
+  assert.strictEqual(requests[0].headers.Authorization, 'Basic dGVzdA==');
+  const headerWithName = createOtlpMetrics({
+    endpoint: 'https://metrics.example.com/api/default',
+    headers: 'Authorization: Basic dGVzdA==,stream-name: default',
+    fetchImpl: async (_url, options) => { requests.push(options); return { ok: true }; }
+  });
+  headerWithName.record({ video_frames_per_second: 30 });
+  await headerWithName.flush();
+  assert.strictEqual(requests[1].headers.authorization, 'Basic dGVzdA==');
+  assert.strictEqual(requests[1].headers['stream-name'], 'default');
+  assert.throws(() => createOtlpMetrics({ endpoint: 'https://metrics.example.com/api/default',
+    headers: 'secret-looking-header=dGVzdA==' }), error =>
+    !error.message.includes('secret-looking-header') && !error.message.includes('dGVzdA=='));
+});
+
+test('invalid OTLP configuration does not prevent a stream worker from starting', () => {
+  assert.doesNotThrow(() => new StreamManager({}, null, {
+    otelMetrics: true, otelMetricsEndpoint: 'https://metrics.example.com/api/default',
+    otelHeaders: 'unsupported=dGVzdA=='
+  }));
 });
 
 test('OTLP telemetry records health without emitting per-second log lines', () => {

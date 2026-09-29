@@ -9,13 +9,31 @@ function createOtlpMetrics({ endpoint, headers = '', workerId, fetchImpl = fetch
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('OTLP metrics endpoint must use HTTP or HTTPS');
   if (!url.pathname.endsWith('/v1/metrics')) url.pathname = `${url.pathname.replace(/\/+$/, '')}/v1/metrics`;
   const requestHeaders = { 'content-type': 'application/json' };
-  for (const pair of String(headers).split(',')) {
-    if (!pair.trim()) continue;
-    const split = pair.indexOf('=');
-    if (split < 1) throw new Error('Invalid OTEL_EXPORTER_OTLP_HEADERS entry');
-    const key = decodeURIComponent(pair.slice(0, split).trim());
-    const value = decodeURIComponent(pair.slice(split + 1).trim());
-    if (!/^(authorization|stream-name)$/i.test(key)) throw new Error(`Unsupported OTLP header: ${key}`);
+  for (const entry of String(headers).split(/[,\r\n]+/)) {
+    const pair = entry.trim();
+    if (!pair) continue;
+    // Also accept the Authorization value copied directly from OpenObserve's
+    // exporter YAML. Its base64 padding can contain '=', so check first.
+    const unquoted = pair.replace(/^['"]|['"]$/g, '');
+    if (/^Basic\s+[A-Za-z0-9+/]+={0,2}$/i.test(unquoted)) {
+      requestHeaders.Authorization = unquoted;
+      continue;
+    }
+    const equals = pair.indexOf('=');
+    const colon = pair.indexOf(':');
+    const split = colon > 0 && (equals < 0 || colon < equals) ? colon : equals;
+    if (split < 1) throw new Error('Invalid OTLP headers configuration (value redacted)');
+    let key;
+    let value;
+    try {
+      key = decodeURIComponent(pair.slice(0, split).trim()).toLowerCase();
+      value = decodeURIComponent(pair.slice(split + 1).trim()).replace(/^['"]|['"]$/g, '');
+    } catch {
+      throw new Error('Invalid OTLP headers encoding (value redacted)');
+    }
+    if (key !== 'authorization' && key !== 'stream-name') {
+      throw new Error('Unsupported OTLP header (name and value redacted)');
+    }
     requestHeaders[key] = value;
   }
   let samples = [];

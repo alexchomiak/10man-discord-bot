@@ -82,10 +82,17 @@ class StreamManager {
     this.client = client;
     this.defaultChannelId = defaultChannelId;
     this.config = config || {};
-    this.metricSink = this.config.metricSink || (this.config.otelMetrics
-      ? createOtlpMetrics({ endpoint: this.config.otelMetricsEndpoint,
-        headers: this.config.otelHeaders, workerId: this.config.workerId,
-        log: message => log('error', message) }) : null);
+    this.metricSink = this.config.metricSink || null;
+    if (!this.metricSink && this.config.otelMetrics) {
+      try {
+        this.metricSink = createOtlpMetrics({ endpoint: this.config.otelMetricsEndpoint,
+          headers: this.config.otelHeaders, workerId: this.config.workerId,
+          log: message => log('error', message) });
+      } catch {
+        // Observability configuration must never prevent a worker logging in.
+        log('error', 'OTLP metrics disabled: invalid endpoint or headers (details redacted)');
+      }
+    }
     // Outbound alert sink (see alerts.js): the bot account is restricted and
     // cannot send channel messages, so end-of-stream / error feedback is
     // logged locally and optionally POSTed to TELEMETRY_WEBHOOK_URL.
