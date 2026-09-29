@@ -31,10 +31,17 @@ function createTelemetry(opts = {}) {
   let progressAt = null;
   let frames = null;
   let previousFrames = null;
+  let duplicatedFrames = null;
+  let droppedFrames = null;
   let progressAttached = false;
   function onProgress(progress) {
     progressAt = now();
     if (Number.isFinite(progress?.frames)) frames = progress.frames;
+  }
+  function onStderr(line) {
+    if (typeof line !== 'string' || !/^\s*frame=\s*\d+/.test(line)) return;
+    duplicatedFrames = Number(/\bdup=\s*(\d+)/.exec(line)?.[1] || 0);
+    droppedFrames = Number(/\bdrop=\s*(\d+)/.exec(line)?.[1] || 0);
   }
   const defaultTimerFactory = (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return t; };
   // If a custom timerFactory is supplied (tests), the default is still used as
@@ -143,6 +150,13 @@ function createTelemetry(opts = {}) {
         const delta = Number.isFinite(tracks.video.lastPts) && Number.isFinite(tracks.audio.lastPts)
           ? tracks.video.lastPts - tracks.audio.lastPts : null;
         trackFields += `av_sent_pts_ms=${number(delta)} v_key_age_ms=${number(tracks.video.keyAgeMs)} `;
+        if (tracks.transport) {
+          const t = tracks.transport;
+          trackFields += `rtp_pacing_kbps=${number(t.pacingKbps)} rtcp_report_age_ms=${number(t.reportAgeMs)} ` +
+            `rtcp_loss_pct=${Number.isFinite(t.lossPct) ? t.lossPct.toFixed(2) : 'n/a'} ` +
+            `rtcp_lost_total=${number(t.lostTotal)} rtcp_jitter_ms=${number(t.jitterMs)} rtcp_pli_1s=${number(t.pli)} ` +
+            `rtp_playout_max_ms=${number(t.playoutMaxMs)} `;
+        }
       }
     } catch { /* diagnostics must never interrupt playback */ }
     const line =
@@ -155,6 +169,7 @@ function createTelemetry(opts = {}) {
       `ff_alive=${alive} ff_exit=${exitCode === null ? 'not-exited' : exitCode} ` +
       `ff_frames=${frames ?? 'n/a'} ff_frames_1s=${frameDelta} ` +
       `ff_progress_age_ms=${progressAt === null ? 'n/a' : Math.round(Math.max(0, now() - progressAt))} ` +
+      `ff_dup_frames=${duplicatedFrames ?? 'n/a'} ff_drop_frames=${droppedFrames ?? 'n/a'} ` +
       trackFields + `ws_main=${wsState.main} ws_data=${wsState.data}`;
     try { log('info', line); } catch { /* logger gone */ }
     outBytesWindow = 0;
@@ -166,6 +181,7 @@ function createTelemetry(opts = {}) {
     stopped = false;
     if (!progressAttached && typeof command?.on === 'function') {
       command.on('progress', onProgress);
+      command.on('stderr', onStderr);
       progressAttached = true;
     }
     try { monitor = createMonitor(); } catch { monitor = null; }
@@ -178,6 +194,7 @@ function createTelemetry(opts = {}) {
     stopped = true;
     if (progressAttached) {
       command.removeListener('progress', onProgress);
+      command.removeListener('stderr', onStderr);
       progressAttached = false;
     }
     if (interval) {

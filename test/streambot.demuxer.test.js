@@ -167,6 +167,51 @@ test('streamManager: teardown() still succeeds when the demuxer close throws', a
 const { PersistentNut } = require('../src/streambot/persistentNut');
 const { PassThrough } = require('node:stream');
 const { PersistentTrackFeeder, TimedTrack } = require('../src/streambot/persistentTrackFeeder');
+const { configureVideoTransport, createReceiverReports } = require('../src/streambot/videoTransport');
+
+test('video transport replaces only the video chain and preserves RTP state for each codec', () => {
+  const rtc = require('@lng2004/node-datachannel');
+  for (const codec of ['H264', 'H265', 'AV1']) {
+    const config = new rtc.RtpPacketizationConfig(42, 'test', 101, 90000);
+    config.timestamp = 9000;
+    config.playoutDelayId = 5;
+    config.playoutDelayMax = 10;
+    let installed;
+    const audio = {};
+    const connection = { _videoPacketizer: { rtpConfig: config }, _audioPacketizer: audio,
+      _videoTrack: { setMediaHandler(handler) { installed = handler; } } };
+    const transport = configureVideoTransport(connection, { codec, bitrateKbps: 4000 });
+    assert.equal(transport.pacingBps, 16000000);
+    assert.equal(connection._videoPacketizer, installed);
+    assert.equal(installed.rtpConfig.timestamp, 9000);
+    assert.equal(installed.rtpConfig.playoutDelayMin, 0);
+    assert.equal(installed.rtpConfig.playoutDelayMax, 30);
+    assert.equal(connection._audioPacketizer, audio);
+  }
+});
+
+test('receiver diagnostics read matching RTCP reports without retaining or mutating buffers', () => {
+  let now = 100;
+  const reports = createReceiverReports(42, () => now);
+  assert.equal(reports.snapshot().lossPct, null, 'no feedback is unknown, not zero loss');
+  const rr = Buffer.alloc(32);
+  rr[0] = 0x81; rr[1] = 201; rr.writeUInt16BE(7, 2);
+  rr.writeUInt32BE(42, 8); rr[12] = 8;
+  rr.writeIntBE(3, 13, 3); rr.writeUInt32BE(900, 20);
+  const pli = Buffer.alloc(12);
+  pli[0] = 0x81; pli[1] = 206; pli.writeUInt16BE(2, 2); pli.writeUInt32BE(42, 8);
+  const compound = Buffer.concat([rr, pli]);
+  const original = Buffer.from(compound);
+  reports.consume(compound);
+  now = 200;
+  assert.deepEqual(reports.snapshot(), { reportAgeMs: 100, lossPct: 3.125, lostTotal: 3, jitterMs: 10, pli: 1 });
+  assert.equal(reports.snapshot().pli, 0);
+  assert.deepEqual(compound, original);
+  rr.writeUInt32BE(43, 8); rr[12] = 255;
+  reports.consume(rr);
+  for (let size = 0; size < 32; size++) reports.consume(rr.subarray(0, size));
+  assert.equal(reports.snapshot().lossPct, 3.125, 'ignore other SSRCs and truncated packets');
+});
 function fakeAv(writes, options = {}) {
   let opens=0, muxOpens=0, closed=0;
   const streams=[

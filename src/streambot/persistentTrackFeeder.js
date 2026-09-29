@@ -4,6 +4,7 @@ const { Writable } = require('node:stream');
 const { finished } = require('node:stream/promises');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { registerPersistentInput } = require('./demuxGuard');
+const { configureVideoTransport } = require('./videoTransport');
 
 // Same timestamp-driven sender used by discord-video-stream, kept here so a
 // new normalized input can be attached without calling createStream again.
@@ -141,13 +142,16 @@ class TimedTrack extends Writable {
 }
 
 class PersistentTrackFeeder {
-  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30, videoCodec = 'H264', diagnostics = false } = {}) {
+  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30, videoCodec = 'H264', bitrateKbps = 5000, vbvBufferKbits, diagnostics = false } = {}) {
     this.streamer = streamer;
     this.videoModule = videoModule;
     this.width = width;
     this.height = height;
     this.frameRate = frameRate;
     this.videoCodec = videoCodec;
+    this.bitrateKbps = bitrateKbps;
+    this.vbvBufferKbits = vbvBufferKbits;
+    this.videoTransport = null;
     this.diagnostics = diagnostics;
     this.connection = null;
     this.voiceAudioConnection = null;
@@ -180,6 +184,10 @@ class PersistentTrackFeeder {
         throw new Error('Persistent track feeder closed during startup');
       }
       connection.setPacketizer(this.videoCodec);
+      this.videoTransport = configureVideoTransport(connection, {
+        codec: this.videoCodec, bitrateKbps: this.bitrateKbps, vbvBufferKbits: this.vbvBufferKbits,
+        diagnostics: this.diagnostics
+      });
       connection.mediaConnection.setSpeaking(true);
       connection.mediaConnection.setVideoAttributes(true, {
         width: Math.round(this.width), height: Math.round(this.height), fps: Math.round(this.frameRate)
@@ -271,7 +279,8 @@ class PersistentTrackFeeder {
 
   takeDiagnostics() {
     if (!this.active || !this.diagnostics) return null;
-    return { video: this.active.video.takeDiagnostics(), audio: this.active.audio.takeDiagnostics() };
+    return { video: this.active.video.takeDiagnostics(), audio: this.active.audio.takeDiagnostics(),
+      transport: this.videoTransport?.takeDiagnostics() };
   }
 
   interrupt() {

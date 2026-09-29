@@ -126,6 +126,8 @@ class StreamManager {
       streamer, videoModule, width: this.config.streamWidth || 1920,
       height: this.config.streamHeight || 1080, frameRate: this.config.streamFrameRate || 30,
       videoCodec: this._outputCodec(),
+      bitrateKbps: this.config.streamBitrate || 5000,
+      vbvBufferKbits: this.config.streamVbvBufferKbps,
       diagnostics: this.config.verbose === true
     });
   }

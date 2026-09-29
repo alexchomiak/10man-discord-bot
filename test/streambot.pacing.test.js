@@ -1012,10 +1012,13 @@ test('telemetry: real event-loop monitor and encoder progress survive a producer
     assert.match(lines[1], /ff_frames=100 ff_frames_1s=0 ff_progress_age_ms=2000/);
     assert.ok(!lines[1].includes('secret-ignored'));
     command.emit('progress', { frames: 130 });
+    command.emit('stderr', 'frame= 130 fps=30 q=28.0 size=100kB time=00:00:04.33 dup=12 drop=3 speed=1x');
     tel.tick();
     assert.match(lines[2], /ff_frames=130 ff_frames_1s=30 ff_progress_age_ms=0/);
+    assert.match(lines[2], /ff_dup_frames=12 ff_drop_frames=3/);
   } finally { tel.stop(); }
   assert.equal(command.listenerCount('progress'), 0);
+  assert.equal(command.listenerCount('stderr'), 0);
 });
 
 test('telemetry: stop() suppresses further ticks (zero-cost after session ends)', () => {
@@ -1084,11 +1087,13 @@ test('telemetry separates track handoff gaps and signed media timestamp skew', (
   const tel = createTelemetry({ log: (_level, line) => lines.push(line),
     getTrackDiagnostics: () => ({
       video: { frames: 0, bytes: 0, maxGapMs: 2000, ageMs: 2000, resets: 1, lastPts: 1000, keyAgeMs: 4000 },
-      audio: { frames: 50, bytes: 16000, maxGapMs: 21, ageMs: 5, resets: 0, lastPts: 2900 }
+      audio: { frames: 50, bytes: 16000, maxGapMs: 21, ageMs: 5, resets: 0, lastPts: 2900 },
+      transport: { pacingKbps: 11200, reportAgeMs: 100, lossPct: 3.125, lostTotal: 3, jitterMs: 10, pli: 1 }
     }) });
   tel.tick();
   assert.match(lines[0], /v_frames=0 v_bytes=0 v_gap_ms=2000 v_age_ms=2000 v_clock_resets=1/);
   assert.match(lines[0], /a_frames=50 a_bytes=16000 a_gap_ms=21/);
   assert.match(lines[0], /av_sent_pts_ms=-1900 v_key_age_ms=4000/);
+  assert.match(lines[0], /rtp_pacing_kbps=11200 rtcp_report_age_ms=100 rtcp_loss_pct=3.13 rtcp_lost_total=3 rtcp_jitter_ms=10 rtcp_pli_1s=1/);
   tel.stop();
 });
