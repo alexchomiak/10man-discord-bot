@@ -908,6 +908,24 @@ async function resolveYtdlp(raw, cfg) {
     };
   }
 
+  // Some YouTube Live events expose only separate HLS renditions. They are
+  // continuous, progressively read playlists, not files to download. Keep
+  // direct tracks preferred for live, then merge HLS audio/video in FFmpeg.
+  if (isLive) {
+    const hls = selectableFormats.filter(f => isYoutubeHlsUrl(f?.url));
+    const video = hls.filter(f => f.vcodec && f.vcodec !== 'none').sort(compareFormats)[0];
+    const audio = pickBestAudio(hls.filter(f => f.vcodec === 'none' && f.acodec !== 'none').reverse(), preferredLangs);
+    if (video && audio) {
+      verboseLog(config, `YouTube Live: separate HLS ${video.height || '?'}p video + audio`);
+      return {
+        kind: 'ytdlp', streamType: 'dash', videoUrl: video.url, audioUrl: audio.url,
+        title: data.title || null, thumbnail, available: true, startOffsetSec,
+        isLive: true, totalDurationSec: null, chapters: null,
+        note: 'separate live HLS A+V merged in-memory (progressive, zero-disk)'
+      };
+    }
+  }
+
   return { kind: 'ytdlp', available: false, note: M.STREAM_NO_PROGRESSIVE };
 }
 

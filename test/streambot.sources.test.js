@@ -248,7 +248,8 @@ if (argv.includes('--dump-json')) {
     process.exit(1);
   }
   const obj = scenario.startsWith('youtubeHls') ? SCENARIOS.youtubeHls : (SCENARIOS[scenario] || SCENARIOS.hls);
-  if (scenario === 'youtubeHlsLive') obj.is_live = true;
+  if (scenario === 'youtubeHlsLive' || scenario === 'youtubeHlsOnlyLive') obj.is_live = true;
+  if (scenario === 'youtubeHlsOnlyLive') obj.formats = obj.formats.slice(2);
   if (scenario === 'youtubeHlsLow') obj.formats[2].height = 720;
   if (scenario === 'youtubeHlsNoAudio') obj.formats = obj.formats.slice(0, 4);
   if (scenario === 'youtubeHlsForeign') obj.formats.splice(4, 1);
@@ -841,6 +842,17 @@ test('YouTube HLS preference does not alter live or reduce resolution or lose au
     assert.equal(res.videoUrl, 'https://cdn.example/video.mp4', scenario);
     assert.equal(res.audioUrl, 'https://cdn.example/audio.webm', scenario);
   }
+});
+
+test('YouTube Live with only separate HLS renditions remains progressively streamable', async () => {
+  setScenario('youtubeHlsOnlyLive');
+  const res = await resolveYtdlp('https://www.youtube.com/watch?v=LIVE', CfgPlain);
+  assert.strictEqual(res.available, true);
+  assert.strictEqual(res.isLive, true);
+  assert.strictEqual(res.streamType, 'dash');
+  assert.strictEqual(res.videoUrl, 'https://manifest.googlevideo.com/api/manifest/hls_playlist/video/index.m3u8');
+  assert.strictEqual(res.audioUrl, 'https://manifest.googlevideo.com/api/manifest/hls_playlist/audio/index.m3u8');
+  assert.strictEqual(res.totalDurationSec, null);
 });
 
 test('live DASH: preserves live status and selects a 1080p H.264 track instead of 4K', async () => {

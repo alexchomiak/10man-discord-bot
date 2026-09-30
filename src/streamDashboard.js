@@ -121,22 +121,23 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
     });
     req.on('error', reject);
   });
-  async function profile(userId, guildId) {
+  function profile(userId, guildId) {
     const key = `${guildId || ''}:${userId}`;
     const cached = profileCache.get(key);
     if (cached && Date.now() - cached.at < 60000) return cached.value;
-    const user = await client.users.fetch(userId, { force: true })
-      .catch(() => client.users.cache.get(userId) || null);
+    // State polling must never wait on Discord REST. A stalled profile lookup
+    // otherwise makes an otherwise healthy player appear disconnected.
+    const user = client.users.cache.get(userId) || null;
     let nickname = null;
     if (guildId) {
       const guild = client.guilds.cache.get(guildId);
-      const member = guild && await guild.members.fetch(userId, { force: true })
-        .catch(() => guild.members.cache.get(userId) || null);
+      const member = guild?.members.cache.get(userId) || null;
       nickname = member?.nickname || null;
     }
-    const value = { displayName: nickname || user?.globalName || user?.username || userId,
-      globalName: user?.globalName || null,
-      nickname, avatarUrl: user?.displayAvatarURL?.({ extension: 'png', size: 128 }) || null };
+    const value = { displayName: nickname || user?.globalName || user?.username || cached?.value.displayName || userId,
+      globalName: user?.globalName || cached?.value.globalName || null,
+      nickname: nickname || cached?.value.nickname || null,
+      avatarUrl: user?.displayAvatarURL?.({ extension: 'png', size: 128 }) || cached?.value.avatarUrl || null };
     profileCache.set(key, { at: Date.now(), value });
     return value;
   }

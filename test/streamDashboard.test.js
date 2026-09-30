@@ -110,7 +110,14 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal((await request('/api/workers/two/search?q=music')).status, 404);
   assert.deepEqual((await (await request('/api/workers/one/search?q=music')).json()).results.map(item => item.title), ['Found']);
   assert.deepEqual((await (await request('/api/workers/one/search?q=music&page=2')).json()).results.map(item => item.title), ['Found']);
+  const fetchUser = client.users.fetch;
+  const fetchMember = guild.members.fetch;
+  let profileRestCalls = 0;
+  client.users.fetch = guild.members.fetch = async () => { profileRestCalls++; throw new Error('Discord REST unavailable'); };
   const state = await (await request(`/api/state?guildId=${guildId}`)).json();
+  assert.equal(profileRestCalls, 0, 'dashboard polling must not wait for Discord REST profile lookups');
+  client.users.fetch = fetchUser;
+  guild.members.fetch = fetchMember;
   assert.equal(state.workers.length,2);
   assert.equal(state.workers[1].online,false);
   assert.equal(state.workers[0].profile.displayName,'Streamer');
