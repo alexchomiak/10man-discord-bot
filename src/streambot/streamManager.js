@@ -87,6 +87,7 @@ class StreamManager {
       try {
         this.metricSink = createOtlpMetrics({ endpoint: this.config.otelMetricsEndpoint,
           headers: this.config.otelHeaders, workerId: this.config.workerId,
+          sampleIntervalMs: this.config.otelSampleMs,
           log: message => log('error', message) });
       } catch {
         // Observability configuration must never prevent a worker logging in.
@@ -1294,6 +1295,7 @@ class StreamManager {
           result.promise?.then(() => finish(), failure);
           if (this.metricSink) try {
             piece.telemetry = telemetry.createTelemetry({ command: result.command,
+              sampleIntervalMs: this.config.otelSampleMs,
               getOutputBytes: () => result.output?.takeByteCounts?.(),
               getRtcBytes: () => p.feeder.rtcBytesSent,
               getTrackDiagnostics: () => p.feeder.takeDiagnostics?.(),

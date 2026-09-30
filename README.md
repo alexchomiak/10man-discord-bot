@@ -294,6 +294,8 @@ The primary worker keeps these legacy cross-server commands enabled by default. 
 To preview a URL locally with the production resolver and browser capture path, install `ffplay` and run `npm run preview-stream -- '<url>'`. The script does not connect to Discord. Close the ffplay window or press Ctrl+C to stop it.
 
 Per-second stream health is available as optional OpenTelemetry metrics instead of `tel:` log lines. Set `STREAMBOT_OTEL_METRICS=true`, `OTEL_EXPORTER_OTLP_ENDPOINT=https://your-openobserve-host/api/default`, and `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20<base64(email:password)>` in the workers' environment. Each worker exports bounded 10-second batches to `/v1/metrics` with its `streambot.worker.id` attribute. `VERBOSE=true` still enables other debugging, but does not turn the per-second health logs back on.
+
+For a temporary stutter investigation, set `STREAMBOT_OTEL_SAMPLE_MS_ONE=250` to sample worker `one` four times per second. Replace `ONE` with the worker ID in uppercase, with hyphens changed to underscores. The global `STREAMBOT_OTEL_SAMPLE_MS` applies to all workers; allowed values are `250`, `500`, and `1000` (default). Fast sampling adds per-track native-send duration, pacing lateness, timestamp-step error, sync wait, rejected-frame and reset rates, plus process RSS. Frame and byte rates remain per-second values. Sampling does not alter media pacing or encoding. Remove the override after diagnosis to return to 1 Hz and reduce metric volume.
 - `$stream stop` / `$stop` — stop and leave voice.
 - `$stream status` / `$status` — current stream summary.
 - `$ping` — liveness echo.

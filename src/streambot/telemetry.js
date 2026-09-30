@@ -1,7 +1,7 @@
 'use strict';
 
-// 1 Hz per-session telemetry (see the "minimal 1 Hz telemetry" change).
-// One INFO line per second, self-contained, zero-cost when stopped, unref'd so
+// Per-session telemetry: 1 Hz by default, optionally 2 or 4 Hz for diagnosis.
+// Self-contained, zero-cost when stopped, unref'd so
 // it never holds the process open. Captured fields only (no URLs/tokens/
 // payloads):
 //   el_p99_ms / el_max_ms   event-loop delay from monitorEventLoopDelay
@@ -15,6 +15,7 @@
 const { monitorEventLoopDelay } = require('perf_hooks');
 
 function createTelemetry(opts = {}) {
+  const sampleIntervalMs = [250, 500, 1000].includes(opts.sampleIntervalMs) ? opts.sampleIntervalMs : 1000;
   const log = opts.log || ((...parts) => console.log('[streambot]', ...parts));
   const command = opts.command || null;
   const getVoiceConnection = typeof opts.getVoiceConnection === 'function' ? opts.getVoiceConnection : () => null;
@@ -63,6 +64,7 @@ function createTelemetry(opts = {}) {
   let rtcBytesWindow = 0;
   let rtcBytesTotal = 0;
   let previousRtcBytes = null;
+  let previousTickAt = null;
   let monitor = null;
   let interval = null;
   let stopped = false;
@@ -99,6 +101,10 @@ function createTelemetry(opts = {}) {
 
   function tick() {
     if (stopped) return;
+    const tickAt = now();
+    const elapsedMs = previousTickAt === null ? sampleIntervalMs : Math.max(1, tickAt - previousTickAt);
+    previousTickAt = tickAt;
+    const perSecond = count => sampleIntervalMs === 1000 ? count : Math.round(count * 1000 / elapsedMs);
     // Lazy re-sweep: voiceConnection / its ws can appear late (post-join).
     sweepVoiceWs();
     let p99 = null; let max = null;
@@ -139,17 +145,18 @@ function createTelemetry(opts = {}) {
     previousFrames = frames;
     const metrics = {
       event_loop_p99_ms: p99, event_loop_max_ms: max,
-      output_bytes_per_second: outBytesWindow, output_bytes_total: outBytesTotal,
-      rtc_bytes_per_second: rtcBytesWindow, rtc_bytes_total: rtcBytesTotal,
+      output_bytes_per_second: perSecond(outBytesWindow), output_bytes_total: outBytesTotal,
+      rtc_bytes_per_second: perSecond(rtcBytesWindow), rtc_bytes_total: rtcBytesTotal,
       producer_buffer_bytes: producerBytes, pipeline_buffer_bytes: pipelineBytes,
       pipeline_capacity_bytes: pipelineCapacityBytes,
       ffmpeg_alive: alive ? 1 : 0, ffmpeg_exit_code: exitCode,
-      ffmpeg_frames_total: frames, ffmpeg_frames_per_second: frameDelta,
+      ffmpeg_frames_total: frames, ffmpeg_frames_per_second: frameDelta === 'n/a' ? null : perSecond(frameDelta),
       ffmpeg_progress_age_ms: progressAt === null ? null : Math.round(Math.max(0, now() - progressAt)),
       ffmpeg_duplicate_frames_total: duplicatedFrames, ffmpeg_dropped_frames_total: droppedFrames,
       voice_ws_open: wsState.main === 'ok' ? 1 : 0,
       stream_ws_open: wsState.data === 'ok' ? 1 : 0
     };
+    if (sampleIntervalMs < 1000) metrics.process_rss_bytes = process.memoryUsage.rss();
     let trackFields = '';
     try {
       const tracks = opts.getTrackDiagnostics?.();
@@ -157,11 +164,20 @@ function createTelemetry(opts = {}) {
         const number = value => Number.isFinite(value) ? Math.round(value) : 'n/a';
         for (const [prefix, track] of [['v', tracks.video], ['a', tracks.audio]]) {
           const metricPrefix = prefix === 'v' ? 'video' : 'audio';
-          metrics[`${metricPrefix}_frames_per_second`] = track.frames;
-          metrics[`${metricPrefix}_bytes_per_second`] = track.bytes;
+          metrics[`${metricPrefix}_frames_per_second`] = perSecond(track.frames);
+          metrics[`${metricPrefix}_bytes_per_second`] = perSecond(track.bytes);
           metrics[`${metricPrefix}_max_gap_ms`] = track.maxGapMs;
           metrics[`${metricPrefix}_age_ms`] = track.ageMs;
           metrics[`${metricPrefix}_clock_resets_total`] = track.resets;
+          if (sampleIntervalMs < 1000) {
+            metrics[`${metricPrefix}_send_call_max_ms`] = track.sendCallMaxMs;
+            metrics[`${metricPrefix}_late_max_ms`] = track.lateMaxMs;
+            metrics[`${metricPrefix}_pts_step_error_max_ms`] = track.ptsStepErrorMaxMs;
+            metrics[`${metricPrefix}_sync_wait_ms`] = track.syncWaitMs;
+            metrics[`${metricPrefix}_rejected_frames_per_second`] = perSecond(track.rejectedFrames || 0);
+            metrics[`${metricPrefix}_timestamp_resets_per_second`] = perSecond(track.timestampResets || 0);
+            metrics[`${metricPrefix}_late_resets_per_second`] = perSecond(track.lateResets || 0);
+          }
           trackFields += `${prefix}_frames=${number(track.frames)} ${prefix}_bytes=${number(track.bytes)} ` +
             `${prefix}_gap_ms=${number(track.maxGapMs)} ${prefix}_age_ms=${number(track.ageMs)} ` +
             `${prefix}_clock_resets=${number(track.resets)} `;
@@ -178,7 +194,7 @@ function createTelemetry(opts = {}) {
           metrics.rtcp_loss_percent = t.lossPct;
           metrics.rtcp_lost_packets_total = t.lostTotal;
           metrics.rtcp_jitter_ms = t.jitterMs;
-          metrics.rtcp_pli_per_second = t.pli;
+          metrics.rtcp_pli_per_second = perSecond(t.pli);
           metrics.rtp_playout_max_ms = t.playoutMaxMs;
           trackFields += `rtp_pacing_kbps=${number(t.pacingKbps)} rtcp_report_age_ms=${number(t.reportAgeMs)} ` +
             `rtcp_loss_pct=${Number.isFinite(t.lossPct) ? t.lossPct.toFixed(2) : 'n/a'} ` +
@@ -208,6 +224,7 @@ function createTelemetry(opts = {}) {
   function start() {
     if (interval) return; // idempotent
     stopped = false;
+    previousTickAt = null;
     if (!progressAttached && typeof command?.on === 'function') {
       command.on('progress', onProgress);
       command.on('stderr', onStderr);
@@ -215,7 +232,7 @@ function createTelemetry(opts = {}) {
     }
     try { monitor = createMonitor(); } catch { monitor = null; }
     sweepVoiceWs();
-    interval = timerFactory(tick, 1000);
+    interval = timerFactory(tick, sampleIntervalMs);
   }
 
   function stop() {

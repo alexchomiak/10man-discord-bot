@@ -30,6 +30,48 @@ test('OTLP metrics exporter batches bounded samples for the selected worker', as
   assert.strictEqual(metrics[0].gauge.dataPoints[0].timeUnixNano, '1000000000');
 });
 
+test('fast OTLP sampling still batches only ten seconds of points', async () => {
+  const requests = [];
+  const exporter = createOtlpMetrics({ endpoint: 'https://metrics.example.com/api/default',
+    sampleIntervalMs: 250, fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body)); return { ok: true };
+    } });
+  for (let i = 0; i < 40; i++) exporter.record({ video_frames_per_second: 30 });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].resourceMetrics[0].scopeMetrics[0].metrics[0].gauge.dataPoints.length, 40);
+});
+
+test('250 ms telemetry exports per-second rates and short-window track diagnostics', () => {
+  let clock = 0;
+  let timerInterval = null;
+  let rtcBytes = 0;
+  const points = [];
+  const track = { frames: 8, bytes: 800, maxGapMs: 90, ageMs: 5, resets: 1,
+    sendCallMaxMs: 4, lateMaxMs: 12, ptsStepErrorMaxMs: 18, syncWaitMs: 0,
+    rejectedFrames: 1, timestampResets: 1, lateResets: 0, lastPts: 250, keyAgeMs: 100 };
+  const tel = createTelemetry({ sampleIntervalMs: 250, now: () => clock,
+    emitLog: false, onMetrics: values => points.push(values),
+    getOutputBytes: () => ({ window: 100, total: 100 }),
+    getRtcBytes: () => (rtcBytes += 100),
+    getTrackDiagnostics: () => ({ video: track, audio: { ...track, lastPts: 250 } }),
+    timerFactory: (_fn, ms) => { timerInterval = ms; return { unref() {} }; }
+  });
+  tel.start();
+  tel.tick();
+  clock = 250;
+  tel.tick();
+  tel.stop();
+  assert.equal(timerInterval, 250);
+  assert.equal(points[1].video_frames_per_second, 32);
+  assert.equal(points[1].output_bytes_per_second, 400);
+  assert.equal(points[1].rtc_bytes_per_second, 400);
+  assert.equal(points[1].video_send_call_max_ms, 4);
+  assert.equal(points[1].video_pts_step_error_max_ms, 18);
+  assert.equal(points[1].video_rejected_frames_per_second, 4);
+  assert.equal(points[1].video_timestamp_resets_per_second, 4);
+  assert.ok(points[1].process_rss_bytes > 0);
+});
+
 test('OTLP exporter accepts OpenObserve Basic header value without printing credentials', async () => {
   const requests = [];
   const exporter = createOtlpMetrics({

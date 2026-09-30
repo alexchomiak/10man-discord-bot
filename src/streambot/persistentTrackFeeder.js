@@ -28,6 +28,8 @@ class TimedTrack extends Writable {
     // Fixed-size counters only: never retain encoded packets or frame history.
     this.diagnostics = options.diagnostics ? {
       frames: 0, bytes: 0, maxGapMs: 0, resets: 0,
+      sendCallMaxMs: 0, lateMaxMs: 0, ptsStepErrorMaxMs: 0,
+      syncWaitMs: 0, rejectedFrames: 0, timestampResets: 0, lateResets: 0,
       lastAt: null, lastPts: null, keyAt: null
     } : null;
   }
@@ -41,6 +43,8 @@ class TimedTrack extends Writable {
       maxGapMs: Math.max(d.maxGapMs, ageMs || 0),
       keyAgeMs: d.keyAt === null ? null : Math.max(0, now - d.keyAt) };
     d.frames = d.bytes = d.maxGapMs = d.resets = 0;
+    d.sendCallMaxMs = d.lateMaxMs = d.ptsStepErrorMaxMs = d.syncWaitMs = 0;
+    d.rejectedFrames = d.timestampResets = d.lateResets = 0;
     return snapshot;
   }
 
@@ -59,6 +63,10 @@ class TimedTrack extends Writable {
       const started = this.now();
       const packetPts = Number(pts) * timeBase.num * 1000 / timeBase.den;
       const ptsStep = Number.isFinite(this.previousPts) ? packetPts - this.previousPts : frameMs;
+      if (this.diagnostics && Number.isFinite(ptsStep)) {
+        this.diagnostics.ptsStepErrorMaxMs = Math.max(this.diagnostics.ptsStepErrorMaxMs,
+          Math.abs(ptsStep - frameMs));
+      }
       // Live MPEG-TS feeds can jump their timestamps forward/backward after a
       // discontinuity. Treating that jump as wall time makes the sender sleep
       // for seconds, freezing video before it resumes at the new timestamp.
@@ -68,7 +76,7 @@ class TimedTrack extends Writable {
           (ptsStep < 0 || Math.abs(ptsStep - frameMs) > this.maxPtsJumpMs)) {
         this.startTime = started;
         this.startPts = packetPts;
-        if (this.diagnostics) this.diagnostics.resets++;
+        if (this.diagnostics) { this.diagnostics.resets++; this.diagnostics.timestampResets++; }
       }
       this.pts = packetPts;
       this.previousPts = packetPts;
@@ -93,8 +101,14 @@ class TimedTrack extends Writable {
         }
         waitedForAudio = true;
       }
+      if (waitedForAudio && this.diagnostics) this.diagnostics.syncWaitMs += this.now() - started;
+      const sendStarted = this.diagnostics ? this.now() : null;
       const accepted = this.send(Buffer.from(data), frameMs);
       const ended = this.now();
+      if (this.diagnostics) {
+        this.diagnostics.sendCallMaxMs = Math.max(this.diagnostics.sendCallMaxMs, ended - sendStarted);
+        if (accepted === false) this.diagnostics.rejectedFrames++;
+      }
       if (this.diagnostics && accepted !== false) {
         const d = this.diagnostics;
         if (d.lastAt !== null) d.maxGapMs = Math.max(d.maxGapMs, ended - d.lastAt);
@@ -118,8 +132,9 @@ class TimedTrack extends Writable {
         const mediaElapsed = this.pts - this.startPts + frameMs;
         const wallElapsed = ended - this.startTime;
         const lateBy = wallElapsed - mediaElapsed;
+        if (this.diagnostics) this.diagnostics.lateMaxMs = Math.max(this.diagnostics.lateMaxMs, lateBy);
         if (lateBy > this.maxCatchupMs) {
-          if (this.diagnostics) this.diagnostics.resets++;
+          if (this.diagnostics) { this.diagnostics.resets++; this.diagnostics.lateResets++; }
           // Both remote input stalls and a congested tunnel can leave this
           // sender far behind its original wall clock. Sending every delayed
           // frame with zero sleep creates an RTP burst and makes the freeze

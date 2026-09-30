@@ -116,6 +116,9 @@ function loadConfig() {
     // quiet unless the streambot operator opts in with VERBOSE=true.
     verbose: process.env.VERBOSE?.trim().toLowerCase() === 'true',
     otelMetrics: parseBoolean(process.env.STREAMBOT_OTEL_METRICS),
+    otelSampleMs: [250, 500, 1000].includes(Number(process.env[`STREAMBOT_OTEL_SAMPLE_MS_${workerSuffix}`] ??
+      process.env.STREAMBOT_OTEL_SAMPLE_MS))
+      ? Number(process.env[`STREAMBOT_OTEL_SAMPLE_MS_${workerSuffix}`] ?? process.env.STREAMBOT_OTEL_SAMPLE_MS) : 1000,
     otelMetricsEndpoint: (process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT ||
       process.env.OTEL_EXPORTER_OTLP_ENDPOINT || '').trim(),
     otelHeaders: (process.env.OTEL_EXPORTER_OTLP_METRICS_HEADERS ||

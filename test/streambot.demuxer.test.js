@@ -556,6 +556,9 @@ test('track diagnostics expose video stalls without changing scheduling or retai
       assert.equal(stats.frames, 3);
       assert.equal(stats.bytes, 6);
       assert.equal(stats.resets, 1);
+      assert.equal(stats.lateResets, 1);
+      assert.equal(stats.timestampResets, 0);
+      assert.ok(stats.lateMaxMs > 250);
       assert.ok(stats.maxGapMs > 1000);
       assert.ok(stats.keyAgeMs > 1000);
       now += 500;
@@ -563,6 +566,8 @@ test('track diagnostics expose video stalls without changing scheduling or retai
       assert.equal(next.frames, 0);
       assert.equal(next.bytes, 0);
       assert.equal(next.resets, 0);
+      assert.equal(next.lateResets, 0);
+      assert.equal(next.sendCallMaxMs, 0);
       assert.ok(next.ageMs >= 500, 'ongoing stalls remain visible even without new frames');
       assert.ok(Object.values(track.diagnostics).every(v => v === null || typeof v === 'number'));
     } else assert.equal(stats, null);
@@ -579,6 +584,7 @@ test('track diagnostics do not count frames rejected by an unready connection', 
   }, e => e ? reject(e) : resolve()));
   const stats = track.takeDiagnostics();
   assert.equal(stats.frames, 0);
+  assert.equal(stats.rejectedFrames, 1);
   assert.equal(stats.keyAgeMs, null);
   track.destroy();
 });

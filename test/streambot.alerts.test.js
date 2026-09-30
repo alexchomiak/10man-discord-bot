@@ -262,6 +262,30 @@ test('config: VERBOSE is enabled only by true (case-insensitive)', () => {
   }
 });
 
+test('config: fast OTLP sampling is opt-in and can target one worker', () => {
+  const keys = ['SELF_BOT_TOKEN', 'STREAMBOT_ID', 'STREAMBOT_OTEL_SAMPLE_MS', 'STREAMBOT_OTEL_SAMPLE_MS_ONE'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  try {
+    process.env.SELF_BOT_TOKEN = 'test';
+    process.env.STREAMBOT_ID = 'one';
+    delete process.env.STREAMBOT_OTEL_SAMPLE_MS;
+    delete process.env.STREAMBOT_OTEL_SAMPLE_MS_ONE;
+    assert.equal(loadConfig().otelSampleMs, 1000);
+    process.env.STREAMBOT_OTEL_SAMPLE_MS = '500';
+    assert.equal(loadConfig().otelSampleMs, 500);
+    process.env.STREAMBOT_OTEL_SAMPLE_MS_ONE = '250';
+    assert.equal(loadConfig().otelSampleMs, 250);
+    process.env.STREAMBOT_ID = 'two';
+    assert.equal(loadConfig().otelSampleMs, 500);
+    process.env.STREAMBOT_OTEL_SAMPLE_MS = '25';
+    assert.equal(loadConfig().otelSampleMs, 1000);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+    }
+  }
+});
+
 test('config: primary keeps chat commands by default while secondary workers default broker-only', () => {
   const previous = {
     token: process.env.SELF_BOT_TOKEN,
