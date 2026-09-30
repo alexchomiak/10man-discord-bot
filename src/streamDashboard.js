@@ -84,7 +84,6 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
       DISCORD_ID.test(String(status.guildId || '')) && DISCORD_ID.test(String(status.channelId || ''))
       ? worker : null;
   };
-  const profileCache = new Map();
   const invalidCodes = new Map();
   const authFailures = new Map();
   const publicSearches = new Map();
@@ -121,12 +120,9 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
     });
     req.on('error', reject);
   });
-  function profile(userId, guildId) {
-    const key = `${guildId || ''}:${userId}`;
-    const cached = profileCache.get(key);
-    if (cached && Date.now() - cached.at < 60000) return cached.value;
-    // State polling must never wait on Discord REST. A stalled profile lookup
-    // otherwise makes an otherwise healthy player appear disconnected.
+  function profile(userId, guildId, reported = null) {
+    // The worker reports its own identity at login. Local Discord caches can
+    // provide a server nickname, but state polling never waits on REST.
     const user = client.users.cache.get(userId) || null;
     let nickname = null;
     if (guildId) {
@@ -134,12 +130,10 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
       const member = guild?.members.cache.get(userId) || null;
       nickname = member?.nickname || null;
     }
-    const value = { displayName: nickname || user?.globalName || user?.username || cached?.value.displayName || userId,
-      globalName: user?.globalName || cached?.value.globalName || null,
-      nickname: nickname || cached?.value.nickname || null,
-      avatarUrl: user?.displayAvatarURL?.({ extension: 'png', size: 128 }) || cached?.value.avatarUrl || null };
-    profileCache.set(key, { at: Date.now(), value });
-    return value;
+    return { displayName: nickname || reported?.displayName || user?.globalName || user?.username || userId,
+      globalName: reported?.globalName || user?.globalName || null,
+      nickname,
+      avatarUrl: reported?.avatarUrl || user?.displayAvatarURL?.({ extension: 'png', size: 128 }) || null };
   }
   async function setName(workerId, name, guildId) {
     const worker = broker.getWorker(workerId);
@@ -148,7 +142,6 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
     try {
       const result = await broker.request('set-global-name', { name }, workerId);
       if (result.ok) {
-        profileCache.clear();
         return { ok: true, message: result.message, scope: 'global' };
       }
       globalError = result.message;
@@ -158,7 +151,6 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
     const member = await guild.members.fetch(worker.userId);
     if (member.manageable === false) throw new Error(`Global name failed (${globalError || 'unknown'}). CS bot cannot manage this member's nickname.`);
     await member.setNickname(name, 'Stream dashboard name change');
-    profileCache.clear();
     return { ok: true, message: `Nickname changed to ${name} in ${guild.name}.`, scope: 'guild' };
   }
   async function handle(req, res) {
@@ -170,7 +162,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
         scopedWorker = publicWorkerFor(scopedMatch[1]);
         if (!scopedWorker) return invalidCodeResponse(req, res);
         if (req.method === 'GET' && scopedMatch[2] === 'state') {
-          const workerProfile = scopedWorker.userId ? await profile(scopedWorker.userId, scopedWorker.status?.guildId) : null;
+          const workerProfile = scopedWorker.userId ? profile(scopedWorker.userId, scopedWorker.status?.guildId, scopedWorker.profile) : null;
           const current = publicWorkerFor(scopedMatch[1]);
           if (!current || current.connectedAt !== scopedWorker.connectedAt) return json(res, 404, { error: 'Player unavailable.' });
           return json(res, 200, { worker: { id: scopedWorker.id, online: true,
@@ -227,7 +219,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           connectedAt: online.get(id)?.connectedAt || null,
           status: publicStatus(online.get(id)?.status),
           musicMode: online.get(id)?.musicMode === true,
-          profile: online.get(id)?.userId ? await profile(online.get(id).userId, guildId) : null
+          profile: online.get(id)?.userId ? profile(online.get(id).userId, guildId, online.get(id).profile) : null
         })));
         const guilds = [...client.guilds.cache.values()].map(guild => ({ id: guild.id, name: guild.name }))
           .sort((a, b) => a.name.localeCompare(b.name));

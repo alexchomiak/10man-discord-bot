@@ -22,7 +22,8 @@ test('broker: default and explicit worker routing, command correlation and statu
   const server = broker.start();
   await once(server, 'listening');
   const calls = [];
-  const manager = { client: { user: { id: '111111111111111111' } }, config: { dashboardAccessCode: 'abcdef' },
+  const manager = { client: { user: { id: '111111111111111111', globalName: 'Music Bot', username: 'musicbot',
+    displayAvatarURL: () => 'https://cdn.discordapp.com/avatars/111111111111111111/avatar.png' } }, config: { dashboardAccessCode: 'abcdef' },
     status: () => ({ title: 'Video', paused: false, queued: 1 }) };
   const control = { execute: async (operation, payload) => {
     calls.push({ operation, payload });
@@ -57,6 +58,8 @@ test('broker: default and explicit worker routing, command correlation and statu
   assert.strictEqual(broker.resolveWorkerId(null), 'primary');
   assert.deepStrictEqual(broker.listWorkers().map(item => item.id).sort(), ['primary', 'youtube']);
   assert.strictEqual(broker.getWorker('primary').userId, '111111111111111111');
+  assert.deepStrictEqual(broker.getWorker('primary').profile, { displayName: 'Music Bot', globalName: 'Music Bot',
+    username: 'musicbot', avatarUrl: 'https://cdn.discordapp.com/avatars/111111111111111111/avatar.png' });
   assert.strictEqual(broker.getWorkerByAccessCode('abcdef').id, 'primary');
   assert.strictEqual(broker.getWorkerByAccessCode('ghijkl').id, 'youtube');
   assert.strictEqual(broker.getWorkerByAccessCode('wrong'), null);

@@ -4,6 +4,16 @@ const { WebSocket } = require('ws');
 
 const CAPABILITIES = ['play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name'];
 
+function ownProfile(user) {
+  if (!user) return null;
+  return {
+    displayName: user.globalName || user.username || null,
+    globalName: user.globalName || null,
+    username: user.username || null,
+    avatarUrl: user.displayAvatarURL?.({ extension: 'png', size: 128 }) || null
+  };
+}
+
 class StreamBrokerClient {
   constructor({ url, secret, workerId, control, streamManager, log = console.log } = {}) {
     this.url = url;
@@ -39,10 +49,12 @@ class StreamBrokerClient {
         workerId: this.workerId,
         accessCode: this.streamManager?.config?.dashboardAccessCode,
         userId: this.streamManager?.client?.user?.id || null,
+        profile: ownProfile(this.streamManager?.client?.user),
         capabilities: CAPABILITIES,
         status: this.streamManager.status(), musicMode: this.streamManager.musicMode === true
       });
       this.statusTimer = setInterval(() => this._send({ type: 'status', status: this.streamManager.status(),
+        profile: ownProfile(this.streamManager?.client?.user),
         musicMode: this.streamManager.musicMode === true }), 5000);
       this.statusTimer.unref?.();
     });
@@ -104,6 +116,7 @@ class StreamBrokerClient {
       if (this.results.size > 100) this.results.delete(this.results.keys().next().value);
     }
     this._send({ type: 'status', status: this.streamManager.status(),
+      profile: ownProfile(this.streamManager?.client?.user),
       musicMode: this.streamManager.musicMode === true });
   }
 
