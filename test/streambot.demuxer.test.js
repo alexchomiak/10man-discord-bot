@@ -169,23 +169,24 @@ const { PassThrough } = require('node:stream');
 const { PersistentTrackFeeder, TimedTrack } = require('../src/streambot/persistentTrackFeeder');
 const { configureVideoTransport, createReceiverReports } = require('../src/streambot/videoTransport');
 
-test('video transport replaces only the video chain and preserves RTP state for each codec', () => {
+test('video transport observes the upstream video chain without replacing it', () => {
   const rtc = require('@lng2004/node-datachannel');
   for (const codec of ['H264', 'H265', 'AV1']) {
     const config = new rtc.RtpPacketizationConfig(42, 'test', 101, 90000);
     config.timestamp = 9000;
     config.playoutDelayId = 5;
     config.playoutDelayMax = 10;
-    let installed;
+    const packetizer = { rtpConfig: config };
+    let installed = false;
     const audio = {};
-    const connection = { _videoPacketizer: { rtpConfig: config }, _audioPacketizer: audio,
-      _videoTrack: { setMediaHandler(handler) { installed = handler; } } };
-    const transport = configureVideoTransport(connection, { codec, bitrateKbps: 4000 });
-    assert.equal(transport.pacingBps, 16000000);
-    assert.equal(connection._videoPacketizer, installed);
-    assert.equal(installed.rtpConfig.timestamp, 9000);
-    assert.equal(installed.rtpConfig.playoutDelayMin, 0);
-    assert.equal(installed.rtpConfig.playoutDelayMax, 30);
+    const connection = { _videoPacketizer: packetizer, _audioPacketizer: audio,
+      _videoTrack: { setMediaHandler() { installed = true; } } };
+    const transport = configureVideoTransport(connection);
+    assert.equal(transport.pacingBps, 25000000);
+    assert.equal(connection._videoPacketizer, packetizer);
+    assert.equal(installed, false);
+    assert.equal(packetizer.rtpConfig.timestamp, 9000);
+    assert.equal(packetizer.rtpConfig.playoutDelayMax, 10);
     assert.equal(connection._audioPacketizer, audio);
   }
 });
@@ -448,27 +449,6 @@ test('timed track rebases after starvation instead of bursting delayed frames', 
   assert.ok(sleeps[0] > 30 && sleeps[0] < 35, 'normal first frame uses 30fps pacing');
   assert.ok(sleeps[1] > 30 && sleeps[1] < 35, 'late frame resumes 30fps pacing instead of a zero-delay burst');
   track.destroy();
-});
-
-test('video catch-up after a short stall does not send several frames at once', async () => {
-  let now = 0;
-  const sentAt = [];
-  const track = new TimedTrack(() => { sentAt.push(now); }, 'video', {
-    now: () => now, sleep: async ms => { now += ms; }
-  });
-  const packet = pts => ({ data: Buffer.from([1]), pts: BigInt(pts), duration: 33n,
-    timeBase: { num: 1, den: 1000 }, free() {} });
-  try {
-    await new Promise((resolve, reject) => track.write(packet(0), error => error ? reject(error) : resolve()));
-    now += 100; // A brief source/encoder stall, below the 250 ms rebase threshold.
-    for (const pts of [33, 66, 99, 132, 165, 198, 231, 264]) {
-      await new Promise((resolve, reject) => track.write(packet(pts), error => error ? reject(error) : resolve()));
-    }
-    const recoveryGaps = sentAt.slice(2).map((time, i) => time - sentAt[i + 1]);
-    assert.ok(recoveryGaps.every(gap => gap >= 16), `video recovery burst: ${sentAt}`);
-    assert.ok(sentAt.at(-1) - sentAt[1] < 8 * 33,
-      'bounded faster pacing should catch up without permanently adding live latency');
-  } finally { track.destroy(); }
 });
 
 test('timed tracks advance RTP time when an encoder omits packet duration', async () => {

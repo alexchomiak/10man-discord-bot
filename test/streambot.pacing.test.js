@@ -48,8 +48,7 @@ test('250 ms telemetry exports per-second rates and short-window track diagnosti
   const points = [];
   const track = { frames: 8, bytes: 800, maxGapMs: 90, ageMs: 5, resets: 1,
     sendCallMaxMs: 4, lateMaxMs: 12, ptsStepErrorMaxMs: 18, syncWaitMs: 0,
-    catchupFrames: 2, rejectedFrames: 1, timestampResets: 1, lateResets: 0,
-    lastPts: 250, keyAgeMs: 100 };
+    rejectedFrames: 1, timestampResets: 1, lateResets: 0, lastPts: 250, keyAgeMs: 100 };
   const tel = createTelemetry({ sampleIntervalMs: 250, now: () => clock,
     emitLog: false, onMetrics: values => points.push(values),
     getOutputBytes: () => ({ window: 100, total: 100 }),
@@ -68,7 +67,6 @@ test('250 ms telemetry exports per-second rates and short-window track diagnosti
   assert.equal(points[1].rtc_bytes_per_second, 400);
   assert.equal(points[1].video_send_call_max_ms, 4);
   assert.equal(points[1].video_pts_step_error_max_ms, 18);
-  assert.equal(points[1].video_catchup_frames_per_second, 8);
   assert.equal(points[1].video_rejected_frames_per_second, 4);
   assert.equal(points[1].video_timestamp_resets_per_second, 4);
   assert.ok(points[1].process_rss_bytes > 0);

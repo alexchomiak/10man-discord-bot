@@ -174,7 +174,6 @@ function createTelemetry(opts = {}) {
             metrics[`${metricPrefix}_late_max_ms`] = track.lateMaxMs;
             metrics[`${metricPrefix}_pts_step_error_max_ms`] = track.ptsStepErrorMaxMs;
             metrics[`${metricPrefix}_sync_wait_ms`] = track.syncWaitMs;
-            if (prefix === 'v') metrics.video_catchup_frames_per_second = perSecond(track.catchupFrames || 0);
             metrics[`${metricPrefix}_rejected_frames_per_second`] = perSecond(track.rejectedFrames || 0);
             metrics[`${metricPrefix}_timestamp_resets_per_second`] = perSecond(track.timestampResets || 0);
             metrics[`${metricPrefix}_late_resets_per_second`] = perSecond(track.lateResets || 0);

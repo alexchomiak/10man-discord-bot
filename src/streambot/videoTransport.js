@@ -1,36 +1,16 @@
 'use strict';
 
-// Adapter for the pinned discord-video-stream 6.0.0 WebRtcConnWrapper.
-// Replace its video packetizer before the first frame, retaining the RTP
-// configuration, codec, packet size, NACK responder and sender reports.
-function configureVideoTransport(connection, { codec, bitrateKbps = 5000, vbvBufferKbits, diagnostics = false } = {}) {
+// Observe the pinned discord-video-stream 6.0.0 video transport without
+// replacing its packetizer, pacing handler, or receiver playout settings.
+// Upstream added that transport specifically to address video-only freezes.
+function configureVideoTransport(connection, { diagnostics = false } = {}) {
   const track = connection._videoTrack;
   const config = connection._videoPacketizer?.rtpConfig;
   if (!track || !config) return null;
-  const rtc = require('@lng2004/node-datachannel');
-  const rate = Number.isFinite(bitrateKbps) && bitrateKbps > 0 ? bitrateKbps : 5000;
-  const vbv = Number.isFinite(vbvBufferKbits) && vbvBufferKbits > 0
-    ? vbvBufferKbits : Math.max(500, Math.round(rate * 0.3));
-  // Keep twice the encoder's peak and enough rate to drain a VBV-sized
-  // keyframe in 75ms, inside the existing 100ms receiver playout allowance.
-  // A 4 Mbps / 1200 kbit VBV stream uses 16 Mbps instead of a fixed 25 Mbps.
-  const pacingBps = Math.ceil(Math.max(rate * 1.4 * 2, vbv / 0.075) * 1000);
-  // This RTP extension is in 10ms units. Allow adaptive receiver smoothing
-  // up to 300ms rather than constraining it to the library's 100ms maximum.
-  // Keep the zero minimum, so this is allowance rather than a forced delay.
-  config.playoutDelayMax = 30;
-  const packetizer = codec === 'H264' ? new rtc.H264RtpPacketizer('StartSequence', config)
-    : codec === 'H265' ? new rtc.H265RtpPacketizer('StartSequence', config)
-      : codec === 'AV1' ? new rtc.AV1RtpPacketizer('Obu', config) : null;
-  if (!packetizer) throw new Error(`Unsupported RTP codec: ${codec}`);
-  packetizer.addToChain(new rtc.RtcpSrReporter(config));
-  packetizer.addToChain(new rtc.RtcpNackResponder());
-  packetizer.addToChain(new rtc.PacingHandler(pacingBps, 1));
-  track.setMediaHandler(packetizer);
-  connection._videoPacketizer = packetizer;
-
   const reports = diagnostics ? createReceiverReports(connection.mediaConnection.webRtcParams.videoSsrc) : null;
   if (reports) track.onMessage(reports.consume);
+  // The pinned library installs PacingHandler(25 Mbps, 1 ms) in setPacketizer.
+  const pacingBps = 25_000_000;
   return { pacingBps, takeDiagnostics: () => ({ pacingKbps: pacingBps / 1000,
     playoutMaxMs: config.playoutDelayMax * 10, ...reports?.snapshot() }) };
 }
