@@ -183,7 +183,7 @@ class StreamManager {
       hardwareAcceleratedDecoding: !!cfg.hardwareDecode,
       encoder: this._encoder(videoModule),
       minimizeLatency: false,
-      h26xPreset: 'ultrafast'
+      h26xPreset: cfg.softwarePreset || 'ultrafast'
     };
     // Input options (rendered by the library as `<options> -i <source>`).
     //   * inputFormat: a `-f <fmt>` input demuxer. The $join FILLER uses the
@@ -259,6 +259,7 @@ class StreamManager {
       '-frames:v', '1', '-vf', 'format=nv12,hwupload',
       '-c:v', { H264: 'h264_vaapi', H265: 'hevc_vaapi', AV1: 'av1_vaapi' }[codec],
       ...(codec === 'H264' ? ['-profile:v', 'constrained_baseline'] : []),
+      ...this._vaapiCompressionOptions(),
       '-f', 'null', '-'
     ];
     return new Promise(resolve => {
@@ -325,7 +326,8 @@ class StreamManager {
         const result = await this._probeVaapiDevice(device);
         if (result.ok) {
           this.config.vaapiDevice = device;
-          log('info', `VAAPI ready: ${{ H264: 'h264_vaapi', H265: 'hevc_vaapi', AV1: 'av1_vaapi' }[this._outputCodec()]} on ${device}`);
+          log('info', `VAAPI ready: ${{ H264: 'h264_vaapi', H265: 'hevc_vaapi', AV1: 'av1_vaapi' }[this._outputCodec()]} on ${device}` +
+            (this.config.vaapiCompressionLevel != null ? ` compression_level=${this.config.vaapiCompressionLevel}` : ''));
           return device;
         }
         failures.push(`${device}: ${String(result.detail || 'initialization failed').replace(/\s+/g, ' ').trim()}`);
@@ -337,6 +339,11 @@ class StreamManager {
       throw new Error(`VAAPI ${{ H264: 'H.264', H265: 'H.265', AV1: 'AV1' }[this._outputCodec()]} initialization failed for every render device. ${failures.join(' | ')}`);
     })();
     return this._vaapiReady;
+  }
+
+  _vaapiCompressionOptions() {
+    const level = this.config.vaapiCompressionLevel;
+    return Number.isSafeInteger(level) && level >= 0 ? ['-compression_level:v', String(level)] : [];
   }
 
   _encoder(videoModule, inputOnVaapi = false) {
@@ -365,7 +372,8 @@ class StreamManager {
           '-idr_interval', '0',
           '-bf', '0',
           '-b:v', `${Math.round(bitrate)}k`,
-          '-maxrate:v', `${Math.round(bitrateMax)}k`
+          '-maxrate:v', `${Math.round(bitrateMax)}k`,
+          ...this._vaapiCompressionOptions()
         ]
       });
       if (this._outputCodec() !== 'H264') {
@@ -380,14 +388,15 @@ class StreamManager {
               '-g', String(keyframeFrames),
               '-bf', '0',
               '-b:v', `${Math.round(bitrate)}k`,
-              '-maxrate:v', `${Math.round(bitrateMax)}k`
+              '-maxrate:v', `${Math.round(bitrateMax)}k`,
+              ...this._vaapiCompressionOptions()
             ]
           }
         });
       }
       return (bitrate, bitrateMax) => ({ H264: h264(bitrate, bitrateMax) });
     }
-    return videoModule.Encoders?.software?.({ x264: { preset: 'superfast', tune: 'film' } }) || null;
+    return videoModule.Encoders?.software?.({ x264: { preset: cfg.softwarePreset || 'superfast', tune: 'film' } }) || null;
   }
 
   _buildDashMerge(videoModule, videoUrl, audioUrl, startOffsetSec, singleOptions = null, piece = null) {
@@ -415,7 +424,11 @@ class StreamManager {
     const output = new MeteredPassThrough({ highWaterMark: producerBufferBytes });
     const offset = Number.isFinite(startOffsetSec) && startOffsetSec > 0 ? Math.round(startOffsetSec) : 0;
     const musicMode = piece?.musicMode === true;
-    const useVaapiFrames = !musicMode && cfg.videoEncoder === 'vaapi' && cfg.hardwareDecode === true && piece?.inputFormat !== 'lavfi';
+    // Chromium's MediaRecorder produces VP8 WebM. VAAPI VP8 decode support
+    // varies by device; software-decode this browser input and still use the
+    // selected VAAPI output encoder through its upload filter.
+    const useVaapiFrames = !musicMode && cfg.videoEncoder === 'vaapi' && cfg.hardwareDecode === true &&
+      piece?.inputFormat !== 'lavfi' && !piece?.browserPageUrl;
     const showProgress = !musicMode && this.progressOverlay && !piece?.isLive && !piece?.isFiller &&
       Number.isFinite(piece?.totalDurationSec) && piece.totalDurationSec > 0;
     const artworkFiller = piece?.isFiller && !!piece?.fillerArtwork;
@@ -490,7 +503,11 @@ class StreamManager {
     // combined A/V media: FFmpeg can decode that VOD far ahead of the paced
     // synthetic track and retain every encoded video packet in its muxer,
     // growing native RSS without bound (observed at >17 GiB in 26 seconds).
-    const needsSilentAudio = !audioUrl && piece?.inputFormat === 'lavfi';
+    // HTML5 captureStream() can expose video before the player exposes an
+    // audio track (or the source may genuinely be silent). The persistent
+    // Discord feeder requires both normalized tracks, so provide a paced
+    // silent track for browser captures without audio.
+    const needsSilentAudio = !audioUrl && (piece?.inputFormat === 'lavfi' || piece?.browserCapture?.hasAudio === false);
     const musicAudioUrl = musicMode && !piece?.isFiller ? (audioUrl || videoUrl) : null;
     if (audioUrl || needsSilentAudio || musicMode) {
       command.input(musicAudioUrl || audioUrl || 'anullsrc=channel_layout=stereo:sample_rate=48000');
@@ -605,10 +622,10 @@ class StreamManager {
     } else {
       command
         .videoCodec('libx264')
-        .outputOptions('-preset', 'ultrafast')
+        .outputOptions('-preset', cfg.softwarePreset || 'ultrafast')
         .outputOptions('-pix_fmt', 'yuv420p')
         .outputOptions('-bf', '0');
-      if (cfg.verbose) log('info', 'media pipeline: libx264/ultrafast fallback used (Encoders module unavailable)');
+      if (cfg.verbose) log('info', `media pipeline: libx264/${cfg.softwarePreset || 'ultrafast'} fallback used (Encoders module unavailable)`);
     }
 
     if (cfg.verbose) {
@@ -1272,6 +1289,7 @@ class StreamManager {
             piece.control.signal.throwIfAborted();
             piece.streamUrl = piece.browserCapture.url;
             piece.isLive = true;
+            log('info', `browser capture ready: audio=${piece.browserCapture.hasAudio ? 'captured' : 'silence'}`);
           }
           const result = piece.musicMode
             ? this._buildDashMerge(videoModule, piece.streamUrl || piece.videoUrl, piece.audioUrl,
@@ -1357,7 +1375,16 @@ class StreamManager {
           }
         } catch (error) {
           if (!piece.control.signal.aborted && !p.closed) {
-            if (piece.isLive) { recoverLive = true; liveError = error; }
+            if (piece.isLive) {
+              recoverLive = true;
+              liveError = error;
+              if (piece.browserPageUrl) {
+                const detail = String(error?.message || error)
+                  .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL]')
+                  .replace(/[\r\n\t]+/g, ' ').slice(-400);
+                log('warn', `browser playback failed: ${this._sanitize(detail)}`);
+              }
+            }
             else if (error.code === 'SOURCE_UNAVAILABLE') {
               this._notifyError(`Playlist item skipped: ${piece.title || piece.sourceInput}: ${error.message}`);
             }
@@ -1365,6 +1392,14 @@ class StreamManager {
               recoverVod = true;
               vodRecoveryReason = error.code === 'AV_SYNC_LOST' ? 'audio/video sync lost'
                 : error.code === 'VIDEO_STALL' ? 'video stalled' : 'FFmpeg error';
+              if (vodRecoveryReason === 'FFmpeg error') {
+                const detail = String(error?.message || error)
+                  .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL]')
+                  .replace(/[\r\n\t]+/g, ' ').slice(-400);
+                const exit = piece.command?.ffmpegProc?.exitCode ?? piece.command?.process?.exitCode;
+                log('warn', `VOD FFmpeg failure: exit=${Number.isInteger(exit) ? exit : 'unknown'} ` +
+                  `detail=${this._sanitize(detail)}`);
+              }
             }
             else this._notifyError(`ffmpeg error: ${error.message}`);
           }
@@ -1394,7 +1429,10 @@ class StreamManager {
             this._notifyError('Live stream could not be recovered after 8 attempts');
           }
         }
-        if (recoverVod && !p.closed && !link.paused && p.enqueue.length === 0) {
+        // Music queue additions must not turn a recoverable interruption of
+        // the current track into a silent skip. Keep its bounded retry ahead
+        // of the songs that were just queued.
+        if (recoverVod && !p.closed && !link.paused && (piece.musicMode || p.enqueue.length === 0)) {
           const activeMs = Date.now() - piece.startedAt;
           const attempt = activeMs >= 30000 ? 1 : (piece.recoveryAttempt || 0) + 1;
           const offsetSec = Math.round(this.positionOf(piece));
@@ -2150,6 +2188,27 @@ class StreamManager {
       if (pos < 0) pos = 0;
       const dur = session.totalDurationSec;
       if (Number.isFinite(dur) && dur > 0 && pos > dur) pos = dur;
+      if (Number.isFinite(dur) && dur > 0 && pos >= dur) {
+        // Reopening a finite source at its exact EOF cannot produce media.
+        // Treat an end-of-timeline seek as finishing this item, including a
+        // chaptered mix, and let the existing pump take the next queued item.
+        const p = link.pipeline;
+        for (let i = p.enqueue.length - 1; i >= 0; i--) {
+          if (!p.enqueue[i].isFiller && p.enqueue[i].queueId === session.queueId) p.enqueue.splice(i, 1);
+        }
+        if (link.paused) {
+          const index = p.enqueue.findIndex(item => !item.isFiller);
+          const next = index >= 0 ? p.enqueue.splice(0, index + 1).at(-1) : null;
+          link.pausedSession = next;
+          link.pausedPositionSec = next?.startOffsetSec || 0;
+        } else {
+          this._cancelPiece(p.activeWriter || session);
+          if (!p.enqueue.length) p.enqueue.push(this._placeholder(link));
+          if (!p.writerTask) this._pump(link, await this.preparePlayback(await this._video()));
+        }
+        return { ok: true, applied: true, newPosSec: Math.round(dur), ended: true,
+          skippedTo: (link.paused ? link.pausedSession : p.enqueue.find(item => !item.isFiller))?.title || 'placeholder' };
+      }
       const piece = await this._seekSession(link, session, pos);
       return { ok: true, applied: true, newPosSec: Math.round(pos), title: piece.title };
     });

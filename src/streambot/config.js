@@ -90,6 +90,19 @@ function loadConfig() {
 
   const hardwareAccel = process.env.HARDWARE_ACCEL?.trim().toLowerCase() === 'true';
   const configuredEncoder = (process.env.STREAMBOT_VIDEO_ENCODER || '').trim().toLowerCase();
+  const softwarePreset = (process.env.STREAMBOT_ENCODER_PRESET || '').trim().toLowerCase();
+  const validSoftwarePresets = new Set(['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow', 'placebo']);
+  if (softwarePreset && !validSoftwarePresets.has(softwarePreset)) {
+    throw new Error(`${TAG} STREAMBOT_ENCODER_PRESET must be a valid x264 preset.`);
+  }
+  const vaapiLevelRaw = (process.env.STREAMBOT_VAAPI_COMPRESSION_LEVEL || '').trim();
+  if (vaapiLevelRaw && !/^(?:0|[1-9]\d*)$/.test(vaapiLevelRaw)) {
+    throw new Error(`${TAG} STREAMBOT_VAAPI_COMPRESSION_LEVEL must be a non-negative integer.`);
+  }
+  const vaapiCompressionLevel = vaapiLevelRaw ? Number(vaapiLevelRaw) : null;
+  if (vaapiCompressionLevel != null && !Number.isSafeInteger(vaapiCompressionLevel)) {
+    throw new Error(`${TAG} STREAMBOT_VAAPI_COMPRESSION_LEVEL is too large.`);
+  }
   const defaultWorkerId = (process.env.STREAMBOT_DEFAULT_ID || 'primary').trim() || 'primary';
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(defaultWorkerId)) throw new Error(`${TAG} invalid STREAMBOT_DEFAULT_ID '${defaultWorkerId}'.`);
   const workerId = (process.env.STREAMBOT_ID || defaultWorkerId).trim() || defaultWorkerId;
@@ -151,6 +164,8 @@ function loadConfig() {
     // Audio bitrate used when merging separate video+audio (DASH) streams in-memory.
     streamAudioBitrate: parseKbps(process.env.STREAMBOT_AUDIO_BITRATE, 128),
     videoCodec: (process.env.VIDEO_CODEC || 'H264').trim() || 'H264',
+    softwarePreset: softwarePreset || null,
+    vaapiCompressionLevel,
     // Watchdog: max ms to wait for the go-live gateway handshake (STREAM_CREATE
     // + STREAM_SERVER_UPDATE) before tearing down. Selfbot tokens with
     // restricted gateway opcodes hang here forever; the library has no timeout.

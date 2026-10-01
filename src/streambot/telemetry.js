@@ -145,14 +145,11 @@ function createTelemetry(opts = {}) {
     previousFrames = frames;
     const metrics = {
       event_loop_p99_ms: p99, event_loop_max_ms: max,
-      output_bytes_per_second: perSecond(outBytesWindow), output_bytes_total: outBytesTotal,
-      rtc_bytes_per_second: perSecond(rtcBytesWindow), rtc_bytes_total: rtcBytesTotal,
-      producer_buffer_bytes: producerBytes, pipeline_buffer_bytes: pipelineBytes,
-      pipeline_capacity_bytes: pipelineCapacityBytes,
-      ffmpeg_alive: alive ? 1 : 0, ffmpeg_exit_code: exitCode,
-      ffmpeg_frames_total: frames, ffmpeg_frames_per_second: frameDelta === 'n/a' ? null : perSecond(frameDelta),
+      output_bytes_per_second: perSecond(outBytesWindow),
+      rtc_bytes_per_second: perSecond(rtcBytesWindow),
+      producer_buffer_bytes: producerBytes,
+      ffmpeg_frames_per_second: frameDelta === 'n/a' ? null : perSecond(frameDelta),
       ffmpeg_progress_age_ms: progressAt === null ? null : Math.round(Math.max(0, now() - progressAt)),
-      ffmpeg_duplicate_frames_total: duplicatedFrames, ffmpeg_dropped_frames_total: droppedFrames,
       voice_ws_open: wsState.main === 'ok' ? 1 : 0,
       stream_ws_open: wsState.data === 'ok' ? 1 : 0
     };
@@ -168,7 +165,6 @@ function createTelemetry(opts = {}) {
           metrics[`${metricPrefix}_bytes_per_second`] = perSecond(track.bytes);
           metrics[`${metricPrefix}_max_gap_ms`] = track.maxGapMs;
           metrics[`${metricPrefix}_age_ms`] = track.ageMs;
-          metrics[`${metricPrefix}_clock_resets_total`] = track.resets;
           if (sampleIntervalMs < 1000) {
             metrics[`${metricPrefix}_send_call_max_ms`] = track.sendCallMaxMs;
             metrics[`${metricPrefix}_late_max_ms`] = track.lateMaxMs;
@@ -192,7 +188,6 @@ function createTelemetry(opts = {}) {
           metrics.rtp_pacing_kbps = t.pacingKbps;
           metrics.rtcp_report_age_ms = t.reportAgeMs;
           metrics.rtcp_loss_percent = t.lossPct;
-          metrics.rtcp_lost_packets_total = t.lostTotal;
           metrics.rtcp_jitter_ms = t.jitterMs;
           metrics.rtcp_pli_per_second = perSecond(t.pli);
           metrics.rtp_playout_max_ms = t.playoutMaxMs;

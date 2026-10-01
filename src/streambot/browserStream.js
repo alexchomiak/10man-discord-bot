@@ -208,15 +208,21 @@ async function startBrowserStream(pageUrl, config = {}, signal) {
         .find(value => MediaRecorder.isTypeSupported(value));
       if (!mime) return { ok: false, error: 'WebM recording is unavailable.' };
       const recorder = new MediaRecorder(stream, { mimeType: mime });
-      recorder.ondataavailable = async event => {
+      let pendingChunk = Promise.resolve();
+      recorder.ondataavailable = event => {
         if (!event.data.size) return;
-        const data = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result).split('base64,')[1]);
-          reader.onerror = () => reject(reader.error);
-          reader.readAsDataURL(event.data);
-        });
-        await window[name](data);
+        const blob = event.data;
+        // FileReader callbacks can complete out of order under load. Keep
+        // WebM clusters in recording order or FFmpeg may reject the feed.
+        pendingChunk = pendingChunk.then(async () => {
+          const data = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split('base64,')[1]);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+          });
+          await window[name](data);
+        }).catch(() => { if (recorder.state !== 'inactive') recorder.stop(); });
       };
       recorder.start(1000);
       return { ok: true, audio: tracks.some(track => track.kind === 'audio'), mime };

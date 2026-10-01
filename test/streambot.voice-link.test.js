@@ -244,6 +244,27 @@ test('config: grace, filler and queue defaults retain existing env names', () =>
   } finally { if (old === undefined) delete process.env.SELF_BOT_TOKEN; else process.env.SELF_BOT_TOKEN=old; }
 });
 
+test('config: encoder controls parse presets and numeric VAAPI levels', () => {
+  const names = ['SELF_BOT_TOKEN', 'STREAMBOT_ENCODER_PRESET', 'STREAMBOT_VAAPI_COMPRESSION_LEVEL'];
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  const { loadConfig } = require('../src/streambot/config');
+  try {
+    process.env.SELF_BOT_TOKEN = 'test';
+    process.env.STREAMBOT_ENCODER_PRESET = 'VERYFAST';
+    process.env.STREAMBOT_VAAPI_COMPRESSION_LEVEL = '4';
+    const cfg = loadConfig();
+    assert.equal(cfg.softwarePreset, 'veryfast');
+    assert.equal(cfg.vaapiCompressionLevel, 4);
+    process.env.STREAMBOT_VAAPI_COMPRESSION_LEVEL = 'ultrafast';
+    assert.throws(() => loadConfig(), /VAAPI_COMPRESSION_LEVEL must be a non-negative integer/);
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
+
 test('one go-live call and strict shared-output order across N queued pieces', async t => {
   const f=fixture(t,{streamBufferSec:0}); const {mgr,fv,start}=f;
   const first=await start('a');
@@ -997,6 +1018,50 @@ test('Music Mode chapter skip while paused updates the held position', async t =
   assert.equal(mgr.voiceLink.pausedPositionSec, 30);
   await mgr.resume();
   await until(() => mgr.voiceLink.pipeline.activeWriter?.startOffsetSec === 30);
+  assert.equal(fv.plays.length, 1);
+});
+
+test('seeking to the end of a chaptered mix advances to the next song', async t => {
+  const { mgr, fv } = fixture(t, { streamBufferSec: 0,
+    dashboardBaseUrl: 'https://example.com/player' });
+  mgr.musicMode = true;
+  mgr._buildDashMerge = (vm, url, audioUrl, offset, options, piece) =>
+    vm.prepareStream(url, options, piece.control.signal);
+  await mgr.start({ guildId: 'g1', channelId: 'c1',
+    streamUrl: 'https://example.com/mix.mp4', title: 'Mix', totalDurationSec: 90,
+    chapters: [{ title: 'Intro', startSec: 0, endSec: 30 },
+      { title: 'Final chapter', startSec: 30, endSec: 90 }] });
+  await mgr.start({ guildId: 'g1', channelId: 'c1',
+    streamUrl: 'https://example.com/next.mp4', title: 'Next song' });
+  const mixStartsBeforeSeek = fv.pieces.filter(piece => piece.url.includes('mix.mp4')).length;
+  const result = await mgr.seekTo(90);
+  assert.equal(result.ended, true);
+  assert.equal(result.skippedTo, 'Next song');
+  await until(() => mgr.voiceLink.pipeline.activeWriter?.title === 'Next song');
+  assert.equal(fv.pieces.filter(piece => piece.url.includes('mix.mp4')).length, mixStartsBeforeSeek,
+    'the mix must not be reopened at EOF');
+  assert.equal(fv.plays.length, 1);
+});
+
+test('adding music does not make a current VOD FFmpeg failure skip that track', async t => {
+  const { mgr, fv } = fixture(t, { streamBufferSec: 0,
+    dashboardBaseUrl: 'https://example.com/player' });
+  mgr.musicMode = true;
+  mgr._buildDashMerge = (vm, url, audioUrl, offset, options, piece) =>
+    vm.prepareStream(url, options, piece.control.signal);
+  await mgr.start({ guildId: 'g1', channelId: 'c1',
+    streamUrl: 'https://example.com/current.mp4', sourceInput: 'https://example.com/current',
+    title: 'Current song', totalDurationSec: 300 });
+  for (let attempt = 0; attempt < 100 && fv.pieces.length === 0; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(fv.pieces.length, 1);
+  await mgr.start({ guildId: 'g1', channelId: 'c1',
+    streamUrl: 'https://example.com/next.mp4', title: 'Next song' });
+  fv.pieces[0].fail();
+  await until(() => mgr.voiceLink.pipeline.activeWriter?.recoveryAttempt === 1);
+  assert.equal(mgr.voiceLink.pipeline.activeWriter.title, 'Current song');
+  assert.equal(mgr.voiceLink.pipeline.enqueue.find(item => !item.isFiller)?.title, 'Next song');
   assert.equal(fv.plays.length, 1);
 });
 

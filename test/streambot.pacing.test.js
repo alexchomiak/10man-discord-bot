@@ -119,7 +119,8 @@ test('OTLP telemetry records health without emitting per-second log lines', () =
   assert.strictEqual(lines.length, 0);
   assert.strictEqual(points.length, 1);
   assert.strictEqual(points[0].output_bytes_per_second, 120);
-  assert.strictEqual(points[0].rtc_bytes_total, 500);
+  assert.strictEqual(points[0].rtc_bytes_total, undefined);
+  assert.strictEqual(points[0].output_bytes_total, undefined);
 });
 const {
   StreamManager,
@@ -523,6 +524,31 @@ test('Arc H.265 uses hevc_vaapi for VOD and filler without an H.264 fallback', (
     assert.ok(argv.includes('4000k') && argv.includes('5600k'));
   }
   assert.deepStrictEqual(mgr.setupStreamOptions({}).videoCodec, 'H265');
+});
+
+test('optional Arc H.265 compression level reaches the encoder and preflight', () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    videoCodec: 'h265', videoEncoder: 'vaapi', vaapiCompressionLevel: 4
+  });
+  const argv = argvOf(mgr._buildDashMerge({}, 'https://cdn.example/v.mp4',
+    'https://cdn.example/a.m4a', 0, null, { isLive: false }).command);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-compression_level:v'), argv.indexOf('-compression_level:v') + 2),
+    ['-compression_level:v', '4']);
+  assert.ok(!argv.includes('-preset'), 'x264 presets must not be passed to hevc_vaapi');
+  assert.deepStrictEqual(mgr._vaapiCompressionOptions(), ['-compression_level:v', '4']);
+  const unchanged = new StreamManager({ token: 't' }, 'c1', { videoCodec: 'h265', videoEncoder: 'vaapi' });
+  assert.deepStrictEqual(unchanged._vaapiCompressionOptions(), []);
+});
+
+test('software preset override reaches libx264 fallback', () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {
+    videoCodec: 'h264', softwarePreset: 'veryfast'
+  });
+  const argv = argvOf(mgr._buildDashMerge({}, 'https://cdn.example/v.mp4',
+    'https://cdn.example/a.m4a', 0, null, { isLive: false }).command);
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-preset'), argv.indexOf('-preset') + 2),
+    ['-preset', 'veryfast']);
+  assert.equal(mgr.setupStreamOptions({}).h26xPreset, 'veryfast');
 });
 
 test('Arc hardware decode keeps decode, aspect-correct scale, pad and encode on VAAPI', () => {
