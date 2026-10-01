@@ -33,7 +33,7 @@ class TimedTrack extends Writable {
     this.diagnostics = options.diagnostics ? {
       frames: 0, bytes: 0, maxGapMs: 0, resets: 0,
       sendCallMaxMs: 0, lateMaxMs: 0, ptsStepErrorMaxMs: 0,
-      syncWaitMs: 0, rejectedFrames: 0, timestampResets: 0, lateResets: 0,
+      syncWaitMs: 0, catchupFrames: 0, rejectedFrames: 0, timestampResets: 0, lateResets: 0,
       lastAt: null, lastPts: null, keyAt: null
     } : null;
   }
@@ -48,7 +48,7 @@ class TimedTrack extends Writable {
       keyAgeMs: d.keyAt === null ? null : Math.max(0, now - d.keyAt) };
     d.frames = d.bytes = d.maxGapMs = d.resets = 0;
     d.sendCallMaxMs = d.lateMaxMs = d.ptsStepErrorMaxMs = d.syncWaitMs = 0;
-    d.rejectedFrames = d.timestampResets = d.lateResets = 0;
+    d.catchupFrames = d.rejectedFrames = d.timestampResets = d.lateResets = 0;
     return snapshot;
   }
 
@@ -148,7 +148,15 @@ class TimedTrack extends Writable {
           await this.sleep(frameMs);
         } else {
           const delay = Math.max(0, mediaElapsed - wallElapsed);
-          if (delay > 0) await this.sleep(delay);
+          // A short stall (< maxCatchupMs) used to send every queued video
+          // frame with zero delay. That can inject several frames into the RTP
+          // pacer in one event-loop turn. Recover at no more than 2x frame
+          // rate instead, without permanently adding latency to a live feed.
+          const pacedDelay = this.type === 'video'
+            ? Math.max(delay, Math.min(frameMs, this.defaultDurationMs) / 2)
+            : delay;
+          if (this.diagnostics && pacedDelay > delay) this.diagnostics.catchupFrames++;
+          if (pacedDelay > 0) await this.sleep(pacedDelay);
         }
       }
       callback();

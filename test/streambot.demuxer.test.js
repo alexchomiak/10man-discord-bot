@@ -450,6 +450,27 @@ test('timed track rebases after starvation instead of bursting delayed frames', 
   track.destroy();
 });
 
+test('video catch-up after a short stall does not send several frames at once', async () => {
+  let now = 0;
+  const sentAt = [];
+  const track = new TimedTrack(() => { sentAt.push(now); }, 'video', {
+    now: () => now, sleep: async ms => { now += ms; }
+  });
+  const packet = pts => ({ data: Buffer.from([1]), pts: BigInt(pts), duration: 33n,
+    timeBase: { num: 1, den: 1000 }, free() {} });
+  try {
+    await new Promise((resolve, reject) => track.write(packet(0), error => error ? reject(error) : resolve()));
+    now += 100; // A brief source/encoder stall, below the 250 ms rebase threshold.
+    for (const pts of [33, 66, 99, 132, 165, 198, 231, 264]) {
+      await new Promise((resolve, reject) => track.write(packet(pts), error => error ? reject(error) : resolve()));
+    }
+    const recoveryGaps = sentAt.slice(2).map((time, i) => time - sentAt[i + 1]);
+    assert.ok(recoveryGaps.every(gap => gap >= 16), `video recovery burst: ${sentAt}`);
+    assert.ok(sentAt.at(-1) - sentAt[1] < 8 * 33,
+      'bounded faster pacing should catch up without permanently adding live latency');
+  } finally { track.destroy(); }
+});
+
 test('timed tracks advance RTP time when an encoder omits packet duration', async () => {
   for (const [type, expectedMs] of [['video', 1000 / 30], ['audio', 20]]) {
     const sent = [];
