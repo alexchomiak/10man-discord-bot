@@ -33,6 +33,24 @@ class StreamControl {
     const channelId = payload.channelId || this.config.streamChannelId;
     switch (operation) {
       case 'ping': return this._result(true, M.PONG);
+      case 'resolve-channel': {
+        const targetGuildId = String(payload.guildId || '');
+        const targetChannelId = String(payload.channelId || '');
+        if (!/^\d{17,20}$/.test(targetGuildId) || !/^\d{17,20}$/.test(targetChannelId)) {
+          return { ok: false, message: 'Invalid server or channel ID.' };
+        }
+        const guild = this.client?.guilds?.cache?.get(targetGuildId)
+          || await this.client?.guilds?.fetch(targetGuildId).catch(() => null);
+        if (!guild) return { ok: false, message: 'Server unavailable to this worker.' };
+        const channel = guild.channels?.cache?.get(targetChannelId)
+          || await guild.channels?.fetch(targetChannelId).catch(() => null);
+        if (!channel || String(channel.guildId || channel.guild?.id || targetGuildId) !== targetGuildId ||
+            ![2, 13, 'GUILD_VOICE', 'GUILD_STAGE_VOICE'].includes(channel.type)) {
+          return { ok: false, message: 'Voice channel unavailable to this worker.' };
+        }
+        return { ok: true, guildId: targetGuildId, guildName: guild.name,
+          channelId: targetChannelId, channelName: channel.name, channelType: channel.type };
+      }
       case 'toggle-music-mode': {
         const r = await this.streamManager.toggleMusicMode();
         return this._result(r.ok === true, r.message || `Music Mode ${r.enabled ? 'on' : 'off'}.`, {

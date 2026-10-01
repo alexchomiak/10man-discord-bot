@@ -71,15 +71,15 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   const guild = { id: guildId, name: 'Test server', members: { cache: new Map(), fetch: async () => member },
     channels: { fetch: async () => new Map([[channelId, { id: channelId, name: 'Movies', type: 2 }],
       [hiddenChannelId, { id: hiddenChannelId, name: 'Hidden', type: 2 }]]) } };
-  const externalGuild = { id: externalGuildId, name: 'Friends server',
-    channels: { fetch: async id => id === externalChannelId
-      ? { id, name: 'Watch party', type: 2 } : null } };
   const user = { id: userId, globalName: 'Streamer', username: 'streamer', displayAvatarURL: () => 'https://cdn.discordapp.com/a.png' };
-  const guildCache = new Map([[guildId, guild], [externalGuildId, externalGuild]]);
+  // The CS app bot is not in the external server; the primary stream worker is.
+  const guildCache = new Map([[guildId, guild]]);
   const client = { guilds: { cache: guildCache, fetch: async id => guildCache.get(id) || null },
     users: { cache: new Map([[userId, user]]), fetch: async () => user } };
   let online = true;
   const activeWorker = { id: 'one', userId, connectedAt: 1,
+    externalChannels: [{ guildId: externalGuildId, guildName: 'Friends server',
+      id: externalChannelId, name: 'Watch party', type: 2, external: true }],
     status: { guildId, channelId, alive: true, inChannel: true, streamUrl: 'https://secret/?ApiKey=private',
       queue: [{ id: 'q1', title: 'Next' }], current: { id: 'now', title: 'Playing' } } };
   const broker = { defaultWorkerId: 'one', listWorkers: () => online ? [activeWorker] : [],
@@ -91,7 +91,6 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   } };
   const dashboard = createStreamDashboard({ broker, client, password: 'CaseSensitivePassword',
     configuredWorkerIds: ['one','two'], channelIds: [channelId],
-    externalChannels: parseExternalChannels(`${externalGuildId}:${externalChannelId}`),
     host: '127.0.0.1', port: 0, staticDir, log: () => {},
     searchYoutube: async (query, { page }) => { searches.push({ query, page }); return [{ title: 'Found', url: 'https://www.youtube.com/watch?v=abcdefghijk' }]; } });
   dashboard.listen(); await once(dashboard.server, 'listening');
@@ -126,11 +125,11 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(state.workers.length,2);
   assert.equal(state.workers[1].online,false);
   assert.equal(state.workers[0].profile.displayName,'Streamer');
+  assert.deepEqual(state.workers[0].externalChannels, activeWorker.externalChannels);
+  assert.deepEqual(state.workers[1].externalChannels, []);
   assert(!JSON.stringify(state).includes('ApiKey'));
   const channels = await (await request(`/api/guilds/${guildId}/channels`)).json();
-  assert.deepEqual(channels.channels.map(channel=>channel.name),['Movies','Watch party']);
-  assert.deepEqual(channels.channels[1], { guildId: externalGuildId, guildName: 'Friends server',
-    id: externalChannelId, name: 'Watch party', type: 2, external: true });
+  assert.deepEqual(channels.channels.map(channel=>channel.name),['Movies']);
   const move = await (await request('/api/workers/one/actions', { operation:'move', guildId, channelId })).json();
   assert.equal(move.ok,true);
   const externalMove = await (await request('/api/workers/one/actions', { operation:'move', guildId: externalGuildId,
@@ -146,7 +145,7 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   const remove = await (await request('/api/workers/one/actions', { operation:'remove-queued', queueId })).json();
   assert.equal(remove.ok,true);
   assert.deepEqual(calls.slice(0,5).map(call=>call.operation),['move','move','reorder','seek','remove-queued']);
-  assert.equal(calls[4].payload.queueId,queueId);
+  assert.equal(calls.find(call => call.operation === 'remove-queued').payload.queueId,queueId);
   const clear = await (await request('/api/workers/one/actions', { operation:'clear-queue' })).json();
   assert.equal(clear.ok,true);
   assert.equal(calls.at(-1).operation,'clear-queue');

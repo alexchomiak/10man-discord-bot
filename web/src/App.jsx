@@ -522,6 +522,10 @@ function AdminApp() {
     return () => { live = false; };
   }, [answer, guildId]);
   const workers = useMemo(() => state?.workers || [], [state]);
+  const channelsFor = worker => {
+    const localKeys = new Set(channels.map(channelKey));
+    return [...channels, ...(worker.externalChannels || []).filter(channel => !localKeys.has(channelKey(channel)))];
+  };
   const selectedWorker = workers.find(worker => worker.id === selectedWorkerId);
   const action = async (workerId, operation, payload = {}) => {
     setBusy(previous => ({ ...previous, [workerId]: true }));
@@ -558,14 +562,14 @@ function AdminApp() {
           <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
         </section>
         {!state ? <div className="empty-fleet">Connecting to stream workers…</div>
-          : selectedWorker ? <WorkerCard worker={selectedWorker} guildId={guildId} guilds={state.guilds} channels={channels} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[selectedWorker.id]} expanded />
+          : selectedWorker ? <WorkerCard worker={selectedWorker} guildId={guildId} guilds={state.guilds} channels={channelsFor(selectedWorker)} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[selectedWorker.id]} expanded />
             : <div className="empty-fleet">Worker “{selectedWorkerId}” is not configured. <a href="#/">View all workers</a></div>}
       </div> : <>
         <section className="page-heading"><div><div className="eyebrow highlight">LIVE OPERATIONS</div><h1>Stream Deck<span className="heading-period">.</span></h1><p>Manage your Discord stream workers and playback queues.</p></div>
           <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
         </section>
         <div className="overview"><div><span className="overview-number">{workers.length}</span><span className="overview-label">WORKERS</span></div><div><span className="overview-number">{workers.filter(worker => worker.online).length}</span><span className="overview-label">ONLINE</span></div><div><span className="overview-number">{workers.filter(worker => worker.status?.current && !worker.status.current.isFiller).length}</span><span className="overview-label">ON AIR</span></div><div className="overview-note"><span className="pulse" /> Auto-refreshing every 5 seconds</div></div>
-        <div className="cards-grid">{workers.map(worker => <div key={worker.id}><WorkerCard worker={worker} guildId={guildId} guilds={state.guilds} channels={channels} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[worker.id]} /></div>)}</div>
+        <div className="cards-grid">{workers.map(worker => <div key={worker.id}><WorkerCard worker={worker} guildId={guildId} guilds={state.guilds} channels={channelsFor(worker)} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[worker.id]} /></div>)}</div>
         {!workers.length && <div className="empty-fleet">No stream workers configured or connected.</div>}
       </>}
       <footer>10MAN STREAM DECK <span>·</span> Persistent Go Live control</footer>

@@ -510,13 +510,34 @@ test('live video keeps frame spacing after waiting for delayed audio', async () 
   } finally { track.destroy(); }
 });
 
+test('live video does not pause for one ordinary frame of audio lead', async () => {
+  let now = 0;
+  const sentAt = [];
+  const sleeps = [];
+  const track = new TimedTrack(() => sentAt.push(now), 'video', {
+    now: () => now, diagnostics: true,
+    sleep: async ms => { sleeps.push(ms); now += ms; }
+  });
+  track.syncTrack = { pts: 0, writableEnded: false };
+  try {
+    await new Promise((resolve, reject) => track.write({
+      data: Buffer.from([1]), pts: 40n, duration: 33n,
+      timeBase: { num: 1, den: 1000 }, free() {}
+    }, error => error ? reject(error) : resolve()));
+    assert.deepEqual(sentAt, [0]);
+    assert.deepEqual(sleeps, [33]);
+    assert.equal(track.takeDiagnostics().syncWaitMs, 0);
+  } finally { track.destroy(); }
+});
+
 test('video pacing fails a stalled audio clock before sending unsynced frames', async () => {
   const { TimedTrack } = require('../src/streambot/persistentTrackFeeder');
   const sleeps = [];
   let sent = 0;
+  let now = 0;
   const track = new TimedTrack(() => { sent++; }, 'video', {
-    now: () => 0,
-    sleep: async ms => { sleeps.push(ms); },
+    now: () => now, diagnostics: true,
+    sleep: async ms => { sleeps.push(ms); now += ms; },
     maxSyncWaitMs: 100
   });
   track.on('error', () => {});
@@ -532,6 +553,7 @@ test('video pacing fails a stalled audio clock before sending unsynced frames', 
   const firstWait = sleeps.reduce((sum, ms) => sum + ms, 0);
   assert.equal(firstWait, 100);
   assert.equal(sent, 0, 'do not send video while audio is behind');
+  assert.equal(track.takeDiagnostics().syncWaitMs, 100, 'failed sync waits must remain visible in metrics');
   track.destroy();
 });
 

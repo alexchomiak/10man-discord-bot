@@ -27,6 +27,18 @@ function workerProfile(value) {
     username: name('username'), avatarUrl };
 }
 
+function workerExternalChannels(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 100).flatMap(channel => {
+    if (!channel || !DISCORD_USER_ID.test(String(channel.guildId || '')) ||
+        !DISCORD_USER_ID.test(String(channel.id || '')) ||
+        typeof channel.guildName !== 'string' || typeof channel.name !== 'string' ||
+        ![2, 13, 'GUILD_VOICE', 'GUILD_STAGE_VOICE'].includes(channel.type)) return [];
+    return [{ guildId: channel.guildId, guildName: channel.guildName.slice(0, 100),
+      id: channel.id, name: channel.name.slice(0, 100), type: channel.type, external: true }];
+  });
+}
+
 class StreamBroker {
   constructor({ host = '0.0.0.0', port = 8090, secret, defaultWorkerId = 'primary', requestTimeoutMs = 60000, log = console.log } = {}) {
     this.host = host;
@@ -92,7 +104,8 @@ class StreamBroker {
         }
         this.workers.set(id, { id, userId, socket, status: message.status || null,
           profile: workerProfile(message.profile),
-          accessCode, musicMode: message.musicMode === true, capabilities: message.capabilities || [], connectedAt: Date.now() });
+          accessCode, musicMode: message.musicMode === true, capabilities: message.capabilities || [],
+          externalChannels: [], connectedAt: Date.now() });
         this.log(`[stream-broker] worker connected: ${id}`);
         return;
       }
@@ -102,6 +115,9 @@ class StreamBroker {
         worker.status = message.status || null;
         worker.musicMode = message.musicMode === true;
         if (message.profile) worker.profile = workerProfile(message.profile);
+      }
+      if (message.type === 'external-channels' && worker) {
+        worker.externalChannels = workerExternalChannels(message.channels);
       }
       if (message.type === 'result' && message.requestId) {
         const pending = this.pending.get(message.requestId);
@@ -133,15 +149,15 @@ class StreamBroker {
   }
 
   listWorkers() {
-    return [...this.workers.values()].map(({ id, userId, status, profile, musicMode, capabilities, connectedAt }) => ({ id, userId, status, profile, musicMode, capabilities, connectedAt }));
+    return [...this.workers.values()].map(({ id, userId, status, profile, musicMode, capabilities, externalChannels, connectedAt }) => ({ id, userId, status, profile, musicMode, capabilities, externalChannels, connectedAt }));
   }
 
   getWorker(requested) {
     const workerId = this.resolveWorkerId(requested);
     const worker = this.workers.get(workerId);
     if (!worker || worker.socket.readyState !== WebSocket.OPEN) return null;
-    const { id, userId, status, profile, musicMode, capabilities, connectedAt } = worker;
-    return { id, userId, status, profile, musicMode, capabilities, connectedAt };
+    const { id, userId, status, profile, musicMode, capabilities, externalChannels, connectedAt } = worker;
+    return { id, userId, status, profile, musicMode, capabilities, externalChannels, connectedAt };
   }
 
   getWorkerByAccessCode(code) {

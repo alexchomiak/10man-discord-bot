@@ -18,6 +18,10 @@ class TimedTrack extends Writable {
     this.maxCatchupMs = Number.isFinite(options.maxCatchupMs) ? options.maxCatchupMs : 250;
     this.maxPtsJumpMs = Number.isFinite(options.maxPtsJumpMs) ? options.maxPtsJumpMs : 500;
     this.maxSyncWaitMs = Number.isFinite(options.maxSyncWaitMs) ? options.maxSyncWaitMs : 250;
+    // One 30 fps video frame can naturally lead the next 20 ms Opus packet.
+    // Treat that ordinary packet ordering as synchronized instead of pausing
+    // the picture until the audio sender advances.
+    this.syncToleranceMs = Number.isFinite(options.syncToleranceMs) ? options.syncToleranceMs : 50;
     this.defaultDurationMs = Number.isFinite(options.defaultDurationMs) && options.defaultDurationMs > 0
       ? options.defaultDurationMs : (type === 'video' ? 1000 / 30 : 20);
     this.pts = undefined;
@@ -82,26 +86,26 @@ class TimedTrack extends Writable {
       this.previousPts = packetPts;
       const other = this.syncTrack?.pts;
       let waitedForAudio = false;
-      if (this.type === 'video' && !this.syncTrack?.writableEnded && Number.isFinite(other) && this.pts - other > 20) {
+      if (this.type === 'video' && !this.syncTrack?.writableEnded && Number.isFinite(other) && this.pts - other > this.syncToleranceMs) {
         let waitedMs = 0;
         while (!this.destroyed && !this.syncTrack?.writableEnded &&
-          Number.isFinite(this.syncTrack?.pts) && this.pts - this.syncTrack.pts > 20 &&
+          Number.isFinite(this.syncTrack?.pts) && this.pts - this.syncTrack.pts > this.syncToleranceMs &&
           waitedMs < this.maxSyncWaitMs) {
           const waitMs = Math.min(frameMs, this.maxSyncWaitMs - waitedMs);
           await this.sleep(waitMs);
           waitedMs += waitMs;
         }
+        if (this.diagnostics) this.diagnostics.syncWaitMs += this.now() - started;
         // Never send video indefinitely ahead of audio. The feeder will fail
         // promptly so the manager can reopen both tracks at one VOD position.
         if (!this.destroyed && !this.syncTrack?.writableEnded &&
-            Number.isFinite(this.syncTrack?.pts) && this.pts - this.syncTrack.pts > 20) {
+            Number.isFinite(this.syncTrack?.pts) && this.pts - this.syncTrack.pts > this.syncToleranceMs) {
           const error = new Error('Audio/video synchronization lost');
           error.code = 'AV_SYNC_LOST';
           throw error;
         }
         waitedForAudio = true;
       }
-      if (waitedForAudio && this.diagnostics) this.diagnostics.syncWaitMs += this.now() - started;
       const sendStarted = this.diagnostics ? this.now() : null;
       const accepted = this.send(Buffer.from(data), frameMs);
       const ended = this.now();

@@ -18,7 +18,7 @@ const { PlayerManager, summarizeError: summarizePlayerError } = require('./playe
 const { COMMANDS, DRAFT_TYPE_CHOICES } = require('./commands.ts');
 const { DISCORD_MESSAGES } = require('./messages.ts');
 const { StreamBroker } = require('./streamBroker');
-const { createStreamDashboard, parseExternalChannels } = require('./streamDashboard');
+const { createStreamDashboard } = require('./streamDashboard');
 const {
   streamCommand,
   playerCommand,
@@ -84,7 +84,6 @@ const config = {
   streamDashboardPort: Number.parseInt(process.env.STREAM_DASHBOARD_PORT || '8082', 10),
   streamDashboardChannelIds: (process.env.STREAM_DASHBOARD_CHANNEL_IDS || '')
     .split(',').map(id => id.trim()).filter(Boolean),
-  streamDashboardExternalChannels: parseExternalChannels(process.env.STREAM_DASHBOARD_EXTERNAL_CHANNELS),
   streamAllowedUserIds: parseDiscordIdList(
     process.env.STREAM_ALLOWED_USER_IDS,
     'STREAM_ALLOWED_USER_IDS'
@@ -269,7 +268,6 @@ const streamDashboard = streamBroker.enabled && config.streamDashboardPassword
   ? createStreamDashboard({ broker: streamBroker, client, password: config.streamDashboardPassword,
     randomCodes: config.streamDashboardRandomCodes,
     channelIds: config.streamDashboardChannelIds,
-    externalChannels: config.streamDashboardExternalChannels,
     configuredWorkerIds: (process.env.STREAMBOT_IDS || '').split(',').map(id => id.trim()).filter(Boolean),
     host: config.streamDashboardHost, port: config.streamDashboardPort })
   : null;

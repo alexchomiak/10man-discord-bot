@@ -104,6 +104,48 @@ test('progress toggle is routed to one worker and returns its new state', async 
   assert.match(result.message, /VOD with a known duration/);
 });
 
+test('each worker reports only its accessible configured external channels at startup', async t => {
+  const broker = new StreamBroker({ host: '127.0.0.1', port: 0, secret: 'test-secret', defaultWorkerId: 'one', log: () => {} });
+  await once(broker.start(), 'listening');
+  const guildId = '555555555555555555';
+  const firstId = '666666666666666666';
+  const secondId = '777777777777777777';
+  const makeWorker = (id, accessible) => new StreamBrokerClient({
+    url: `ws://127.0.0.1:${broker.port}`, secret: 'test-secret', workerId: id,
+    streamManager: { client: { user: { id: id === 'one' ? '111111111111111111' : '222222222222222222' } },
+      config: { dashboardAccessCode: id === 'one' ? 'abcdef' : 'ghijkl',
+        externalChannels: [{ guildId, id: firstId }, { guildId, id: secondId }] }, status: () => null },
+    control: { execute: async (_operation, payload) => accessible.includes(payload.channelId)
+      ? { ok: true, guildId, guildName: 'Friends', channelId: payload.channelId,
+        channelName: payload.channelId === firstId ? 'Movies' : 'Music', channelType: 'GUILD_VOICE' }
+      : { ok: false } }, log: () => {}
+  });
+  const one = makeWorker('one', [firstId]);
+  const two = makeWorker('two', [secondId]);
+  t.after(async () => { one.close(); two.close(); await broker.close(); });
+  one.start(); two.start();
+  await until(() => broker.getWorker('one')?.externalChannels.length === 1 &&
+    broker.getWorker('two')?.externalChannels.length === 1);
+  assert.deepStrictEqual(broker.getWorker('one').externalChannels.map(channel => channel.id), [firstId]);
+  assert.deepStrictEqual(broker.getWorker('two').externalChannels.map(channel => channel.id), [secondId]);
+});
+
+test('primary worker resolves external voice channel names without serializing Discord objects', async () => {
+  const guildId = '555555555555555555';
+  const channelId = '666666666666666666';
+  const channel = { id: channelId, guildId, name: 'Watch party', type: 'GUILD_VOICE' };
+  const guild = { id: guildId, name: 'Friends server', channels: {
+    cache: new Map(), fetch: async id => id === channelId ? channel : null
+  } };
+  const control = new StreamControl({ streamManager: { status: () => null }, client: {
+    guilds: { cache: new Map(), fetch: async id => id === guildId ? guild : null }
+  } });
+  const result = await control.execute('resolve-channel', { guildId, channelId });
+  assert.deepEqual(result, { ok: true, guildId, guildName: 'Friends server',
+    channelId, channelName: 'Watch party', channelType: 'GUILD_VOICE' });
+  assert.equal((await control.execute('resolve-channel', { guildId, channelId: 'bad' })).ok, false);
+});
+
 test('control reports a failed Stop when Discord voice leave is unconfirmed', async () => {
   const control = new StreamControl({ streamManager: {
     stop: async () => false,

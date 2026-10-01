@@ -2,7 +2,7 @@
 
 const { WebSocket } = require('ws');
 
-const CAPABILITIES = ['play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name'];
+const CAPABILITIES = ['play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name', 'resolve-channel'];
 
 function ownProfile(user) {
   if (!user) return null;
@@ -53,6 +53,7 @@ class StreamBrokerClient {
         capabilities: CAPABILITIES,
         status: this.streamManager.status(), musicMode: this.streamManager.musicMode === true
       });
+      void this._publishExternalChannels(socket);
       this.statusTimer = setInterval(() => this._send({ type: 'status', status: this.streamManager.status(),
         profile: ownProfile(this.streamManager?.client?.user),
         musicMode: this.streamManager.musicMode === true }), 5000);
@@ -66,6 +67,26 @@ class StreamBrokerClient {
       this.statusTimer = null;
       this._scheduleReconnect();
     });
+  }
+
+  async _publishExternalChannels(socket) {
+    const entries = this.streamManager?.config?.externalChannels || [];
+    const resolved = await Promise.all(entries.map(async entry => {
+      let timer;
+      try {
+        const result = await Promise.race([
+          this.control.execute('resolve-channel', { guildId: entry.guildId, channelId: entry.id }),
+          new Promise(resolve => { timer = setTimeout(() => resolve(null), 4000); })
+        ]);
+        if (!result?.ok) return null;
+        return { guildId: result.guildId, guildName: result.guildName,
+          id: result.channelId, name: result.channelName, type: result.channelType };
+      } catch { return null; }
+      finally { clearTimeout(timer); }
+    }));
+    if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
+      this._send({ type: 'external-channels', channels: resolved.filter(Boolean) });
+    }
   }
 
   _scheduleReconnect() {

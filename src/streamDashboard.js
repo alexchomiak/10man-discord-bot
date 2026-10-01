@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { searchYoutube: defaultSearchYoutube } = require('./youtubeSearch');
+const { parseExternalChannels } = require('./externalChannels');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
@@ -15,16 +16,6 @@ const MAX_REORDER_ITEMS = 1000;
 const MAX_ACTION_BODY_BYTES = 64 * 1024;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
-
-function parseExternalChannels(value) {
-  const seen = new Set();
-  return String(value || '').split(',').map(entry => entry.trim()).flatMap(entry => {
-    const match = /^(\d{17,20}):(\d{17,20})$/.exec(entry);
-    if (!match || seen.has(entry)) return [];
-    seen.add(entry);
-    return [{ guildId: match[1], id: match[2] }];
-  });
-}
 
 function sameToken(expected, actual) {
   const a = Buffer.from(String(expected || ''));
@@ -72,7 +63,7 @@ function scopedStatus(status) {
   return value;
 }
 
-function createStreamDashboard({ broker, client, password, token, randomCodes = false, configuredWorkerIds = [], channelIds = [], externalChannels = [], host = '0.0.0.0', port = 8082,
+function createStreamDashboard({ broker, client, password, token, randomCodes = false, configuredWorkerIds = [], channelIds = [], host = '0.0.0.0', port = 8082,
   staticDir = path.resolve(__dirname, '../web/dist'), log = console.log, searchYoutube = defaultSearchYoutube } = {}) {
   const adminPassword = password || token;
   if (!adminPassword) return null;
@@ -219,6 +210,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           connectedAt: online.get(id)?.connectedAt || null,
           status: publicStatus(online.get(id)?.status),
           musicMode: online.get(id)?.musicMode === true,
+          externalChannels: online.get(id)?.externalChannels || [],
           profile: online.get(id)?.userId ? profile(online.get(id).userId, guildId, online.get(id).profile) : null
         })));
         const guilds = [...client.guilds.cache.values()].map(guild => ({ id: guild.id, name: guild.name }))
@@ -237,16 +229,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           .map(channel => ({ guildId: guild.id, guildName: guild.name,
             id: channel.id, name: channel.name, type: channel.type, external: false }))
           .sort((a, b) => a.name.localeCompare(b.name));
-        const external = await Promise.all(externalChannels.map(async entry => {
-          if (entry.guildId === guild.id && local.some(channel => channel.id === entry.id)) return null;
-          const otherGuild = client.guilds.cache.get(entry.guildId)
-            || await client.guilds.fetch(entry.guildId).catch(() => null);
-          const channel = otherGuild && await otherGuild.channels.fetch(entry.id).catch(() => null);
-          return { guildId: entry.guildId, guildName: otherGuild?.name || entry.guildId,
-            id: entry.id, name: channel?.name || entry.id, type: channel?.type || null,
-            external: true };
-        }));
-        return json(res, 200, { channels: [...local, ...external.filter(Boolean)] });
+        return json(res, 200, { channels: local });
       }
       const actionMatch = scopedWorker ? [null, scopedWorker.id] : /^\/api\/workers\/([A-Za-z0-9_-]{1,32})\/actions$/.exec(url.pathname);
       if (req.method === 'POST' && actionMatch) {

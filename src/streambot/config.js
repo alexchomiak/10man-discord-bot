@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { parseExternalChannels } = require('../externalChannels');
 
 const TAG = '[streambot]';
 
@@ -102,6 +103,7 @@ function loadConfig() {
     token,
     workerId,
     defaultWorkerId,
+    externalChannels: parseExternalChannels(process.env.STREAM_DASHBOARD_EXTERNAL_CHANNELS),
     dashboardBaseUrl: (process.env.STREAM_DASHBOARD_BASE_URL || '').trim(),
     musicVisualizer: parseBoolean(process.env.STREAMBOT_MUSIC_VISUALIZER, true),
     browserFallback: parseBoolean(process.env.STREAMBOT_BROWSER_FALLBACK, true),
