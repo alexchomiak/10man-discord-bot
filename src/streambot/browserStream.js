@@ -24,6 +24,14 @@ function validPageUrl(value) {
   } catch { return false; }
 }
 
+function probeFailureKind(error) {
+  const message = String(error?.message || '');
+  if (message.includes('No visible HTML5 video player')) return 'no-visible-video';
+  if (message.includes('did not start video playback')) return 'video-not-playing';
+  if (error?.name === 'TimeoutError' || /timeout/i.test(message)) return 'timeout';
+  return 'browser-error';
+}
+
 async function findVideo(page, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -103,11 +111,17 @@ async function probeBrowser(pageUrl, config = {}) {
       stream.getTracks().forEach(track => track.stop());
       return kinds;
     });
-    if (!tracks?.includes('video')) return null;
+    if (!tracks?.includes('video')) {
+      if (config.verbose === true) console.log('[streambot]', 'Chromium probe failed: video-not-capturable');
+      return null;
+    }
     return { kind: 'browser', available: true, browserPageUrl: pageUrl,
       streamUrl: pageUrl, title: 'Live Stream', isLive: true,
       totalDurationSec: null, note: 'HTML5 video captured in a headless browser' };
-  } catch { return null; }
+  } catch (error) {
+    if (config.verbose === true) console.log('[streambot]', `Chromium probe failed: ${probeFailureKind(error)}`);
+    return null;
+  }
   finally { await opened?.browser.close().catch(() => {}); }
 }
 

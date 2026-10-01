@@ -271,6 +271,7 @@ test('config: fast OTLP sampling is opt-in and can target one worker', () => {
     delete process.env.STREAMBOT_OTEL_SAMPLE_MS;
     delete process.env.STREAMBOT_OTEL_SAMPLE_MS_ONE;
     assert.equal(loadConfig().otelSampleMs, 1000);
+    assert.equal(loadConfig().otelSampleInvalid, false);
     process.env.STREAMBOT_OTEL_SAMPLE_MS = '500';
     assert.equal(loadConfig().otelSampleMs, 500);
     process.env.STREAMBOT_OTEL_SAMPLE_MS_ONE = '250';
@@ -279,6 +280,10 @@ test('config: fast OTLP sampling is opt-in and can target one worker', () => {
     assert.equal(loadConfig().otelSampleMs, 500);
     process.env.STREAMBOT_OTEL_SAMPLE_MS = '25';
     assert.equal(loadConfig().otelSampleMs, 1000);
+    assert.equal(loadConfig().otelSampleInvalid, true);
+    process.env.STREAMBOT_OTEL_SAMPLE_MS = '100';
+    assert.equal(loadConfig().otelSampleMs, 1000);
+    assert.equal(loadConfig().otelSampleInvalid, true);
   } finally {
     for (const key of keys) {
       if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];

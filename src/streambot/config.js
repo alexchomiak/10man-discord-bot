@@ -95,6 +95,8 @@ function loadConfig() {
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(workerId)) throw new Error(`${TAG} invalid STREAMBOT_ID '${workerId}'.`);
   const workerSuffix = workerId.toUpperCase().replace(/-/g, '_');
   const chatCommandsValue = process.env[`SBOT_CHAT_COMMANDS_${workerSuffix}`] ?? process.env.SBOT_CHAT_COMMANDS;
+  const otelSampleRaw = process.env[`STREAMBOT_OTEL_SAMPLE_MS_${workerSuffix}`] ?? process.env.STREAMBOT_OTEL_SAMPLE_MS;
+  const otelSampleValid = [250, 500, 1000].includes(Number(otelSampleRaw));
 
   return {
     token,
@@ -116,9 +118,8 @@ function loadConfig() {
     // quiet unless the streambot operator opts in with VERBOSE=true.
     verbose: process.env.VERBOSE?.trim().toLowerCase() === 'true',
     otelMetrics: parseBoolean(process.env.STREAMBOT_OTEL_METRICS),
-    otelSampleMs: [250, 500, 1000].includes(Number(process.env[`STREAMBOT_OTEL_SAMPLE_MS_${workerSuffix}`] ??
-      process.env.STREAMBOT_OTEL_SAMPLE_MS))
-      ? Number(process.env[`STREAMBOT_OTEL_SAMPLE_MS_${workerSuffix}`] ?? process.env.STREAMBOT_OTEL_SAMPLE_MS) : 1000,
+    otelSampleMs: otelSampleValid ? Number(otelSampleRaw) : 1000,
+    otelSampleInvalid: otelSampleRaw != null && String(otelSampleRaw).trim() !== '' && !otelSampleValid,
     otelMetricsEndpoint: (process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT ||
       process.env.OTEL_EXPORTER_OTLP_ENDPOINT || '').trim(),
     otelHeaders: (process.env.OTEL_EXPORTER_OTLP_METRICS_HEADERS ||

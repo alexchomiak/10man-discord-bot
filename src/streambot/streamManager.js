@@ -84,6 +84,9 @@ class StreamManager {
     this.config = config || {};
     this.metricSink = this.config.metricSink || null;
     if (!this.metricSink && this.config.otelMetrics) {
+      if (this.config.otelSampleInvalid) {
+        log('error', 'STREAMBOT_OTEL_SAMPLE_MS must be 250, 500, or 1000; using 1000ms');
+      }
       try {
         this.metricSink = createOtlpMetrics({ endpoint: this.config.otelMetricsEndpoint,
           headers: this.config.otelHeaders, workerId: this.config.workerId,
@@ -453,8 +456,19 @@ class StreamManager {
         // an otherwise healthy response at EOF, so reconnect those pieces in
         // place without recreating the persistent Discord Go Live session.
         const reconnect = ['-reconnect', '1', '-reconnect_streamed', '1'];
-        if (piece?.isLive) reconnect.push('-reconnect_at_eof', '1');
-        reconnect.push('-reconnect_delay_max', '5');
+        if (piece?.isLive) {
+          // ShareTV's continuous proxy can end a response, fail a connection,
+          // or briefly return 5xx while its upstream rotates. Reopen the same
+          // live input inside FFmpeg so the encoded tracks and Go Live session
+          // keep their clocks. Give transient errors a bounded retry window;
+          // 403 is deliberately excluded so an expired signed URL can be
+          // resolved afresh by the outer live-recovery path.
+          reconnect.push('-reconnect_at_eof', '1',
+            '-reconnect_on_network_error', '1',
+            '-reconnect_on_http_error', '429,5xx',
+            '-reconnect_delay_max', '5',
+            '-reconnect_delay_total_max', '8');
+        } else reconnect.push('-reconnect_delay_max', '5');
         command.inputOptions(reconnect);
       }
     };
@@ -1374,7 +1388,10 @@ class StreamManager {
             retry.recoveryAttempt = attempt;
             retry.retryDelayMs = retryDelayMs;
             p.enqueue.unshift(retry);
-            log('warn', `live source interrupted; retry ${attempt}/8 in ${retryDelayMs}ms${liveError ? ' after ffmpeg error' : ' after EOF'}`);
+            const ffmpegExit = piece.command?.ffmpegProc?.exitCode ?? piece.command?.process?.exitCode;
+            log('warn', `live source interrupted; retry ${attempt}/8 in ${retryDelayMs}ms ` +
+              `ffmpeg_exit=${Number.isInteger(ffmpegExit) ? ffmpegExit : 'unknown'} ` +
+              `reason=${liveError ? 'ffmpeg-error' : ffmpegExit === 0 ? 'EOF' : 'process-ended'}`);
           } else {
             this._notifyError('Live stream could not be recovered after 8 attempts');
           }

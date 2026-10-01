@@ -561,6 +561,12 @@ test('live Arc input automatically deinterlaces on GPU and emits constant 30fps'
   assert.deepStrictEqual(argv.slice(argv.indexOf('-fps_mode'), argv.indexOf('-fps_mode') + 2), ['-fps_mode', 'cfr']);
   assert.deepStrictEqual(argv.slice(argv.indexOf('-reconnect_at_eof'), argv.indexOf('-reconnect_at_eof') + 2),
     ['-reconnect_at_eof', '1'], 'live HTTP inputs must reconnect after a clean proxy EOF');
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-reconnect_on_network_error'), argv.indexOf('-reconnect_on_network_error') + 2),
+    ['-reconnect_on_network_error', '1'], 'live HTTP inputs must survive transient connection failures');
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-reconnect_on_http_error'), argv.indexOf('-reconnect_on_http_error') + 2),
+    ['-reconnect_on_http_error', '429,5xx'], 'live HTTP inputs must retry transient proxy responses');
+  assert.deepStrictEqual(argv.slice(argv.indexOf('-reconnect_delay_total_max'), argv.indexOf('-reconnect_delay_total_max') + 2),
+    ['-reconnect_delay_total_max', '8'], 'live retries must stay bounded and fail over promptly');
 });
 
 test('video burst controls are configurable without reducing average or peak bitrate', () => {

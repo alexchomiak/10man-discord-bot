@@ -243,6 +243,10 @@ if (argv.includes('--dump-single-json')) {
   process.exit(0);
 }
 if (argv.includes('--dump-json')) {
+  if (scenario === 'unsupported') {
+    process.stderr.write('ERROR: Unsupported URL\\n');
+    process.exit(1);
+  }
   if ((scenario === 'authRequired' || scenario === 'ageSafari') && !argv.includes('--cookies')) {
     process.stderr.write('ERROR: Sign in to confirm your age\\n');
     process.exit(1);
@@ -632,6 +636,36 @@ test('yt-dlp retries with cookies when public lookup requires sign-in', async ()
   assert.strictEqual(calls.length, 2);
   assert.ok(!calls[0].argv.includes('--cookies'));
   assert.deepStrictEqual(calls[1].argv.slice(-3), ['--cookies', '/app/data/youtube cookies.txt', url]);
+});
+
+test('unsupported web pages do not waste a second yt-dlp lookup with cookies', async () => {
+  setScenario('unsupported');
+  const before = readFakeLog().length;
+  const url = 'https://example.com/player';
+  const res = await resolveYtdlp(url, { ...CfgPlain, ytdlpCookiesFile: '/app/data/youtube cookies.txt' });
+  const calls = readFakeLog().slice(before);
+  assert.equal(res.available, false);
+  assert.equal(calls.length, 1);
+  assert.ok(!calls[0].argv.includes('--cookies'));
+});
+
+test('unsupported web page falls through one yt-dlp attempt to Chromium', async () => {
+  setScenario('unsupported');
+  const browserStream = require('../src/streambot/browserStream');
+  const original = browserStream.probeBrowser;
+  const before = readFakeLog().length;
+  const url = 'https://example.com/player';
+  browserStream.probeBrowser = async input => {
+    assert.equal(input, url);
+    return { kind: 'browser', available: true, browserPageUrl: input,
+      streamUrl: input, title: 'Live Stream', isLive: true };
+  };
+  try {
+    const result = await resolveSource(url, { ...CfgPlain, browserFallback: true,
+      ytdlpCookiesFile: '/app/data/youtube cookies.txt' });
+    assert.equal(result.kind, 'browser');
+    assert.equal(readFakeLog().length - before, 1);
+  } finally { browserStream.probeBrowser = original; }
 });
 
 test('age-restricted YouTube uses Safari HLS and its selected 1080p playlist', async () => {

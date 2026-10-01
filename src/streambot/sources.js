@@ -685,7 +685,11 @@ async function resolveYtdlp(raw, cfg) {
   // Public YouTube formats can differ from logged-in formats. Use the public
   // set when available, and authenticate only for videos that require it.
   let res = await ytdlpDumpJson(config, raw);
-  if (!res.ok && !res.spawnErr && !res.timedOut && config.ytdlpCookiesFile) {
+  // Cookies only help when the extractor explicitly asks for authentication.
+  // Generic "unsupported URL" failures must move on to browser capture.
+  const authRequired = /(?:sign[ -]?in|log[ -]?in|authentication|cookies? required|confirm your age|age.restricted)/i
+    .test(String(res.stderr || ''));
+  if (!res.ok && !res.spawnErr && !res.timedOut && config.ytdlpCookiesFile && authRequired) {
     verboseLog(config, 'public yt-dlp lookup failed; retrying with cookies');
     res = await ytdlpDumpJson(config, raw, true);
   }
@@ -1028,6 +1032,8 @@ async function resolveSource(input, config) {
   if (isHttp || isPrefixed) {
     const resolved = await resolveYtdlp(raw, cfg);
     if (resolved.available || !isHttp) return resolved;
+    if (cfg.browserFallback === false) return resolved;
+    verboseLog(cfg, 'yt-dlp could not resolve page; probing Chromium');
     const browser = await require('./browserStream').probeBrowser(raw, cfg);
     return browser || resolved;
   }
