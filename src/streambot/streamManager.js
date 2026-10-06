@@ -462,7 +462,10 @@ class StreamManager {
         command.inputOptions(['-readrate', musicMode ? '1.0' : '1.15',
           '-readrate_initial_burst', String(burstSec)]);
       }
-      if (!/m3u8?/i.test(url)) {
+      if (!/m3u8?/i.test(url) && !isYoutubeHlsUrl(url)) {
+        // Extensionless YouTube HLS manifests are still finite playlists.
+        // With unknown HTTP response length, reconnect_streamed treats their
+        // EOF as premature and repeatedly reopens the playlist before probing.
         // VOD must finish at clean EOF. Live HTTP proxies can rotate or close
         // an otherwise healthy response at EOF, so reconnect those pieces in
         // place without recreating the persistent Discord Go Live session.

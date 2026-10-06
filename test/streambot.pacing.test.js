@@ -410,6 +410,20 @@ test('YouTube HLS permits extensionless segments only on its manifest host', () 
   }
 });
 
+test('extensionless YouTube HLS inputs finish playlist EOF without HTTP reconnect loops', () => {
+  const mgr = new StreamManager({ token: 't' }, 'c1', {});
+  const base = 'https://manifest.googlevideo.com/api/manifest/hls_playlist/';
+  for (const isLive of [false, true]) {
+    const result = mgr._buildDashMerge({ Utils: { normalizeVideoCodec: c => c } },
+      base + 'video/itag/301', base + 'audio/itag/234', 0, null, { isLive });
+    const argv = argvOf(result.command);
+    assert.equal(argv.filter(a => a === '-extension_picky').length, 2);
+    assert.ok(!argv.includes('-reconnect'));
+    assert.ok(!argv.includes('-reconnect_streamed'));
+    assert.equal(argv.filter(a => a === '-readrate').length, isLive ? 0 : 2);
+  }
+});
+
 test('single lavfi filler paces both synthetic inputs with -re', () => {
   const mgr = new StreamManager({ token: 't' }, 'c1', {
     videoCodec: 'H264', streamBitrate: 5000, streamHeight: 1080,

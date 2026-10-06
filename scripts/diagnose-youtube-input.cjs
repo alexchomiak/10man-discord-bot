@@ -48,7 +48,7 @@ function inputArgs(url, config) {
   options.push('-thread_queue_size', '256', '-rw_timeout',
     String(Math.max(1000, Math.round((config.ffmpegReadTimeoutMs || 15000) * 1000))),
     '-user_agent', 'Mozilla/5.0', '-readrate', '1.15', '-readrate_initial_burst', '4');
-  if (!/m3u8?/i.test(url)) options.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
+  if (!/m3u8?/i.test(url) && !isYoutubeHlsUrl(url)) options.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
   return ['-hide_banner', '-loglevel', 'error', ...options, '-i', url,
     '-t', '1', '-map', '0:v:0?', '-map', '0:a:0?', '-c', 'copy', '-f', 'null', '-'];
 }
