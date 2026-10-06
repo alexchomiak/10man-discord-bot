@@ -649,7 +649,14 @@ test('patched transport adapts pacing to source bitrate and never retries queued
   } finally { Date.now = clock; }
 });
 
-test('transport install patch is idempotent and rejects version or anchor drift before writing', () => {
+test('Music Mode negotiated voice transport delivers Opus RTP after packetizer setup', () => {
+  const { execFileSync } = require('node:child_process');
+  const result = execFileSync(process.execPath, [path.resolve(__dirname, '../scripts/validate-native-audio.cjs')],
+    { encoding: 'utf8', timeout: 10000 });
+  assert.match(result, /3 Opus RTP packets delivered/);
+});
+
+test('transport install patch upgrades old installs, patches fresh installs, and rejects drift before writing', () => {
   const { patchDiscordTransport } = require('../scripts/patch-discord-transport');
   const installed = path.resolve(path.dirname(require.resolve('@dank074/discord-video-stream')), '..');
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'transport-patch-'));
@@ -660,6 +667,18 @@ test('transport install patch is idempotent and rejects version or anchor drift 
     const patched = fs.readFileSync(path.join(installed, 'dist/client/voice/WebRtcWrapper.js'), 'utf8');
     fs.writeFileSync(target, patched);
     assert.equal(patchDiscordTransport(fixture), false);
+    assert.equal(fs.readFileSync(target, 'utf8'), patched);
+    const audioRegistration = '        if (!this._audioDef.hasSSRC(audioSsrc)) this._audioDef.addSSRC(audioSsrc);\n';
+    assert.ok(patched.includes(audioRegistration));
+    const previous = patched.replace(audioRegistration, '').replace(
+      'const { audioSsrc, videoSsrc, rtxSsrc } = this.mediaConnection.webRtcParams;',
+      'const { videoSsrc, rtxSsrc } = this.mediaConnection.webRtcParams;');
+    fs.writeFileSync(target, previous);
+    assert.equal(patchDiscordTransport(fixture), true);
+    assert.equal(fs.readFileSync(target, 'utf8'), patched);
+    const fresh = previous.replace(/    initWebRtc\(\) \{\n        const \{ videoSsrc, rtxSsrc \} = this.mediaConnection.webRtcParams;\n        if \(!this._videoDef.hasSSRC\(videoSsrc\)\) this._videoDef.addSSRC\(videoSsrc\);\n        this._videoDef.addRtxSSRC\(videoSsrc, rtxSsrc\);/, '    initWebRtc() {');
+    fs.writeFileSync(target, fresh);
+    assert.equal(patchDiscordTransport(fixture), true);
     assert.equal(fs.readFileSync(target, 'utf8'), patched);
     fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"7.0.0"}');
     assert.throws(() => patchDiscordTransport(fixture), /requires discord-video-stream 6.0.0/);

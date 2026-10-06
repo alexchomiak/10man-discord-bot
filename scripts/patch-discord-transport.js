@@ -22,10 +22,12 @@ export class BitrateCalculator {
     }
 }
 `;
+const previousInitPatch = '    initWebRtc() {\n        const { videoSsrc, rtxSsrc } = this.mediaConnection.webRtcParams;\n        if (!this._videoDef.hasSSRC(videoSsrc)) this._videoDef.addSSRC(videoSsrc);\n        this._videoDef.addRtxSSRC(videoSsrc, rtxSsrc);';
+const initPatch = '    initWebRtc() {\n        const { audioSsrc, videoSsrc, rtxSsrc } = this.mediaConnection.webRtcParams;\n        if (!this._audioDef.hasSSRC(audioSsrc)) this._audioDef.addSSRC(audioSsrc);\n        if (!this._videoDef.hasSSRC(videoSsrc)) this._videoDef.addSSRC(videoSsrc);\n        this._videoDef.addRtxSSRC(videoSsrc, rtxSsrc);';
 const replacements = [
     ['export class WebRtcConnWrapper {', 'import { BitrateCalculator } from "./BitrateCalculator.js";\nexport class WebRtcConnWrapper {'],
     ['    _videoCodec;', '    _videoCodec;\n    _videoPacer;\n    _videoPacingBps;\n    _bitrateCalculator = new BitrateCalculator();'],
-    ['    initWebRtc() {', '    initWebRtc() {\n        const { videoSsrc, rtxSsrc } = this.mediaConnection.webRtcParams;\n        if (!this._videoDef.hasSSRC(videoSsrc)) this._videoDef.addSSRC(videoSsrc);\n        this._videoDef.addRtxSSRC(videoSsrc, rtxSsrc);'],
+    ['    initWebRtc() {', initPatch],
     ['        const { rtpConfig } = this._videoPacketizer;', '        this._videoPacingBps = Math.max(1000000, this._bitrateCalculator.addSample(frame.length) * 1.25);\n        this._videoPacer?.setBitrate(this._videoPacingBps);\n        const { rtpConfig } = this._videoPacketizer;'],
     ['        this._videoPacketizer.addToChain(new PacingHandler(25 * 1000 * 1000, 1));', '        this._videoPacingBps = 10 * 1000 * 1000;\n        this._videoPacer = new PacingHandler(this._videoPacingBps, 2);\n        this._videoPacketizer.addToChain(this._videoPacer);'],
 ];
@@ -35,7 +37,10 @@ function patchDiscordTransport(root = path.resolve(path.dirname(require.resolve(
     const target = path.join(root, 'dist/client/voice/WebRtcWrapper.js');
     const helper = path.join(path.dirname(target), 'BitrateCalculator.js');
     const before = fs.readFileSync(target, 'utf8');
-    let after = before;
+    // Upgrade installs that already received the video-only backport. Native
+    // transport routes incoming RTP by the SSRC advertised before addTrack;
+    // voice audio needs the same registration as video.
+    let after = before.replace(previousInitPatch, initPatch);
     for (const [oldText, newText] of replacements) {
         if (after.includes(newText)) continue;
         const count = after.split(oldText).length - 1;

@@ -380,8 +380,12 @@ test('Music Mode playback passes the current piece and seek offset to the FFmpeg
     startOffsetSec: 42, control: new AbortController(), isLive: false, isFiller: false };
   const link = { paused: false, pipeline: { closed: false, enqueue: [piece], writerTask: null,
     activeWriter: null, feeder: {} } };
-  let args;
-  mgr._buildDashMerge = (...received) => { args ||= received; throw new Error('probe stop'); };
+  let args, artwork;
+  mgr._buildDashMerge = (...received) => {
+    args ||= received;
+    artwork ||= received[5].musicArtwork;
+    throw new Error('probe stop');
+  };
   let failure;
   mgr._notifyError = message => { failure = message; };
   mgr._startGraceTimer = () => {};
@@ -391,6 +395,7 @@ test('Music Mode playback passes the current piece and seek offset to the FFmpeg
   assert.equal(args[3], 42);
   assert.strictEqual(args[5], piece);
   assert.equal(piece.musicMode, true);
+  assert.equal(artwork.title, 'Current song', 'real music must replace the idle artwork title before FFmpeg starts');
 });
 
 test('YouTube HLS permits extensionless segments only on its manifest host', () => {
