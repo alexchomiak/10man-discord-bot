@@ -403,7 +403,7 @@ test('external Discord voice move reopens Go Live and preserves active content p
   await start('a');
   await start('b');
   const oldPipeline=mgr.voiceLink.pipeline;
-  mgr.session.startedAt=Date.now()-12_000;
+  mgr.session.playedSec=12;
 
   const result=await mgr.handleVoiceStateUpdate({
     t:'VOICE_STATE_UPDATE',
@@ -438,7 +438,7 @@ test('dashboard channel move restarts Go Live at the current position and keeps 
   const {mgr,fv,start}=fixture(t,{streamBufferSec:0});
   await start('a'); await start('b');
   const old = mgr.voiceLink.pipeline;
-  mgr.session.startedAt = Date.now() - 8000;
+  mgr.session.playedSec = 8;
   const moved = await mgr.moveChannel('g1','c2');
   assert(moved.ok && moved.moved);
   assert(old.closed);
@@ -1379,4 +1379,68 @@ test('registry: scrub/pause/resume/catchup are registered and reply (no channel 
   assert.strictEqual(e.replyTexts.length, 0, 'NO channel send from $catchup');
   assert.ok(alerts.some(x => x.event === 'cmd' && /not.*live|catch/i.test(x.detail)), 'catchup on a VOD must reply not-live via the alert sink');
   await mgr.stop();
+});
+
+test('startup failure before any frames preserves the requested recovery position', async t => {
+  const { mgr, fv } = fixture(t, { streamBufferSec: 0 });
+  await mgr.start({ guildId: 'g1', channelId: 'c1', streamUrl: 'https://example.com/video.mp4',
+    sourceInput: 'https://example.com/source', startOffsetSec: 12, totalDurationSec: 300 });
+  await until(() => fv.pieces.length === 1);
+  const piece = mgr.voiceLink.pipeline.activeWriter;
+  piece.startedAt = Date.now() - 148000;
+  assert.equal(mgr.positionOf(piece), 12, 'source opening time is not delivered playback');
+  fv.pieces[0].fail();
+  await until(() => mgr.voiceLink.pipeline.activeWriter?.recoveryAttempt === 1);
+  assert.equal(mgr.voiceLink.pipeline.activeWriter.startOffsetSec, 12);
+});
+
+test('empty prebuffer close propagates the original FFmpeg input failure', async t => {
+  const { mgr } = fixture(t, { jitterBufferSec: 4 });
+  const output = new PassThrough();
+  const original = new Error('Error opening input: Invalid data found when processing input');
+  const piece = { control: new AbortController(), ffmpegFailure: original };
+  const messages = [];
+  mgr._verbose = text => messages.push(text);
+  const buffering = mgr._prebuffer(output, piece);
+  output.destroy();
+  await assert.rejects(buffering, error => error === original);
+  assert.equal(messages.length, 0, 'empty failed input must not be reported ready');
+});
+
+test('FFmpeg input diagnostics retain the cause and redact URLs, headers, and token', t => {
+  const { mgr } = fixture(t);
+  const detail = mgr._ffmpegErrorDetail(new Error('FFmpeg exited with code 183'),
+    'Input #1, hls, from https://cdn.example/secret?sig=SIGNED:\n' +
+    'Authorization: Bearer test-token\nCookie: signed_cookie=SECRET\n' +
+    '[https] HTTP error 403 Forbidden\nError opening input file https://cdn.example/media?sig=SECRET\n' +
+    'Error opening input files: Invalid data found when processing input',
+    { audio: 'https://cdn.example/media?sig=SECRET' });
+  assert.match(detail, /Input #1/);
+  assert.match(detail, /audio input URL/);
+  assert.match(detail, /HTTP error 403 Forbidden/);
+  assert.match(detail, /Invalid data found/);
+  assert.doesNotMatch(detail, /https:\/\/|SIGNED|SECRET|test-token/);
+  assert.ok(detail.length <= 2048);
+});
+
+test('opening failure while prebuffering never hands empty output to the demuxer', async t => {
+  const { mgr, fv } = fixture(t, { jitterBufferSec: 4 });
+  let appended = 0;
+  const factory = mgr._feederFactory;
+  mgr._feederFactory = streamer => {
+    const feeder = factory(streamer);
+    const append = feeder.append;
+    feeder.append = (...args) => { appended++; return append(...args); };
+    return feeder;
+  };
+  await mgr.start({ guildId: 'g1', channelId: 'c1', streamUrl: 'https://example.com/input.mp4',
+    sourceInput: 'https://example.com/source', totalDurationSec: 300 });
+  await until(() => fv.pieces.length === 1);
+  const original = new Error('FFmpeg exited with code 183');
+  fv.pieces[0].command.emit('error', original, '',
+    'HTTP error 403 Forbidden\nError opening input file https://example.com/input.mp4');
+  await until(() => mgr.voiceLink.pipeline.activeWriter?.recoveryAttempt === 1);
+  assert.equal(appended, 0, 'failed opening must not produce a secondary NUT demux error');
+  assert.match(original.ffmpegDetail, /HTTP error 403 Forbidden/);
+  assert.match(original.ffmpegDetail, /video input URL/);
 });

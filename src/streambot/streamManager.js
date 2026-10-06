@@ -709,7 +709,8 @@ class StreamManager {
     // event can be clean EOF, a demux failure, or a stop, and none of those
     // should crash the awaiter as an unhandled rejection.
     const promise = new Promise((resolve, reject) => {
-      command.on('error', (err) => {
+      command.on('error', (err, stdout, stderr) => {
+        err.ffmpegDetail = this._ffmpegErrorDetail(err, stderr, { video: musicMode ? null : videoUrl, audio: musicAudioUrl || audioUrl });
         if (isAmbiguousPipeClose(err)) {
           resolve();
           return;
@@ -750,6 +751,23 @@ class StreamManager {
 
   _sanitize(text) {
     return redactToken(String(text || ''), this.client?.token);
+  }
+
+  _ffmpegErrorDetail(error, stderr, inputs = {}) {
+    // Preserve the input failure rather than only fluent-ffmpeg's final line.
+    // Never retain signed URLs or request headers in logs or alerts.
+    const scrub = value => {
+      let text = String(value || '');
+      for (const [name, url] of Object.entries(inputs)) {
+        if (isHttpUrl(url)) text = text.replaceAll(url, `[${name} input URL]`);
+      }
+      return this._sanitize(text)
+        .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL]')
+        .replace(/^.*(?:cookie|authorization|proxy-authorization)\s*:.*$/gim, '[REDACTED HEADER]');
+    };
+    const lines = scrub(stderr).split(/[\r\n]+/)
+      .filter(line => /error|failed|invalid|forbidden|denied|HTTP|opening|input #|server returned/i.test(line));
+    return [scrub(error?.message), ...lines].join(' ').replace(/[\r\n\t]+/g, ' ').slice(-2048);
   }
 
   // Genuine-error feedback: in addition to the existing log('error', …) line,
@@ -1121,7 +1139,11 @@ class StreamManager {
         cleanup();
         fn(value);
       };
-      const finish = () => settle(resolve);
+      const finish = () => {
+        if ((Number(output.readableLength) || 0) === 0) {
+          settle(reject, piece.ffmpegFailure || new Error('FFmpeg produced no media while buffering'));
+        } else settle(resolve);
+      };
       const fail = error => settle(reject, error);
       const abort = () => settle(reject, signal.reason || new Error('Playback cancelled while buffering'));
       const sample = () => {
@@ -1132,7 +1154,7 @@ class StreamManager {
         if (bytes > previousBytes) activeMs += now - previousAt;
         previousBytes = bytes;
         previousAt = now;
-        if (activeMs >= targetActiveMs || bytes >= capacityTarget || now - started >= deadlineMs) finish();
+        if (activeMs >= targetActiveMs || bytes >= capacityTarget || (bytes > 0 && now - started >= deadlineMs)) finish();
       };
       output.once?.('end', finish);
       output.once?.('finish', finish);
@@ -1308,7 +1330,11 @@ class StreamManager {
           let finish;
           let reject;
           const completion = new Promise((resolve, fail) => { finish = resolve; reject = fail; });
-          const failure = error => {
+          completion.catch(() => { /* observed after buffering, including startup failures */ });
+          const failure = (error, stdout, stderr) => {
+            if (stderr || error?.ffmpegDetail) {
+              error.ffmpegDetail = error.ffmpegDetail || this._ffmpegErrorDetail(error, stderr, { video: piece.videoUrl || piece.streamUrl, audio: piece.audioUrl });
+            }
             if (piece.control.signal.aborted) { finish(); return; }
             if (isAmbiguousPipeClose(error)) {
               const code = result.command.ffmpegProc?.exitCode ?? result.command.process?.exitCode;
@@ -1316,7 +1342,10 @@ class StreamManager {
               log('info', `stream ended: pipe closed; ffmpegExit=${code ?? 'unknown'}`);
               piece.ambiguous = true;
               finish();
-            } else reject(error);
+            } else {
+              piece.ffmpegFailure = error;
+              reject(error);
+            }
             result.output.destroy?.();
           };
           result.command.on('end', () => { clean = true; finish(); });
@@ -1341,6 +1370,7 @@ class StreamManager {
             piece.telemetry.start();
           } catch {}
           await this._prebuffer(result.output, piece);
+          if (piece.ffmpegFailure) throw piece.ffmpegFailure;
           appendTask = p.feeder.append(result.output, piece.control.signal, frameMs => {
             if (Number.isFinite(frameMs) && frameMs > 0) {
               piece.playedSec = (piece.playedSec || 0) + frameMs / 1000;
@@ -1397,9 +1427,9 @@ class StreamManager {
               recoverVod = true;
               vodRecoveryReason = error.code === 'AV_SYNC_LOST' ? 'audio/video sync lost'
                 : error.code === 'VIDEO_STALL' ? 'video stalled' : 'FFmpeg error';
-              const detail = String(error?.message || error)
+              const detail = String(error?.ffmpegDetail || error?.message || error)
                 .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL]')
-                .replace(/[\r\n\t]+/g, ' ').slice(-400);
+                .replace(/[\r\n\t]+/g, ' ').slice(-2048);
               const exit = piece.command?.ffmpegProc?.exitCode ?? piece.command?.process?.exitCode;
               log('warn', `VOD interruption: reason=${vodRecoveryReason} ffmpeg_exit=${Number.isInteger(exit) ? exit : 'unknown'} ` +
                 `position_s=${Math.round(this.positionOf(piece))} producer_buf=${piece.output?.readableLength || 0} ` +
@@ -1640,7 +1670,7 @@ class StreamManager {
     return { ...args, queueId: args.queueId || crypto.randomUUID(),
       guildId: link.guildId, channelId: link.channelId,
       streamer: link.streamer, voiceLink: link, control: new AbortController(),
-      startedAt: Date.now(), isFiller, isDash: !!(args.videoUrl && args.audioUrl),
+      startedAt: Date.now(), playedSec: 0, isFiller, isDash: !!(args.videoUrl && args.audioUrl),
       playType: 'go-live', isLive, totalDurationSec, sourceUrl };
   }
 
@@ -2008,15 +2038,16 @@ class StreamManager {
   }
 
   // Current playback position in seconds for a piece: the starting offset
-  // plus the wall-clock elapsed since the piece began, clamped to >=0 and (when
+  // plus the duration of frames sent, clamped to >=0 and (when
   // the piece has a finite totalDurationSec) to <= that duration. Used by
   // scrub/pause to know where to resume from. Never throws.
   positionOf(piece) {
     if (!piece) return 0;
     const base = Number.isFinite(piece.startOffsetSec) && piece.startOffsetSec > 0 ? piece.startOffsetSec : 0;
     // A stalled encoder/source advances wall time without advancing the
-    // viewer's video. Once frames have been sent, seek from their duration.
-    const elapsed = Number.isFinite(piece.playedSec) && piece.playedSec > 0
+    // viewer's video. Managed pieces start at zero; legacy callers without
+    // a frame counter retain their wall-clock fallback.
+    const elapsed = Number.isFinite(piece.playedSec) && piece.playedSec >= 0
       ? piece.playedSec
       : Math.max(0, (Date.now() - (piece.startedAt || Date.now())) / 1000);
     let pos = base + elapsed;
