@@ -410,20 +410,6 @@ test('YouTube HLS permits extensionless segments only on its manifest host', () 
   }
 });
 
-test('extensionless YouTube HLS inputs finish playlist EOF without HTTP reconnect loops', () => {
-  const mgr = new StreamManager({ token: 't' }, 'c1', {});
-  const base = 'https://manifest.googlevideo.com/api/manifest/hls_playlist/';
-  for (const isLive of [false, true]) {
-    const result = mgr._buildDashMerge({ Utils: { normalizeVideoCodec: c => c } },
-      base + 'video/itag/301', base + 'audio/itag/234', 0, null, { isLive });
-    const argv = argvOf(result.command);
-    assert.equal(argv.filter(a => a === '-extension_picky').length, 2);
-    assert.ok(!argv.includes('-reconnect'));
-    assert.ok(!argv.includes('-reconnect_streamed'));
-    assert.equal(argv.filter(a => a === '-readrate').length, isLive ? 0 : 2);
-  }
-});
-
 test('single lavfi filler paces both synthetic inputs with -re', () => {
   const mgr = new StreamManager({ token: 't' }, 'c1', {
     videoCodec: 'H264', streamBitrate: 5000, streamHeight: 1080,
@@ -631,6 +617,29 @@ test('video burst controls are configurable without reducing average or peak bit
   assert.deepStrictEqual(argv.slice(argv.indexOf('-bufsize:v'), argv.indexOf('-bufsize:v') + 2), ['-bufsize:v', '2400k']);
   assert.deepStrictEqual(argv.slice(argv.indexOf('-force_key_frames'), argv.indexOf('-force_key_frames') + 2),
     ['-force_key_frames', 'expr:gte(t,n_forced*1.5)']);
+});
+
+test('empty stdout before ambiguous fluent close retains sanitized stderr and child exit', async () => {
+  const mgr = new StreamManager({ token: 'test-token' }, 'c1', { jitterBufferSec: 4 });
+  const result = mgr._buildDashMerge({}, 'https://cdn.example/v.mp4',
+    'https://cdn.example/a.m4a', 0, null, { isLive: false });
+  const child = { exitCode: 183, signalCode: null };
+  result.command.ffmpegProc = child;
+  result.command.emit('start');
+  result.command.emit('stderr', 'HTTP error 403 Forbidden https://cdn.example/secret?sig=SECRET');
+  for (let i = 0; i < 1000; i++) result.command.emit('stderr', 'frame=0 fps=0');
+  delete result.command.ffmpegProc;
+  const buffering = mgr._prebuffer(result.output, { control: new AbortController(),
+    command: result.command, promise: result.promise });
+  result.output.end();
+  await new Promise(resolve => setImmediate(resolve));
+  result.command.emit('error', new Error('Output stream closed'));
+  await assert.rejects(buffering, error => {
+    assert.match(error.ffmpegDetail, /HTTP error 403 Forbidden/);
+    assert.doesNotMatch(error.ffmpegDetail, /SECRET|https:\/\//);
+    return true;
+  });
+  assert.equal(result.command.process.exitCode, 183);
 });
 
 test('remote media builds a real bounded jitter buffer before Discord drains it', async () => {

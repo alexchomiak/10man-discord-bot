@@ -43,21 +43,22 @@ function run(bin, args, timeoutMs = 20000) {
   });
 }
 
-function inputArgs(url, config) {
+function inputArgs(url, config, { noReconnect = false } = {}) {
   const options = isYoutubeHlsUrl(url) ? ['-extension_picky', '0'] : [];
   options.push('-thread_queue_size', '256', '-rw_timeout',
     String(Math.max(1000, Math.round((config.ffmpegReadTimeoutMs || 15000) * 1000))),
     '-user_agent', 'Mozilla/5.0', '-readrate', '1.15', '-readrate_initial_burst', '4');
-  if (!/m3u8?/i.test(url) && !isYoutubeHlsUrl(url)) options.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
-  return ['-hide_banner', '-loglevel', 'error', ...options, '-i', url,
+  if (!noReconnect && !/m3u8?/i.test(url)) options.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
+  return ['-hide_banner', '-loglevel', 'info', ...options, '-i', url,
     '-t', '1', '-map', '0:v:0?', '-map', '0:a:0?', '-c', 'copy', '-f', 'null', '-'];
 }
 
 async function main() {
   require('dotenv').config({ quiet: true });
-  const url = process.argv[2];
+  const noReconnect = process.argv.includes('--no-reconnect');
+  const url = process.argv.slice(2).find(arg => arg !== '--no-reconnect');
   if (!url || !/^https:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(url)) {
-    throw new Error('Usage: node scripts/diagnose-youtube-input.cjs <public YouTube URL>');
+    throw new Error('Usage: node scripts/diagnose-youtube-input.cjs <public YouTube URL> [--no-reconnect]');
   }
   // loadConfig validates a Discord token, although this command never uses it.
   const savedToken = process.env.SELF_BOT_TOKEN;
@@ -73,6 +74,7 @@ async function main() {
   const version = await run(config.ffmpegPath, ['-version'], 5000);
   print((version.stdout || version.stderr).split('\n')[0]);
   const source = await resolveSource(url, config);
+  print(`reconnect_mode=${noReconnect ? 'disabled comparison' : 'production default'}`);
   print(`resolver=${source.kind} available=${source.available} streamType=${source.streamType || 'none'}`);
   if (!source.available) throw new Error(source.note || 'Source unavailable');
   const inputs = source.streamType === 'dash'
@@ -82,7 +84,7 @@ async function main() {
     const parsed = new URL(input);
     print(`input=${role} protocol=${isYoutubeHlsUrl(input) ? 'HLS' : parsed.protocol.replace(':', '')} host=${parsed.hostname}`);
     const started = Date.now();
-    const result = await run(config.ffmpegPath, inputArgs(input, config));
+    const result = await run(config.ffmpegPath, inputArgs(input, config, { noReconnect }));
     print(`input=${role} ok=${result.ok} exit=${result.code} timeout=${result.timedOut} elapsed_ms=${Date.now() - started}`);
     if (!result.ok) {
       print(result.stderr || 'FFmpeg returned no diagnostic text');

@@ -34,11 +34,14 @@ test('source diagnostic reads one second without decoding or storing media', () 
   assert.equal(args[args.indexOf('-rw_timeout') + 1], '15000000');
 });
 
-test('source diagnostic avoids reconnecting extensionless YouTube HLS playlists', () => {
+test('source diagnostic matches production reconnect with explicit comparison option', () => {
   const args = inputArgs('https://manifest.googlevideo.com/api/manifest/hls_playlist/itag/301', {});
   assert.ok(args.includes('-extension_picky'));
-  assert.ok(!args.includes('-reconnect'));
-  assert.ok(!args.includes('-reconnect_streamed'));
+  assert.ok(args.includes('-reconnect'));
+  assert.ok(args.includes('-reconnect_streamed'));
+  const comparison = inputArgs('https://manifest.googlevideo.com/api/manifest/hls_playlist/itag/301', {}, { noReconnect: true });
+  assert.ok(!comparison.includes('-reconnect'));
+  assert.ok(!comparison.includes('-reconnect_streamed'));
   const direct = inputArgs('https://cdn.example/video.mp4', {});
   assert.ok(direct.includes('-reconnect'));
 });
@@ -66,7 +69,7 @@ test('unknown-length HLS response reaches EOF instead of reopening the manifest'
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
-  const args = inputArgs('https://manifest.googlevideo.com/api/manifest/hls_playlist/itag/234', {});
+  const args = inputArgs('https://manifest.googlevideo.com/api/manifest/hls_playlist/itag/234', {}, { noReconnect: true });
   args[args.indexOf('-i') + 1] = `http://127.0.0.1:${server.address().port}/manifest`;
   const fixed = await run('ffmpeg', args, 5000);
   assert.equal(fixed.ok, true, JSON.stringify(fixed));
@@ -76,5 +79,5 @@ test('unknown-length HLS response reaches EOF instead of reopening the manifest'
   const before = manifests;
   const broken = await run('ffmpeg', old, 2000);
   assert.equal(broken.timedOut, true);
-  assert.ok(manifests - before > 1, 'old options repeatedly reopen the completed playlist');
+  assert.ok(manifests - before > 1, 'production reconnect options repeatedly reopen this close-delimited fixture');
 });

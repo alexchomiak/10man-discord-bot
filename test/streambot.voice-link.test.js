@@ -1407,6 +1407,44 @@ test('empty prebuffer close propagates the original FFmpeg input failure', async
   assert.equal(messages.length, 0, 'empty failed input must not be reported ready');
 });
 
+test('empty prebuffer waits for FFmpeg error after stdout EOF', async t => {
+  const { mgr } = fixture(t, { jitterBufferSec: 4 });
+  const output = new PassThrough();
+  const original = new Error('FFmpeg exited with code 183: HTTP error 403 Forbidden');
+  let fail;
+  const promise = new Promise((resolve, reject) => { fail = reject; });
+  const piece = { control: new AbortController(), promise };
+  const buffering = mgr._prebuffer(output, piece);
+  output.end();
+  await new Promise(resolve => setImmediate(resolve));
+  fail(original);
+  await assert.rejects(buffering, error => error === original);
+});
+
+test('empty clean FFmpeg EOF and cancellation while awaiting exit terminate', async t => {
+  const { mgr } = fixture(t, { jitterBufferSec: 4 });
+  const clean = new PassThrough();
+  const buffering = mgr._prebuffer(clean, { control: new AbortController(), promise: Promise.resolve() });
+  clean.end();
+  await assert.rejects(buffering, /produced no media/);
+  const output = new PassThrough();
+  const control = new AbortController();
+  const pending = mgr._prebuffer(output, { control, promise: new Promise(() => {}) });
+  output.end();
+  await new Promise(resolve => setImmediate(resolve));
+  const reason = new Error('Cancelled');
+  control.abort(reason);
+  await assert.rejects(pending, error => error === reason);
+});
+
+test('empty prebuffer does not wait indefinitely for FFmpeg verdict', async t => {
+  const { mgr } = fixture(t, { jitterBufferSec: 4 });
+  const output = new PassThrough();
+  const buffering = mgr._prebuffer(output, { control: new AbortController(), promise: new Promise(() => {}) });
+  output.end();
+  await assert.rejects(buffering, /produced no media/);
+});
+
 test('FFmpeg input diagnostics retain the cause and redact URLs, headers, and token', t => {
   const { mgr } = fixture(t);
   const detail = mgr._ffmpegErrorDetail(new Error('FFmpeg exited with code 183'),

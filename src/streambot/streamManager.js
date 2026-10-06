@@ -462,10 +462,7 @@ class StreamManager {
         command.inputOptions(['-readrate', musicMode ? '1.0' : '1.15',
           '-readrate_initial_burst', String(burstSec)]);
       }
-      if (!/m3u8?/i.test(url) && !isYoutubeHlsUrl(url)) {
-        // Extensionless YouTube HLS manifests are still finite playlists.
-        // With unknown HTTP response length, reconnect_streamed treats their
-        // EOF as premature and repeatedly reopens the playlist before probing.
+      if (!/m3u8?/i.test(url)) {
         // VOD must finish at clean EOF. Live HTTP proxies can rotate or close
         // an otherwise healthy response at EOF, so reconnect those pieces in
         // place without recreating the persistent Discord Go Live session.
@@ -711,9 +708,19 @@ class StreamManager {
     // isAmbiguousPipeClose) is resolved rather than rejected — the pipe-close
     // event can be clean EOF, a demux failure, or a stop, and none of those
     // should crash the awaiter as an unhandled rejection.
+    // Fluent deletes ffmpegProc before emitting its final error/end event.
+    // Retain the child so recovery can report the actual exit status.
+    command.on('start', () => { command.process = command.ffmpegProc; });
+    let diagnosticTail = '';
+    command.on('stderr', line => {
+      const detail = this._ffmpegErrorDetail(null, line,
+        { video: musicMode ? null : videoUrl, audio: musicAudioUrl || audioUrl });
+      if (detail) diagnosticTail = (diagnosticTail + '\n' + detail).slice(-4096);
+    });
+    command.getFailureDetail = error => this._ffmpegErrorDetail(error, diagnosticTail);
     const promise = new Promise((resolve, reject) => {
       command.on('error', (err, stdout, stderr) => {
-        err.ffmpegDetail = this._ffmpegErrorDetail(err, stderr, { video: musicMode ? null : videoUrl, audio: musicAudioUrl || audioUrl });
+        err.ffmpegDetail = this._ffmpegErrorDetail(err, stderr || diagnosticTail, { video: musicMode ? null : videoUrl, audio: musicAudioUrl || audioUrl });
         if (isAmbiguousPipeClose(err)) {
           resolve();
           return;
@@ -769,7 +776,7 @@ class StreamManager {
         .replace(/^.*(?:cookie|authorization|proxy-authorization)\s*:.*$/gim, '[REDACTED HEADER]');
     };
     const lines = scrub(stderr).split(/[\r\n]+/)
-      .filter(line => /error|failed|invalid|forbidden|denied|HTTP|opening|input #|server returned/i.test(line));
+      .filter(line => /error|failed|invalid|forbidden|denied|HTTP|opening|input #|server returned|timed out|timeout|connection|TLS|SSL/i.test(line));
     return [scrub(error?.message), ...lines].join(' ').replace(/[\r\n\t]+/g, ' ').slice(-2048);
   }
 
@@ -1127,9 +1134,12 @@ class StreamManager {
 
     await new Promise((resolve, reject) => {
       let interval;
+      let exitDeadline;
       let done = false;
+      let finishing = false;
       const cleanup = () => {
         if (interval) clearInterval(interval);
+        if (exitDeadline) clearTimeout(exitDeadline);
         output.off?.('end', finish);
         output.off?.('finish', finish);
         output.off?.('close', finish);
@@ -1144,7 +1154,24 @@ class StreamManager {
       };
       const finish = () => {
         if ((Number(output.readableLength) || 0) === 0) {
-          settle(reject, piece.ffmpegFailure || new Error('FFmpeg produced no media while buffering'));
+          if (finishing || done) return;
+          finishing = true;
+          // stdout EOF can finish this pipe before stderr closes and fluent
+          // emits its real input/encoder failure. Give that verdict a bounded
+          // chance to arrive; cancellation still rejects immediately.
+          const report = error => {
+            const failure = piece.ffmpegFailure ||
+              (error && !isAmbiguousPipeClose(error) ? error : null) ||
+              new Error('FFmpeg produced no media while buffering');
+            if (!failure.ffmpegDetail && piece.command?.getFailureDetail) {
+              failure.ffmpegDetail = piece.command.getFailureDetail(failure);
+            }
+            settle(reject, failure);
+          };
+          if (piece.promise) {
+            exitDeadline = setTimeout(() => report(), 1000);
+            Promise.resolve(piece.promise).then(() => report(), report);
+          } else report();
         } else settle(resolve);
       };
       const fail = error => settle(reject, error);

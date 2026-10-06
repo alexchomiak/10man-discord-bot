@@ -29,6 +29,7 @@ class TimedTrack extends Writable {
     this.syncTrack = null;
     this.startTime = undefined;
     this.startPts = undefined;
+    this.timeline = options.timeline || this;
     // Fixed-size counters only: never retain encoded packets or frame history.
     this.diagnostics = options.diagnostics ? {
       frames: 0, bytes: 0, maxGapMs: 0, resets: 0,
@@ -78,8 +79,8 @@ class TimedTrack extends Writable {
       // duration, so delivery remains a steady 30 fps.
       if (Number.isFinite(this.previousPts) &&
           (ptsStep < 0 || Math.abs(ptsStep - frameMs) > this.maxPtsJumpMs)) {
-        this.startTime = started;
-        this.startPts = packetPts;
+        this.timeline.startTime = started;
+        this.timeline.startPts = packetPts;
         if (this.diagnostics) { this.diagnostics.resets++; this.diagnostics.timestampResets++; }
       }
       this.pts = packetPts;
@@ -122,19 +123,19 @@ class TimedTrack extends Writable {
         d.lastPts = packetPts;
         if (packet.isKeyframe === true) d.keyAt = ended;
       }
-      this.startTime ??= started;
-      this.startPts ??= this.pts;
+      this.timeline.startTime ??= started;
+      this.timeline.startPts ??= this.pts;
       if (waitedForAudio) {
         // The sync wait delayed this frame. Start its pacing interval at the
         // actual send time; otherwise the next queued frame sends immediately
         // and live video alternates a visible pause with a two-frame burst.
-        this.startTime = ended;
-        this.startPts = this.pts;
+        this.timeline.startTime = ended;
+        this.timeline.startPts = this.pts;
         if (this.diagnostics) this.diagnostics.resets++;
         await this.sleep(frameMs);
       } else {
-        const mediaElapsed = this.pts - this.startPts + frameMs;
-        const wallElapsed = ended - this.startTime;
+        const mediaElapsed = this.pts - this.timeline.startPts + frameMs;
+        const wallElapsed = ended - this.timeline.startTime;
         const lateBy = wallElapsed - mediaElapsed;
         if (this.diagnostics) this.diagnostics.lateMaxMs = Math.max(this.diagnostics.lateMaxMs, lateBy);
         if (lateBy > this.maxCatchupMs) {
@@ -143,8 +144,8 @@ class TimedTrack extends Writable {
           // sender far behind its original wall clock. Sending every delayed
           // frame with zero sleep creates an RTP burst and makes the freeze
           // worse. Rebase at the next frame and resume steady pacing.
-          this.startTime = ended;
-          this.startPts = this.pts;
+          this.timeline.startTime = ended;
+          this.timeline.startPts = this.pts;
           await this.sleep(frameMs);
         } else {
           const delay = Math.max(0, mediaElapsed - wallElapsed);
@@ -263,8 +264,12 @@ class PersistentTrackFeeder {
         this.rtcBytesSent += frame.length;
         audioConnection.sendAudioFrame(frame, ms);
       };
-      const video = new TimedTrack(sendVideo, 'video', { defaultDurationMs: 1000 / this.frameRate, diagnostics: this.diagnostics });
-      const audio = new TimedTrack(sendAudio, 'audio', { diagnostics: this.diagnostics });
+      // VOD tracks share one wall/media mapping. Rebasing only one track
+      // after an asymmetric stall permanently offsets it from its partner.
+      // A shared clock lets both recover without waiting on demux queues.
+      const timeline = syncVideoToAudio ? undefined : {};
+      const video = new TimedTrack(sendVideo, 'video', { defaultDurationMs: 1000 / this.frameRate, diagnostics: this.diagnostics, timeline });
+      const audio = new TimedTrack(sendAudio, 'audio', { diagnostics: this.diagnostics, timeline });
       // The demuxer reads one interleaved stream and stops when either output
       // queue fills. On seekable VOD, waiting for an audio packet while the
       // video queue is full can prevent the demuxer from reading that audio.
