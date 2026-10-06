@@ -2,6 +2,9 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 
 const {
   trackedDemuxers,
@@ -182,7 +185,11 @@ test('video transport observes the upstream video chain without replacing it', (
     const connection = { _videoPacketizer: packetizer, _audioPacketizer: audio,
       _videoTrack: { setMediaHandler() { installed = true; } } };
     const transport = configureVideoTransport(connection);
-    assert.equal(transport.pacingBps, 25000000);
+    assert.equal(transport.pacingBps, null);
+    connection._videoPacingBps = 6000000;
+    assert.equal(transport.takeDiagnostics().pacingKbps, 6000);
+    connection._videoPacingBps = 8000000;
+    assert.equal(transport.takeDiagnostics().pacingKbps, 8000);
     assert.equal(connection._videoPacketizer, packetizer);
     assert.equal(installed, false);
     assert.equal(packetizer.rtpConfig.timestamp, 9000);
@@ -610,4 +617,55 @@ test('track diagnostics do not count frames rejected by an unready connection', 
   assert.equal(stats.rejectedFrames, 1);
   assert.equal(stats.keyAgeMs, null);
   track.destroy();
+});
+
+test('patched transport adapts pacing to source bitrate and never retries queued sends', async () => {
+  const { pathToFileURL } = require('node:url');
+  const root = path.dirname(require.resolve('@dank074/discord-video-stream'));
+  const { WebRtcConnWrapper } = await import(pathToFileURL(path.join(root, 'client/voice/WebRtcWrapper.js')));
+  const conn = new WebRtcConnWrapper({ webRtcParams: { audioSsrc: 41, videoSsrc: 42, rtxSsrc: 43 }, daveReady: false });
+  conn.setPacketizer('H265');
+  conn._videoPacketizer.rtpConfig.timestamp = 0;
+  assert.equal(conn._videoPacingBps, 10000000);
+  assert.equal(typeof conn._videoPacer.setBitrate, 'function');
+  conn._webRtcConn = { state: () => 'connected' };
+  let sends = 0;
+  conn._videoTrack = { sendMessageBinary() { sends++; return false; } };
+  const clock = Date.now;
+  let now = 1000;
+  Date.now = () => now;
+  try {
+    const frame = Buffer.alloc(10000);
+    conn.sendVideoFrame(frame, 1000 / 30);
+    assert.equal(conn._videoPacingBps, 1000000);
+    for (let i = 0; i < 7; i++) { now += 30; conn.sendVideoFrame(frame, 1000 / 30); }
+    assert.equal(conn._videoPacingBps, 3200000);
+    now += 1000;
+    conn.sendVideoFrame(frame, 1000 / 30);
+    assert.equal(conn._videoPacingBps, 1000000);
+    assert.equal(sends, 9);
+    assert.equal(conn._videoPacketizer.rtpConfig.timestamp, 27000);
+    assert.equal(conn._bitrateCalculator._samples.length, 1);
+  } finally { Date.now = clock; }
+});
+
+test('transport install patch is idempotent and rejects version or anchor drift before writing', () => {
+  const { patchDiscordTransport } = require('../scripts/patch-discord-transport');
+  const installed = path.resolve(path.dirname(require.resolve('@dank074/discord-video-stream')), '..');
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'transport-patch-'));
+  try {
+    fs.mkdirSync(path.join(fixture, 'dist/client/voice'), { recursive: true });
+    fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"6.0.0"}');
+    const target = path.join(fixture, 'dist/client/voice/WebRtcWrapper.js');
+    const patched = fs.readFileSync(path.join(installed, 'dist/client/voice/WebRtcWrapper.js'), 'utf8');
+    fs.writeFileSync(target, patched);
+    assert.equal(patchDiscordTransport(fixture), false);
+    assert.equal(fs.readFileSync(target, 'utf8'), patched);
+    fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"7.0.0"}');
+    assert.throws(() => patchDiscordTransport(fixture), /requires discord-video-stream 6.0.0/);
+    fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"6.0.0"}');
+    fs.writeFileSync(target, 'unexpected upstream content');
+    assert.throws(() => patchDiscordTransport(fixture), /expected one anchor/);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'unexpected upstream content');
+  } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
 });

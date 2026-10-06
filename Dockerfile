@@ -9,7 +9,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-COPY scripts/patch-node-av.js ./scripts/patch-node-av.js
+COPY scripts/patch-node-av.js scripts/patch-discord-transport.js ./scripts/
 # Both bundled FFmpeg CLIs duplicate the system binary in the runtime.
 RUN SKIP_FFMPEG=true npm ci --omit=dev \
   && rm -rf node_modules/ffmpeg-static node_modules/node-av/binary/ffmpeg \
@@ -20,7 +20,7 @@ RUN SKIP_FFMPEG=true npm ci --omit=dev \
   && zmq_addon="node_modules/zeromq/build/linux/$zmq_arch/node/glibc-$zmq_abi-Release/addon.node" \
   && test -f "$zmq_addon" \
   && find node_modules/zeromq/build -name addon.node ! -path "$zmq_addon" -delete \
-  && node -e "require('better-sqlite3'); require('zeromq'); import('node-av')" \
+  && node -e "require('better-sqlite3'); require('zeromq'); require('@lng2004/node-datachannel'); import('node-av')" \
   && npm cache clean --force
 
 FROM node:22-trixie-slim AS dashboard-build

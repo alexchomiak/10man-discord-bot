@@ -9,9 +9,9 @@ function configureVideoTransport(connection, { diagnostics = false } = {}) {
   if (!track || !config) return null;
   const reports = diagnostics ? createReceiverReports(connection.mediaConnection.webRtcParams.videoSsrc) : null;
   if (reports) track.onMessage(reports.consume);
-  // The pinned library installs PacingHandler(25 Mbps, 1 ms) in setPacketizer.
-  const pacingBps = 25_000_000;
-  return { pacingBps, takeDiagnostics: () => ({ pacingKbps: pacingBps / 1000,
+  // The targeted backport records the last rate configured on its adaptive pacer.
+  return { get pacingBps() { return connection._videoPacingBps ?? null; },
+    takeDiagnostics: () => ({ pacingKbps: connection._videoPacingBps == null ? null : connection._videoPacingBps / 1000,
     playoutMaxMs: config.playoutDelayMax * 10, ...reports?.snapshot() }) };
 }
 

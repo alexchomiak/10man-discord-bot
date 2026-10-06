@@ -1197,6 +1197,7 @@ class StreamManager {
         let liveError = null;
         let stallWatchdog = null;
         let lastVideoFrameAt = 0;
+        let stallTriggered = false;
         try {
           if (!piece.isFiller && piece.sourceInput && !piece.streamUrl && !piece.videoUrl) {
             // Playlist entries keep page URLs in the queue. Resolve the signed
@@ -1354,8 +1355,9 @@ class StreamManager {
                 if (lastVideoFrameAt) lastVideoFrameAt = Date.now();
                 return;
               }
-              if (lastVideoFrameAt && !piece.control.signal.aborted &&
+              if (!stallTriggered && lastVideoFrameAt && !piece.control.signal.aborted &&
                   Date.now() - lastVideoFrameAt >= timeoutMs) {
+                stallTriggered = true;
                 const error = new Error('VOD video stopped producing frames');
                 error.code = 'VIDEO_STALL';
                 failure(error);
@@ -1371,6 +1373,9 @@ class StreamManager {
                 piece.totalDurationSec > 0 && remaining > 30) {
               recoverVod = true;
               vodRecoveryReason = 'early EOF';
+              const exit = piece.command?.ffmpegProc?.exitCode ?? piece.command?.process?.exitCode;
+              log('warn', `VOD interruption: reason=early-EOF ffmpeg_exit=${Number.isInteger(exit) ? exit : 'unknown'} ` +
+                `position_s=${Math.round(this.positionOf(piece))} remaining_s=${Math.round(remaining)}`);
             } else this._notifyEnded(piece, clean);
           }
         } catch (error) {
@@ -1392,14 +1397,13 @@ class StreamManager {
               recoverVod = true;
               vodRecoveryReason = error.code === 'AV_SYNC_LOST' ? 'audio/video sync lost'
                 : error.code === 'VIDEO_STALL' ? 'video stalled' : 'FFmpeg error';
-              if (vodRecoveryReason === 'FFmpeg error') {
-                const detail = String(error?.message || error)
-                  .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL]')
-                  .replace(/[\r\n\t]+/g, ' ').slice(-400);
-                const exit = piece.command?.ffmpegProc?.exitCode ?? piece.command?.process?.exitCode;
-                log('warn', `VOD FFmpeg failure: exit=${Number.isInteger(exit) ? exit : 'unknown'} ` +
-                  `detail=${this._sanitize(detail)}`);
-              }
+              const detail = String(error?.message || error)
+                .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL]')
+                .replace(/[\r\n\t]+/g, ' ').slice(-400);
+              const exit = piece.command?.ffmpegProc?.exitCode ?? piece.command?.process?.exitCode;
+              log('warn', `VOD interruption: reason=${vodRecoveryReason} ffmpeg_exit=${Number.isInteger(exit) ? exit : 'unknown'} ` +
+                `position_s=${Math.round(this.positionOf(piece))} producer_buf=${piece.output?.readableLength || 0} ` +
+                `detail=${this._sanitize(detail)}`);
             }
             else this._notifyError(`ffmpeg error: ${error.message}`);
           }
