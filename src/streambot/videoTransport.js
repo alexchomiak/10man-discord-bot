@@ -10,7 +10,9 @@ function configureVideoTransport(connection, { diagnostics = false } = {}) {
   const reports = diagnostics ? createReceiverReports(connection.mediaConnection.webRtcParams.videoSsrc) : null;
   if (reports) track.onMessage(reports.consume);
   // The targeted backport records the last rate configured on its adaptive pacer.
-  return { get pacingBps() { return connection._videoPacingBps ?? null; },
+  return { dispose() {
+    if (reports) { try { track.onMessage(() => {}); } catch { /* retired native track */ } }
+  }, get pacingBps() { return connection._videoPacingBps ?? null; },
     takeDiagnostics: () => ({ pacingKbps: connection._videoPacingBps == null ? null : connection._videoPacingBps / 1000,
     playoutMaxMs: config.playoutDelayMax * 10, ...reports?.snapshot() }) };
 }

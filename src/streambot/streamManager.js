@@ -142,7 +142,8 @@ class StreamManager {
       streamer, videoModule, width: this.config.streamWidth || 1920,
       height: this.config.streamHeight || 1080, frameRate: this.config.streamFrameRate || 30,
       videoCodec: this._outputCodec(),
-      diagnostics: this.config.verbose === true || !!this.metricSink
+      diagnostics: this.config.verbose === true || !!this.metricSink,
+      transportLog: message => log('info', `[worker:${this.config.workerId || 'default'}] transport: ${message}`)
     });
   }
 

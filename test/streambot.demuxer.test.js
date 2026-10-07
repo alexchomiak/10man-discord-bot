@@ -657,34 +657,231 @@ test('Music Mode negotiated voice transport delivers Opus RTP after packetizer s
 });
 
 test('transport install patch upgrades old installs, patches fresh installs, and rejects drift before writing', () => {
-  const { patchDiscordTransport } = require('../scripts/patch-discord-transport');
+  const { patchDiscordTransport, replacements, generationReplacements, mediaReplacements } = require('../scripts/patch-discord-transport');
   const installed = path.resolve(path.dirname(require.resolve('@dank074/discord-video-stream')), '..');
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'transport-patch-'));
+  const undo = (source, edits) => [...edits].reverse().reduce((text, [before, after]) => text.replace(after, before), source);
   try {
     fs.mkdirSync(path.join(fixture, 'dist/client/voice'), { recursive: true });
     fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"6.0.0"}');
     const target = path.join(fixture, 'dist/client/voice/WebRtcWrapper.js');
+    const mediaTarget = path.join(fixture, 'dist/client/voice/BaseMediaConnection.js');
     const patched = fs.readFileSync(path.join(installed, 'dist/client/voice/WebRtcWrapper.js'), 'utf8');
+    const patchedMedia = fs.readFileSync(path.join(installed, 'dist/client/voice/BaseMediaConnection.js'), 'utf8');
     fs.writeFileSync(target, patched);
+    fs.writeFileSync(mediaTarget, patchedMedia);
     assert.equal(patchDiscordTransport(fixture), false);
-    assert.equal(fs.readFileSync(target, 'utf8'), patched);
-    const audioRegistration = '        if (!this._audioDef.hasSSRC(audioSsrc)) this._audioDef.addSSRC(audioSsrc);\n';
-    assert.ok(patched.includes(audioRegistration));
-    const previous = patched.replace(audioRegistration, '').replace(
+    const previous = undo(patched, generationReplacements);
+    const originalMedia = undo(patchedMedia, mediaReplacements);
+    const videoOnly = previous.replace('        if (!this._audioDef.hasSSRC(audioSsrc)) this._audioDef.addSSRC(audioSsrc);\n', '').replace(
       'const { audioSsrc, videoSsrc, rtxSsrc } = this.mediaConnection.webRtcParams;',
       'const { videoSsrc, rtxSsrc } = this.mediaConnection.webRtcParams;');
-    fs.writeFileSync(target, previous);
-    assert.equal(patchDiscordTransport(fixture), true);
-    assert.equal(fs.readFileSync(target, 'utf8'), patched);
-    const fresh = previous.replace(/    initWebRtc\(\) \{\n        const \{ videoSsrc, rtxSsrc \} = this.mediaConnection.webRtcParams;\n        if \(!this._videoDef.hasSSRC\(videoSsrc\)\) this._videoDef.addSSRC\(videoSsrc\);\n        this._videoDef.addRtxSSRC\(videoSsrc, rtxSsrc\);/, '    initWebRtc() {');
-    fs.writeFileSync(target, fresh);
-    assert.equal(patchDiscordTransport(fixture), true);
-    assert.equal(fs.readFileSync(target, 'utf8'), patched);
+    for (const source of [previous, videoOnly, undo(previous, replacements)]) {
+      fs.writeFileSync(target, source);
+      fs.writeFileSync(mediaTarget, originalMedia);
+      assert.equal(patchDiscordTransport(fixture), true);
+      assert.equal(fs.readFileSync(target, 'utf8'), patched);
+      assert.equal(fs.readFileSync(mediaTarget, 'utf8'), patchedMedia);
+      assert.equal(patchDiscordTransport(fixture), false);
+    }
     fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"7.0.0"}');
     assert.throws(() => patchDiscordTransport(fixture), /requires discord-video-stream 6.0.0/);
     fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"6.0.0"}');
     fs.writeFileSync(target, 'unexpected upstream content');
     assert.throws(() => patchDiscordTransport(fixture), /expected one anchor/);
     assert.equal(fs.readFileSync(target, 'utf8'), 'unexpected upstream content');
+    fs.writeFileSync(target, previous);
+    fs.writeFileSync(mediaTarget, 'unexpected media source');
+    fs.unlinkSync(path.join(fixture, 'dist/client/voice/BitrateCalculator.js'));
+    assert.throws(() => patchDiscordTransport(fixture), /expected one anchor/);
+    assert.equal(fs.readFileSync(target, 'utf8'), previous, 'validate both files before writing either');
+    assert.equal(fs.existsSync(path.join(fixture, 'dist/client/voice/BitrateCalculator.js')), false);
   } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test('real READY/ACK handlers restore persistent video across five bounded native generations', async () => {
+  const { pathToFileURL } = require('node:url');
+  const root = path.dirname(require.resolve('@dank074/discord-video-stream'));
+  const { BaseMediaConnection } = await import(pathToFileURL(path.join(root, 'client/voice/BaseMediaConnection.js')));
+  const { PersistentTrackFeeder } = require('../src/streambot/persistentTrackFeeder');
+  const savedWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = { OPEN: 1 };
+  const sent = [], peers = [], nativeTracks = [], logs = [];
+  let message, createCalls = 0, readyCalls = 0;
+  const media = new BaseMediaConnection({}, 'guild', 'bot', 'channel', () => readyCalls++);
+  media.ws = { readyState: 1, addEventListener(type, callback) { if (type === 'message') message = callback; },
+    send(payload) { sent.push(JSON.parse(payload)); } };
+  const wrapper = media.webRtcConn;
+  const originalInit = wrapper.initWebRtc.bind(wrapper);
+  wrapper.initWebRtc = () => {
+    const native = originalInit();
+    nativeTracks.push(wrapper._audioTrack, wrapper._videoTrack);
+    // Native methods are readonly. A facade intercepts SDP only; track
+    // definitions, packetizers, close/state and callback bindings remain native.
+    const peer = {
+      native, state: () => native.state(), close: () => native.close(),
+      onStateChange(callback) { this.stateCallback = callback; native.onStateChange(callback); },
+      onLocalDescription() {}, setLocalDescription() {}, setRemoteDescription() {}
+    };
+    wrapper._webRtcConn = peer;
+    peers.push(peer);
+    return peer;
+  };
+  const params = base => ({ ip: '127.0.0.1', port: 1, ssrc: base,
+    streams: [{ ssrc: base + 1, rtx_ssrc: base + 2 }], modes: [] });
+  const gateway = (op, d) => message({ data: JSON.stringify({ op, d }) });
+  media.handleReady(params(100));
+  wrapper.initWebRtc();
+  const feeder = new PersistentTrackFeeder({ streamer: { async createStream() { createCalls++; return wrapper; } },
+    videoModule: {}, transportLog: value => logs.push(value) });
+  try {
+    await feeder.start();
+    media.setupEvents();
+    for (let generation = 1; generation <= 5; generation++) {
+      const base = 100 + generation * 10;
+      const previousAudio = wrapper._audioPacketizer, previousVideo = wrapper._videoPacketizer;
+      const previousPeer = wrapper.webRtcConn;
+      await gateway(2, params(base));
+      assert.notEqual(wrapper._audioPacketizer, previousAudio);
+      assert.notEqual(wrapper._videoPacketizer, previousVideo);
+      assert.notEqual(wrapper.webRtcConn, previousPeer);
+      assert.equal(previousPeer.state(), 'closed', 'retired native peer must be closed');
+      for (let old = 100; old < base; old += 10) {
+        assert.equal(wrapper._audioDef.hasSSRC(old), false);
+        assert.equal(wrapper._videoDef.hasSSRC(old + 1), false);
+        assert.equal(wrapper._videoDef.hasSSRC(old + 2), false);
+      }
+      assert.equal(wrapper._audioDef.hasSSRC(base), true);
+      assert.equal(wrapper._videoDef.hasSSRC(base + 1), true);
+      assert.equal(wrapper._videoDef.hasSSRC(base + 2), true);
+      assert.deepEqual(sent.at(-1).d.streams, [], 'READY temporarily disables video');
+      await gateway(4, { sdp: 'c=IN IP4 127.0.0.1\na=rtcp:1\na=ice-ufrag:test\na=ice-pwd:test\na=fingerprint:sha-256 test\na=candidate:test', dave_protocol_version: 0 });
+      await Promise.resolve();
+      const video = sent.filter(packet => packet.op === 12).at(-1).d;
+      assert.equal(video.video_ssrc, base + 1);
+      assert.equal(video.streams[0].active, true);
+      assert.equal(video.streams[0].max_framerate, 30);
+      assert.equal(media.listenerCount('protocol_ready'), 1);
+      assert.equal(media.listenerCount('transport_event'), 1);
+      assert.equal(media.listenerCount('select_protocol_ack'), 0);
+      await feeder.start();
+      assert.equal(createCalls, 1, 'READY must preserve Go Live and content producer');
+    }
+    const audio = wrapper._audioPacketizer, video = wrapper._videoPacketizer, pacer = wrapper._videoPacer;
+    audio.rtpConfig.timestamp = 12345;
+    video.rtpConfig.timestamp = 67890;
+    await gateway(2, params(150));
+    await gateway(4, { sdp: '', dave_protocol_version: 0 });
+    assert.equal(wrapper._audioPacketizer, audio, 'unchanged sender SSRC preserves audio RTP handler');
+    assert.equal(wrapper._videoPacketizer, video, 'unchanged sender SSRC preserves video RTP handler');
+    assert.equal(wrapper._videoPacer, pacer);
+    assert.equal(audio.rtpConfig.timestamp, 12345);
+    assert.equal(video.rtpConfig.timestamp, 67890);
+    // RTX-only changes rebuild track association while retaining the primary
+    // sender's RTP clocks and NACK history.
+    const rtxOnly = params(150);
+    rtxOnly.streams[0].rtx_ssrc = 999;
+    await gateway(2, rtxOnly);
+    await gateway(4, { sdp: '', dave_protocol_version: 0 });
+    assert.equal(wrapper._videoPacketizer, video);
+    assert.equal(wrapper._audioPacketizer, audio);
+    assert.equal(video.rtpConfig.timestamp, 67890);
+    assert.equal(wrapper._videoDef.hasSSRC(999), true);
+    assert.equal(wrapper._videoDef.hasSSRC(152), false);
+    const calculator = wrapper._bitrateCalculator;
+    wrapper._videoPacingBps = 7654321;
+    const audioOnly = { ...rtxOnly, ssrc: 250 };
+    await gateway(2, audioOnly);
+    await gateway(4, { sdp: '', dave_protocol_version: 0 });
+    assert.notEqual(wrapper._audioPacketizer, audio);
+    assert.equal(wrapper._packetizerAudioSsrc, 250);
+    assert.equal(wrapper._videoPacketizer, video, 'audio-only SSRC change preserves video RTP sequence/clock');
+    assert.equal(video.rtpConfig.timestamp, 67890);
+    assert.equal(wrapper._videoPacer, pacer);
+    assert.equal(wrapper._videoPacingBps, 7654321);
+    assert.equal(wrapper._bitrateCalculator, calculator);
+    const reboundAudio = wrapper._audioPacketizer;
+    reboundAudio.rtpConfig.timestamp = 22222;
+    const videoOnly = { ...audioOnly, streams: [{ ssrc: 251, rtx_ssrc: 252 }] };
+    await gateway(2, videoOnly);
+    await gateway(4, { sdp: '', dave_protocol_version: 0 });
+    assert.equal(wrapper._audioPacketizer, reboundAudio, 'video-only SSRC change preserves audio RTP sequence/clock');
+    assert.equal(reboundAudio.rtpConfig.timestamp, 22222);
+    assert.notEqual(wrapper._videoPacketizer, video);
+    assert.notEqual(wrapper._videoPacer, pacer);
+    assert.equal(wrapper._packetizerVideoSsrc, 251);
+    assert.equal(wrapper._bitrateCalculator, calculator);
+    for (const peer of peers.slice(1, -1)) peer.stateCallback('closed');
+    assert.equal(peers.length, 10, 'retired callbacks must not recursively create connections');
+    await Promise.resolve();
+    assert.equal(readyCalls, 9);
+    assert.equal(media._daveSession, undefined, 'repair must not create or manipulate DAVE sessions');
+    assert.ok(logs.some(line => line === 'stream protocol-ready generation=5'));
+    await feeder.close();
+    assert.equal(media.listenerCount('protocol_ready'), 0);
+    assert.equal(media.listenerCount('transport_event'), 0);
+  } finally {
+    media._closed = true;
+    await feeder.close();
+    for (const peer of peers) peer.close();
+    globalThis.WebSocket = savedWebSocket;
+  }
+});
+
+test('protocol generations replace RTCP observers and log only sanitized lifecycle fields', async () => {
+  const { EventEmitter } = require('node:events');
+  const { PersistentTrackFeeder } = require('../src/streambot/persistentTrackFeeder');
+  const media = new EventEmitter();
+  media.webRtcParams = { videoSsrc: 41 };
+  media.setSpeaking = () => {};
+  let enabled = 0;
+  media.setVideoAttributes = () => enabled++;
+  const callbacks = [];
+  const connection = { mediaConnection: media, setPacketizer() {}, _videoPacketizer: { rtpConfig: {} },
+    _videoTrack: { onMessage(callback) { callbacks[0] = callback; } } };
+  const logs = [];
+  const feeder = new PersistentTrackFeeder({ streamer: { createStream: async () => connection }, videoModule: {},
+    diagnostics: true, transportLog: message => logs.push(message) });
+  await feeder.start();
+  let oldCallback = callbacks[0];
+  for (let generation = 1; generation <= 5; generation++) {
+    const oldTrack = connection._videoTrack;
+    let disposed = null;
+    oldTrack.onMessage = callback => { disposed = callback; };
+    connection._videoTrack = { onMessage(callback) { callbacks[generation] = callback; } };
+    media.emit('protocol_ready', { generation });
+    assert.equal(typeof disposed, 'function');
+    assert.notEqual(disposed, oldCallback, 'retired track callback must stop retaining receiver report state');
+    oldCallback = callbacks[generation];
+    assert.equal(media.listenerCount('protocol_ready'), 1);
+  }
+  media.emit('transport_event', { type: 'websocket-close', code: 4015, generation: 5,
+    reason: 'token=secret endpoint=private', message: 'secret', state: 'private' });
+  assert.equal(logs.at(-1), 'stream websocket-close generation=5 code=4015');
+  media.emit('transport_event', { type: 'secret-payload', generation: 5 });
+  assert.equal(logs.at(-1), 'stream websocket-close generation=5 code=4015');
+  assert.equal(enabled, 6);
+  const firstVoice = new EventEmitter(), secondVoice = new EventEmitter();
+  let voiceSpeaking = 0;
+  firstVoice.setSpeaking = secondVoice.setSpeaking = () => voiceSpeaking++;
+  feeder._observeMediaConnection(firstVoice, 'voice');
+  feeder.voiceAudioConnection = { mediaConnection: firstVoice };
+  firstVoice.emit('protocol_ready', { generation: 1 });
+  assert.equal(voiceSpeaking, 0, 'inactive music must not turn on voice speaking');
+  feeder.active = { voiceAudio: true };
+  firstVoice.emit('protocol_ready', { generation: 2 });
+  assert.equal(voiceSpeaking, 1);
+  feeder._observeMediaConnection(secondVoice, 'voice');
+  assert.equal(firstVoice.listenerCount('protocol_ready'), 0);
+  assert.equal(firstVoice.listenerCount('transport_event'), 0);
+  assert.equal(feeder.mediaObservers.size, 2, 'only current stream and voice observers may remain');
+  feeder.voiceAudioConnection = { mediaConnection: secondVoice };
+  secondVoice.emit('protocol_ready', { generation: 3 });
+  assert.equal(voiceSpeaking, 2);
+  feeder.active = null;
+  secondVoice.emit('protocol_ready', { generation: 4 });
+  assert.equal(voiceSpeaking, 2);
+  await feeder.close();
+  assert.equal(feeder.videoTransport, null);
+  assert.equal(feeder.mediaObservers.size, 0);
 });

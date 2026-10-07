@@ -162,7 +162,7 @@ class TimedTrack extends Writable {
 }
 
 class PersistentTrackFeeder {
-  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30, videoCodec = 'H264', diagnostics = false } = {}) {
+  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30, videoCodec = 'H264', diagnostics = false, transportLog = null } = {}) {
     this.streamer = streamer;
     this.videoModule = videoModule;
     this.width = width;
@@ -171,6 +171,8 @@ class PersistentTrackFeeder {
     this.videoCodec = videoCodec;
     this.videoTransport = null;
     this.diagnostics = diagnostics;
+    this.transportLog = transportLog;
+    this.mediaObservers = new Map();
     this.connection = null;
     this.voiceAudioConnection = null;
     this.startPromise = null;
@@ -202,12 +204,10 @@ class PersistentTrackFeeder {
         throw new Error('Persistent track feeder closed during startup');
       }
       connection.setPacketizer(this.videoCodec);
-      this.videoTransport = configureVideoTransport(connection, { diagnostics: this.diagnostics });
-      connection.mediaConnection.setSpeaking(true);
-      connection.mediaConnection.setVideoAttributes(true, {
-        width: Math.round(this.width), height: Math.round(this.height), fps: Math.round(this.frameRate)
-      });
       this.connection = connection;
+      this._observeMediaConnection(connection.mediaConnection, 'stream');
+      this._observeMediaConnection(this.streamer.voiceConnection?.webRtcConn?.mediaConnection, 'voice');
+      this._restoreVideoTransport();
       return connection;
     });
     const starting = Promise.race([created, cancelled]);
@@ -218,6 +218,49 @@ class PersistentTrackFeeder {
       if (this.startPromise === starting) this.startPromise = null;
       if (this.startAbort === abort) this.startAbort = null;
     }
+  }
+
+  _restoreVideoTransport() {
+    if (this.closed || !this.connection) return;
+    this.videoTransport?.dispose?.();
+    this.videoTransport = configureVideoTransport(this.connection, { diagnostics: this.diagnostics });
+    const media = this.connection.mediaConnection;
+    media.setSpeaking(true);
+    media.setVideoAttributes(true, {
+      width: Math.round(this.width), height: Math.round(this.height), fps: Math.round(this.frameRate)
+    });
+  }
+
+  _observeMediaConnection(media, kind) {
+    if (!media?.on || this.mediaObservers.has(media)) return;
+    // A voice wrapper may be replaced beneath a persistent stream. Keep at
+    // most one observer for each role, and detach callbacks from its predecessor.
+    for (const [previous, observer] of this.mediaObservers) {
+      if (observer.kind !== kind) continue;
+      previous.off('transport_event', observer.onEvent);
+      previous.off('protocol_ready', observer.onReady);
+      this.mediaObservers.delete(previous);
+    }
+    const onEvent = event => {
+      // Only fixed lifecycle fields; never forward gateway payloads, endpoints,
+      // credentials, raw ErrorEvents, or user-controlled close reasons.
+      const types = ['websocket-error', 'websocket-close', 'identify', 'resume', 'resumed', 'ready', 'native-state'];
+      if (!types.includes(event?.type)) return;
+      const fields = [kind, event.type];
+      if (Number.isInteger(event.generation)) fields.push(`generation=${event.generation}`);
+      if (Number.isInteger(event.code)) fields.push(`code=${event.code}`);
+      if (['new', 'connecting', 'connected', 'disconnected', 'failed', 'closed'].includes(event.state)) fields.push(`state=${event.state}`);
+      this.transportLog?.(fields.join(' '));
+    };
+    const onReady = event => {
+      if (this.closed) return;
+      if (kind === 'stream') this._restoreVideoTransport();
+      else if (this.active?.voiceAudio && this.voiceAudioConnection?.mediaConnection === media) media.setSpeaking(true);
+      this.transportLog?.(`${kind} protocol-ready generation=${Number.isInteger(event?.generation) ? event.generation : 0}`);
+    };
+    media.on('transport_event', onEvent);
+    media.on('protocol_ready', onReady);
+    this.mediaObservers.set(media, { kind, onEvent, onReady });
   }
 
   async append(input, signal, onVideoFrame, { syncVideoToAudio = true, voiceAudio = false } = {}) {
@@ -234,6 +277,7 @@ class PersistentTrackFeeder {
       if (this.voiceAudioConnection !== audioConnection) {
         audioConnection.setPacketizer(this.videoCodec);
         this.voiceAudioConnection = audioConnection;
+        this._observeMediaConnection(audioConnection.mediaConnection, 'voice');
       }
       audioConnection.mediaConnection.setSpeaking(true);
     }
@@ -275,7 +319,7 @@ class PersistentTrackFeeder {
       // video queue is full can prevent the demuxer from reading that audio.
       // Both tracks still pace their packets from media timestamps.
       if (syncVideoToAudio) video.syncTrack = audio;
-      active = { input, video, audio, videoSource: media.video.stream, audioSource: media.audio.stream };
+      active = { input, video, audio, voiceAudio, videoSource: media.video.stream, audioSource: media.audio.stream };
       this.active = active;
       active.videoSource.pipe(video);
       active.audioSource.pipe(audio);
@@ -304,6 +348,13 @@ class PersistentTrackFeeder {
 
   interrupt() {
     this.closed = true;
+    for (const [media, observer] of this.mediaObservers) {
+      media.off('transport_event', observer.onEvent);
+      media.off('protocol_ready', observer.onReady);
+    }
+    this.mediaObservers.clear();
+    this.videoTransport?.dispose?.();
+    this.videoTransport = null;
     this.startAbort?.abort();
     const active = this.active;
     active?.input.destroy();

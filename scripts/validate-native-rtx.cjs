@@ -19,24 +19,64 @@ function payloadOffset(packet) {
   if (packet[0] & 16) offset += 4 + packet.readUInt16BE(offset + 2) * 4;
   return offset;
 }
-async function validate(codec, Wrapper) {
+async function validate(codec, Wrapper, variant = 'unchanged') {
   const primarySsrc = 42, rtxSsrc = 43;
   const payloadType = codec === 'H264' ? 101 : 103;
   const rtxPayloadType = payloadType + 1;
-  const wrapper = new Wrapper({ webRtcParams: { audioSsrc: 41, videoSsrc: primarySsrc, rtxSsrc }, daveReady: false });
-  // Reconnect reuses the descriptor; registration must remain idempotent.
+  const media = { webRtcParams: variant === 'sender-ssrc-change'
+    ? { audioSsrc: 141, videoSsrc: 142, rtxSsrc: 143 }
+    : variant === 'audio-only-change' ? { audioSsrc: 141, videoSsrc: primarySsrc, rtxSsrc }
+    : variant === 'video-only-change' ? { audioSsrc: 41, videoSsrc: 142, rtxSsrc: 143 }
+    : { audioSsrc: 41, videoSsrc: primarySsrc, rtxSsrc: variant === 'rtx-only-change' ? 44 : rtxSsrc }, daveReady: false };
+  const wrapper = new Wrapper(media);
+  // Reconnect must advertise only the current sender/RTX association.
   const firstSender = wrapper.initWebRtc();
   nativeOwners.push(firstSender, wrapper._audioTrack, wrapper._videoTrack);
-  firstSender.close();
+  let oldVideo, oldAudio, oldPacer;
+  const calculator = wrapper._bitrateCalculator;
+  if (variant !== 'unchanged') {
+    wrapper.setPacketizer(codec);
+    oldVideo = wrapper._videoPacketizer;
+    oldAudio = wrapper._audioPacketizer;
+    oldPacer = wrapper._videoPacer;
+    wrapper._videoPacingBps = 7654321;
+    oldVideo.rtpConfig.timestamp = 12345;
+    oldAudio.rtpConfig.timestamp = 67890;
+    media.webRtcParams = { audioSsrc: 41, videoSsrc: primarySsrc, rtxSsrc };
+  }
   const sender = wrapper.initWebRtc();
+  assert.equal(firstSender.state(), 'closed', 'rebind closes the retired native peer');
+  if (variant !== 'unchanged') {
+    if (['sender-ssrc-change', 'video-only-change'].includes(variant)) {
+      assert.notEqual(wrapper._videoPacketizer, oldVideo);
+      assert.notEqual(wrapper._videoPacer, oldPacer);
+    } else {
+      assert.equal(wrapper._videoPacketizer, oldVideo);
+      assert.equal(wrapper._videoPacer, oldPacer);
+      assert.equal(wrapper._videoPacingBps, 7654321);
+      assert.equal(oldVideo.rtpConfig.timestamp, 12345);
+    }
+    if (['sender-ssrc-change', 'audio-only-change'].includes(variant)) assert.notEqual(wrapper._audioPacketizer, oldAudio);
+    else {
+      assert.equal(wrapper._audioPacketizer, oldAudio);
+      assert.equal(oldAudio.rtpConfig.timestamp, 67890);
+    }
+    assert.equal(wrapper._bitrateCalculator, calculator);
+  }
   const receiver = new rtc.PeerConnection(`rtx-${codec}`, { iceServers: [] });
   nativeOwners.push(wrapper, receiver);
   let receiverTrack, offer;
-  const originals = [], retransmissions = [];
+  const originals = [], retransmissions = [], audioPackets = [];
   const expected = new Map(), received = new Map();
   try {
     receiver.onTrack(track => {
       nativeOwners.push(track);
+      if (track.mid() === '0') {
+        track.onMessage(packet => {
+          if (Buffer.isBuffer(packet) && packet.length >= 12 && (packet[1] & 127) === 120) audioPackets.push(Buffer.from(packet));
+        });
+        return;
+      }
       if (track.mid() !== '1') return;
       receiverTrack = track;
       track.onMessage(packet => {
@@ -65,7 +105,14 @@ async function validate(codec, Wrapper) {
     assert.equal((offer.match(/a=ssrc:42(?:[ \r\n])/g) || []).length, 1, 'reconnect must not duplicate primary SSRC');
     assert.equal((offer.match(/a=ssrc-group:FID 42 43/g) || []).length, 1, 'reconnect must not duplicate FID');
     assert.match(offer, /a=ssrc-group:FID 42 43(?:\r?\n)/, 'initial offer must associate RTX before setPacketizer');
-    wrapper.setPacketizer(codec);
+    assert.doesNotMatch(offer, /a=ssrc:(?:44|141|142|143)(?:[ \r\n])/, 'retired SSRCs must not remain in SDP');
+    if (!wrapper._videoPacketizer) wrapper.setPacketizer(codec);
+    const audioTimestamp = wrapper._audioPacketizer.rtpConfig.timestamp;
+    for (let index = 0; index < 3; index++) wrapper.sendAudioFrame(Buffer.from([0xf8, 0xff, 0xfe]), 20);
+    await until(() => audioPackets.length === 3, `${codec} current-generation audio RTP`);
+    assert.deepEqual(audioPackets.map(packet => packet.readUInt32BE(8)), [41, 41, 41]);
+    assert.deepEqual(audioPackets.map(packet => packet.readUInt32BE(4)),
+      [audioTimestamp, audioTimestamp + 960, audioTimestamp + 1920].map(timestamp => timestamp >>> 0));
     const frame = Buffer.alloc(5000, 0x55);
     frame.set(codec === 'H264' ? [0, 0, 0, 1, 0x65] : [0, 0, 0, 1, 0x26, 1]);
     wrapper.sendVideoFrame(frame, 1000 / 30);
@@ -99,8 +146,8 @@ async function validate(codec, Wrapper) {
     const latencies = complete().map(([timestamp, frame]) => received.get(timestamp).at - frame.sentAt).sort((a, b) => a - b);
     const tailMs = Math.max(0, ...complete().map(([timestamp]) => received.get(timestamp).at - stoppedAt));
     assert.equal(complete().length, 180);
-    return { codec, adaptiveFramesSent: expected.size, completedAtStop, completedAfterDrain: complete().length,
-      latencyP50Ms: latencies[90], latencyP95Ms: latencies[171], latencyMaxMs: latencies.at(-1), tailMs, originalPackets: originals.length, rtxPackets: retransmissions.length, sdpFid: true, originalSequence: sequence };
+    return { codec, variant, adaptiveFramesSent: expected.size, completedAtStop, completedAfterDrain: complete().length,
+      latencyP50Ms: latencies[90], latencyP95Ms: latencies[171], latencyMaxMs: latencies.at(-1), tailMs, audioPackets: audioPackets.length, originalPackets: originals.length, rtxPackets: retransmissions.length, sdpFid: true, originalSequence: sequence };
   } finally {
     wrapper.close(); receiver.close();
     await sleep(100);
@@ -111,7 +158,11 @@ async function validate(codec, Wrapper) {
   const { WebRtcConnWrapper } = await import(pathToFileURL(path.join(path.dirname(entry), 'client/voice/WebRtcWrapper.js')).href);
   try {
     const results = [];
-    for (const codec of ['H264', 'H265']) results.push(await validate(codec, WebRtcConnWrapper));
+    const variants = process.argv.includes('--partial-ssrc-variants') ? ['audio-only-change', 'video-only-change']
+      : process.argv.includes('--generation-variants') ? ['sender-ssrc-change', 'rtx-only-change'] : ['unchanged'];
+    for (const variant of variants) {
+      for (const codec of ['H264', 'H265']) results.push(await validate(codec, WebRtcConnWrapper, variant));
+    }
     console.log(JSON.stringify({ nativePackageVersion: JSON.parse(require('node:fs').readFileSync(path.join(path.dirname(require.resolve('@lng2004/node-datachannel')), '../../../package.json'), 'utf8')).version, libdatachannelVersion: rtc.getLibraryVersion(), results }));
   } finally { rtc.cleanup(); nativeOwners.length = 0; }
 })().catch(error => { console.error(error); process.exitCode = 1; });
