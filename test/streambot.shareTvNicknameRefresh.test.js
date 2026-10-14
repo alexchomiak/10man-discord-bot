@@ -148,3 +148,16 @@ test('turning off and back on same piece waits for cancellation then refreshes',
   await flush();
   assert.deepEqual(h.updates, ['Current programme']);
 });
+
+test('failed programme image retries metadata after one minute even before EPG ends', async () => {
+  const h = harness(async () => ({ programme: { id: 1, title: 'Current', end_at: 5000, icon_url: '/image' } }));
+  let programmes = [];
+  h.poller.onProgramme = (_piece, _title, programme) => { programmes.push(programme); return false; };
+  h.activate(h.piece);
+  await flush();
+  assert.equal(programmes[0].icon_url, '/image');
+  assert.equal([...h.timers.values()][0].ms, 60000);
+  h.poller.onProgramme = () => true;
+  await h.advance(60000);
+  assert.equal([...h.timers.values()][0].at, 5060000);
+});

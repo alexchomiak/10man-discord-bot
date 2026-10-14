@@ -58,9 +58,13 @@ class ShareTvNicknameRefresh {
     }
     const programme = preview?.programme;
     const end = Number(programme?.end_at);
+    let imageReady;
     if (typeof programme?.title === 'string' && programme.title.trim() &&
-        (!(Number.isFinite(end) && end > 0) || end * 1000 > this.now())) this.onProgramme(piece, programme.title);
-    const deadline = Number.isFinite(end) && end > 0 ? end * 1000 + RETRY_MS : NaN;
+        (!(Number.isFinite(end) && end > 0) || end * 1000 > this.now())) {
+      try { imageReady = await this.onProgramme(piece, programme.title, programme); } catch { imageReady = false; }
+    }
+    if (!this._active(piece)) return;
+    const deadline = imageReady !== false && Number.isFinite(end) && end > 0 ? end * 1000 + RETRY_MS : NaN;
     this._schedule(piece, Number.isFinite(deadline) && deadline > this.now() ? deadline : this.now() + RETRY_MS);
   }
 }

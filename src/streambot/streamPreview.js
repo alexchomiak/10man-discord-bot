@@ -5,16 +5,18 @@ const { spawn } = require('node:child_process');
 const { fetchArtworkImage } = require('./fillerArtwork');
 
 // One still per piece; independent of media decoding and playback pacing.
-async function uploadStreamPreview({ piece, pipeline, isCurrent, onFailure = () => {} }) {
-  const signal = piece.control.signal;
+async function uploadStreamPreview({ piece, pipeline, isCurrent, onFailure = () => {}, signal = piece.control.signal }) {
   piece.previewFallbackWanted = false;
   let abort;
   try {
     if (signal.aborted || !isCurrent()) return;
     const artwork = piece.musicArtwork || piece.fillerArtwork;
-    const image = (piece.thumbnail
+    const sourceImage = piece.thumbnail
       ? await fetchArtworkImage(piece.thumbnail, { width: 512, height: 288 }, signal)
-      : null) || artwork?.file;
+      : null;
+    if (signal.aborted || !isCurrent()) return;
+    piece.previewSourceImageFailed = Boolean(piece.thumbnail && !sourceImage);
+    const image = sourceImage || artwork?.file;
     if (!image) {
       piece.previewFallbackWanted = !artwork && !signal.aborted && isCurrent();
       return;
@@ -38,6 +40,19 @@ async function uploadStreamPreview({ piece, pipeline, isCurrent, onFailure = () 
   } finally {
     if (abort) signal.removeEventListener('abort', abort);
   }
+}
+
+function programmeImage(programme, baseUrl) {
+  if (typeof programme?.icon_url !== 'string' || !programme.icon_url.trim()) return null;
+  try {
+    const url = new URL(programme.icon_url, baseUrl);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.toString() : null;
+  } catch { return null; }
+}
+function programmePreviewKey(programme, image) {
+  let imagePath = '';
+  try { const url = new URL(image); imagePath = url.origin + url.pathname; } catch {}
+  return JSON.stringify([programme?.id ?? null, programme?.title, programme?.end_at ?? null, imagePath]);
 }
 
 // Require a complete independently decodable Annex B frame. Do not retain
@@ -110,11 +125,11 @@ function snapshotPreview({ piece, pipeline, manager, isCurrent, codec, ffmpegPat
     setImmediate(async () => {
       try {
         const jpeg = await decode(copied, codec, piece.control.signal, ffmpegPath);
-        if (jpeg && !piece.control.signal.aborted && isCurrent()) await pipeline.streamer.setStreamPreview(jpeg);
+        if (jpeg && piece.previewFallbackWanted && !piece.control.signal.aborted && isCurrent()) await pipeline.streamer.setStreamPreview(jpeg);
       } catch { /* Still previews must never interrupt playback. */ }
       finally { if (manager._previewSnapshotJob === token) manager._previewSnapshotJob = null; }
     });
   };
 }
 
-module.exports = { uploadStreamPreview, standaloneFrame, decodeSnapshot, snapshotPreview };
+module.exports = { uploadStreamPreview, programmeImage, programmePreviewKey, standaloneFrame, decodeSnapshot, snapshotPreview };

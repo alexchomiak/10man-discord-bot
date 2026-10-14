@@ -24,7 +24,7 @@ const { createFillerArtwork, fillerCountdownFilter, workerDashboardUrl } = requi
 const { createMusicArtwork, updateMusicQueue, startMusicQueueFrames,
   stopMusicQueueFrames } = require('./musicArtwork');
 const { musicVisualizerFilter } = require('./musicVisualizer');
-const { uploadStreamPreview, snapshotPreview } = require('./streamPreview');
+const { uploadStreamPreview, snapshotPreview, programmeImage, programmePreviewKey } = require('./streamPreview');
 
 function log(level, ...parts) {
   if (level === 'error') console.error(TAG, ...parts);
@@ -123,8 +123,19 @@ class StreamManager {
     this.contentNickname.isCurrent = piece => this.session === piece && this.voiceLink === piece.voiceLink && !piece.voiceLink?.closing && !piece.voiceLink?.paused;
     this.shareTvNicknameRefresh = new ShareTvNicknameRefresh({
       fetchPreview: (input, signal) => require('./sources').getShareTvPreview(input, this.config, signal),
-      isCurrent: piece => this.deriveNicknameFromContent && this.contentNickname.isCurrent(piece) && !this.voiceLink?.paused,
-      onProgramme: (piece, title) => { piece.contentTitle = title; this.contentNickname.update(piece); }
+      isCurrent: piece => Boolean(this.config.shareTvBase && this.config.shareTvApiKey) && this.contentNickname.isCurrent(piece),
+      onProgramme: async (piece, title, programme) => {
+        piece.contentTitle = title;
+        this.contentNickname.update(piece);
+        const image = programmeImage(programme, this.config.shareTvBase);
+        const key = programmePreviewKey(programme, image);
+        piece.thumbnail = image;
+        if (!piece.previewPipeline) return false;
+        if (piece.previewProgrammeKey === key && !piece.previewImageFailed) return true;
+        const uploaded = await this._updateStillPreview(piece);
+        if (uploaded) piece.previewProgrammeKey = key;
+        return Boolean(uploaded);
+      }
     });
     this._videoModule = null;
     this._vaapiReady = null;
@@ -1342,8 +1353,9 @@ class StreamManager {
           const previewFrame = snapshotPreview({ piece, pipeline: p, manager: this,
             isCurrent: previewCurrent, codec: this._outputCodec(), ffmpegPath: this.config.ffmpegPath });
           piece.previewFrame = previewFrame;
-          void uploadStreamPreview({ piece, pipeline: p, isCurrent: previewCurrent,
-            onFailure: () => this._verbose('Discord still preview unavailable') });
+          piece.previewPipeline = p;
+          piece.previewCurrent = previewCurrent;
+          void this._updateStillPreview(piece);
           if (piece.recoveryAttempt) {
             await sleep(piece.retryDelayMs, undefined, { signal: piece.control.signal });
             if (piece.sourceInput && !piece.browserPageUrl) {
@@ -1761,10 +1773,26 @@ class StreamManager {
 
   async startFiller(guildId, channelId) { return this.ensureChannel(guildId, channelId); }
 
+  async _updateStillPreview(piece) {
+    if (!piece.previewPipeline || piece.control.signal.aborted || !piece.previewCurrent()) return;
+    piece.previewRequest?.abort();
+    const request = new AbortController();
+    piece.previewRequest = request;
+    const signal = AbortSignal.any([piece.control.signal, request.signal]);
+    const uploaded = await uploadStreamPreview({ piece, pipeline: piece.previewPipeline, signal,
+      isCurrent: () => piece.previewRequest === request && piece.previewCurrent(),
+      onFailure: () => this._verbose('Discord still preview unavailable') });
+    if (!signal.aborted && piece.previewRequest === request) {
+      piece.previewImageFailed = !uploaded || piece.previewSourceImageFailed || !piece.thumbnail;
+      return !piece.previewImageFailed;
+    }
+    return false;
+  }
+
   setContentNickname(enabled) {
     this.deriveNicknameFromContent = enabled;
     this.contentNickname.setEnabled(enabled);
-    this.shareTvNicknameRefresh.sync(enabled ? this.session : null);
+    this.shareTvNicknameRefresh.sync(this.session);
     if (enabled && this.voiceLink && !this.voiceLink.paused) this.contentNickname.update(this.session);
     return { ok: true, enabled };
   }

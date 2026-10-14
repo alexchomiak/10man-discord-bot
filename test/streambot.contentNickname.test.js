@@ -85,3 +85,31 @@ test('channel nickname never falls back to generic share or channel title withou
   await automation.pending;
   assert.equal(calls, 0);
 });
+
+test('ShareTV preview polling stays active with content nickname off and deduplicates signed images', async () => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const manager = new StreamManager({}, null, { shareTvBase: 'https://tv.example', shareTvApiKey: 'test-key' });
+  const link = { paused: false, closing: false };
+  const piece = { voiceLink: link, previewPipeline: {}, control: new AbortController() };
+  manager.session = piece;
+  manager.voiceLink = link;
+  let synced, uploads = 0;
+  manager.shareTvNicknameRefresh.sync = current => { synced = current; };
+  manager._updateStillPreview = async current => { uploads++; current.previewImageFailed = false; return true; };
+  manager.setContentNickname(false);
+  assert.equal(synced, piece);
+  assert.equal(manager.shareTvNicknameRefresh.isCurrent(piece), true);
+  const programme = { id: 1, title: 'Current programme', end_at: 9000, icon_url: '/image/1?sig=one' };
+  await manager.shareTvNicknameRefresh.onProgramme(piece, programme.title, programme);
+  await manager.shareTvNicknameRefresh.onProgramme(piece, programme.title, { ...programme, icon_url: '/image/1?sig=two' });
+  assert.equal(uploads, 1);
+  assert.equal(piece.contentTitle, programme.title);
+  assert.equal(piece.thumbnail, 'https://tv.example/image/1?sig=two');
+  piece.previewImageFailed = true;
+  await manager.shareTvNicknameRefresh.onProgramme(piece, programme.title, programme);
+  assert.equal(uploads, 2);
+  await manager.shareTvNicknameRefresh.onProgramme(piece, 'Next', { ...programme, id: 2, icon_url: '/image/2' });
+  assert.equal(uploads, 3);
+  manager.voiceLink = {};
+  assert.equal(manager.shareTvNicknameRefresh.isCurrent(piece), false);
+});

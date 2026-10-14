@@ -191,3 +191,74 @@ test('a complete encoded H265 keyframe decodes to a bounded JPEG', async () => {
   assert.equal(meta.width, 512);
   assert.equal(meta.height, 288);
 });
+
+test('programme identity ignores rotated signature tokens but tracks programme and image changes', () => {
+  const { programmeImage, programmePreviewKey } = require('../src/streambot/streamPreview');
+  const programme = { id: 3, title: 'Current', end_at: 9000, icon_url: '/public/image/3?sig=one' };
+  const image = programmeImage(programme, 'https://tv.example');
+  assert.equal(image, 'https://tv.example/public/image/3?sig=one');
+  assert.equal(programmeImage({ icon_url: 'https://user:password@tv.example/image' }, 'https://tv.example'), null);
+  assert.equal(programmeImage({ icon_url: 'file:///private/image' }, 'https://tv.example'), null);
+  assert.equal(programmePreviewKey(programme, image), programmePreviewKey(programme, image.replace('one', 'two')));
+  assert.notEqual(programmePreviewKey(programme, image), programmePreviewKey({ ...programme, id: 4 }, image));
+  assert.notEqual(programmePreviewKey(programme, image), programmePreviewKey(programme, image.replace('/3?', '/4?')));
+});
+
+test('broken source image enables fallback and remains retryable', async () => {
+  const original = global.fetch;
+  const f = await fixture();
+  f.piece.thumbnail = 'https://tv.example/image';
+  f.piece.musicArtwork = null;
+  global.fetch = async () => new Response('error code: 502', { status: 502 });
+  try {
+    await uploadStreamPreview(f);
+    assert.equal(f.piece.previewSourceImageFailed, true);
+    assert.equal(f.piece.previewFallbackWanted, true);
+    assert.equal(f.uploads.length, 0);
+  } finally { global.fetch = original; }
+});
+
+test('a recovered programme image suppresses a snapshot already being decoded', async () => {
+  const { snapshotPreview } = require('../src/streambot/streamPreview');
+  const f = await fixture();
+  f.piece.previewFallbackWanted = true;
+  let finish;
+  const hook = snapshotPreview({ ...f, manager: {}, codec: 'H264',
+    decode: () => new Promise(resolve => { finish = resolve; }) });
+  hook(Buffer.from([0, 0, 1, 7, 0, 0, 1, 8, 0, 0, 1, 5, 0]), true);
+  await new Promise(resolve => setImmediate(resolve));
+  f.piece.previewFallbackWanted = false;
+  finish(Buffer.from('snapshot'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.uploads.length, 0);
+});
+
+test('fresh active programme image supersedes a stale queued signature fetch', async () => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const original = global.fetch;
+  const f = await fixture();
+  const image = f.piece.musicArtwork.file;
+  f.piece.musicArtwork = null;
+  f.piece.previewPipeline = f.pipeline;
+  f.piece.previewCurrent = () => true;
+  f.piece.thumbnail = 'https://tv.example/image?sig=expired';
+  let staleSignal;
+  global.fetch = async (url, { signal }) => {
+    if (url.includes('expired')) return new Promise((_resolve, reject) => {
+      staleSignal = signal;
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+    return new Response(image, { headers: { 'content-type': 'image/png' } });
+  };
+  const manager = { _verbose: () => {} };
+  try {
+    const stale = StreamManager.prototype._updateStillPreview.call(manager, f.piece);
+    f.piece.thumbnail = 'https://tv.example/image?sig=fresh';
+    const fresh = StreamManager.prototype._updateStillPreview.call(manager, f.piece);
+    await Promise.all([stale, fresh]);
+    assert.equal(staleSignal.aborted, true);
+    assert.equal(f.uploads.length, 1);
+    assert.equal(f.piece.previewFallbackWanted, false);
+    assert.equal(f.piece.previewImageFailed, false);
+  } finally { global.fetch = original; }
+});
