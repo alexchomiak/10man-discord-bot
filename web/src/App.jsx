@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Toaster, toast } from 'sonner';
 import { createPortal } from 'react-dom';
+import ScheduleModal from './ScheduleModal';
 
 const TIMEOUT_MS = 65000;
 const publicId = document.querySelector('meta[name="stream-public-id"]')?.content || null;
@@ -52,6 +53,8 @@ function Icon({ name, size = 17 }) {
     move: <><path d="M4 7h15m-4-4 4 4-4 4M20 17H5m4-4-4 4 4 4" /></>,
     info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5m0-8h.01" /></>,
     edit: <><path d="m4 17-.5 3.5L7 20l11-11-3-3L4 17Z" /><path d="m13 8 3 3" /></>,
+    clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
+    settings: <><path d="m10 3-1 3-3 1-3-1-2 4 2 2v3l-2 2 2 4 3-1 3 1 1 3h4l1-3 3-1 3 1 2-4-2-2v-3l2-2-2-4-3 1-3-1-1-3Z" /><circle cx="12" cy="12" r="3" /></>,
     plus: <path d="M12 5v14M5 12h14" />,
     search: <><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></>,
     top: <><path d="M5 4h14M12 20V8m-5 5 5-5 5 5" /></>,
@@ -133,6 +136,75 @@ function ChannelPicker({ workerId, channels, selected, onSelect, disabled }) {
       </div>
     </div>}
   </div>;
+}
+
+function WorkerSettings({ worker, action, busy }) {
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+  const trigger = useRef(null);
+  const panel = useRef(null);
+  const switchRef = useRef(null);
+  const enabled = worker.deriveNicknameFromContent === true;
+  const disabled = !worker.online || busy || pending;
+  const panelId = `settings-${worker.id}`;
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const anchor = trigger.current.getBoundingClientRect();
+      const width = Math.min(320, window.innerWidth - 24);
+      const height = panel.current?.offsetHeight || 180;
+      setPosition({ left: Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12)),
+        top: Math.max(12, anchor.bottom + height + 8 <= window.innerHeight - 12 ? anchor.bottom + 8 : anchor.top - height - 8) });
+    };
+    const outside = event => {
+      if (!trigger.current.contains(event.target) && !panel.current?.contains(event.target)) setOpen(false);
+    };
+    const keydown = event => {
+      if (event.key === 'Escape') { event.preventDefault(); setOpen(false); trigger.current.focus(); }
+    };
+    const focusOutside = event => {
+      if (!trigger.current.contains(event.target) && !panel.current?.contains(event.target)) setOpen(false);
+    };
+    place();
+    (switchRef.current?.disabled ? panel.current : switchRef.current)?.focus();
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', keydown);
+    document.addEventListener('focusin', focusOutside);
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', keydown);
+      document.removeEventListener('focusin', focusOutside);
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open]);
+  const toggle = async () => {
+    if (disabled) return;
+    setPending(true);
+    try { await action(worker.id, 'set-content-nickname', { enabled: !enabled }); }
+    finally { setPending(false); }
+  };
+  return <>
+    <button ref={trigger} type="button" className="icon-button worker-settings-trigger" title="Worker settings"
+      aria-label={`Settings for ${worker.id}`} aria-haspopup="dialog" aria-expanded={open}
+      aria-controls={open ? panelId : undefined} onClick={() => setOpen(value => !value)}><Icon name="settings" /></button>
+    {open && createPortal(<div ref={panel} id={panelId} className="worker-settings-popover" role="dialog"
+      aria-label={`Settings for ${worker.id}`} tabIndex={-1} style={position}>
+      <div className="eyebrow">WORKER SETTINGS</div>
+      <div className="worker-setting-row">
+        <label id={`${panelId}-label`} htmlFor={`${panelId}-switch`}>Derive nickname from content</label>
+        <button ref={switchRef} id={`${panelId}-switch`} type="button" role="switch"
+          className="worker-setting-switch" aria-labelledby={`${panelId}-label`} aria-checked={enabled}
+          aria-describedby={`${panelId}-description`} aria-busy={pending || busy || undefined}
+          disabled={disabled} onClick={toggle}><span /></button>
+      </div>
+      <p id={`${panelId}-description`}>Uses the current title as this bot’s server nickname. Turning off keeps the last nickname.</p>
+      {!worker.online && <div className="worker-settings-status">Worker offline</div>}
+    </div>, document.body)}
+  </>;
 }
 
 function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, onModal, busy, expanded = false, publicView = false }) {
@@ -224,6 +296,8 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
         <div className="worker-subtitle">{worker.online ? publicView ? status?.inVoiceChannel ? 'In a voice channel' : 'Standing by' : status?.channelId ? <><Icon name="audio" size={13} /> {channelName || `Voice ${status.channelId}`}</> : 'Standing by' : 'Offline'}</div>
       </div>
       {!publicView && <div className="worker-header-actions">
+        <button type="button" className="icon-button schedule-trigger" title="Scheduled content" aria-label={`Scheduled content for ${worker.id}`} onClick={() => onModal({ kind: 'schedule', worker })}><Icon name="clock" /></button>
+        <WorkerSettings worker={worker} action={action} busy={busy} />
         <button type="button" className={`mode-toggle ${musicMode ? 'active' : ''}`}
           aria-label={`Turn Music Mode ${musicMode ? 'off' : 'on'} for ${worker.id}`}
           aria-pressed={musicMode} disabled={!canControl}
@@ -540,6 +614,11 @@ function AdminApp() {
     finally { setBusy(previous => ({ ...previous, [workerId]: false })); }
   };
   const searchYoutube = async (workerId, query, page = 1) => api(answer, `/api/workers/${encodeURIComponent(workerId)}/search?q=${encodeURIComponent(query)}&page=${page}`);
+  const scheduleRequest = async (route, options = {}, quiet = false) => {
+    if (!route) { toast.error(options.error); return null; }
+    try { const result = await api(answer, route, options); if (options.method === 'POST' && !quiet) toast.success('Schedule created.'); if (options.method === 'DELETE') toast.success('Schedule cancelled.'); return result; }
+    catch (failure) { if (!quiet) toast.error(failure.message); return null; }
+  };
   if (!answer) return <div className="login-page"><Toaster position="top-right" theme="dark" richColors closeButton />
     <div className="login-glow" /><div className="login-card">
     <div className="brand-mark">▶</div><div className="eyebrow">10MAN CONTROL ROOM</div>
@@ -574,7 +653,8 @@ function AdminApp() {
       </>}
       <footer>10MAN STREAM DECK <span>·</span> Persistent Go Live control</footer>
     </main>
-    {modal && <Modal key={`${modal.kind}-${modal.worker.id}`} modal={modal} close={() => setModal(null)} action={action} guildId={guildId} />}
+    {modal?.kind === 'schedule' && <ScheduleModal worker={modal.worker} close={() => setModal(null)} request={scheduleRequest} channels={channelsFor(modal.worker)} guilds={state?.guilds || []} guildId={guildId} ChannelPicker={ChannelPicker} loadChannels={id => scheduleRequest(`/api/guilds/${encodeURIComponent(id)}/channels`, {}, true)} />}
+    {modal && modal.kind !== 'schedule' && <Modal key={`${modal.kind}-${modal.worker.id}`} modal={modal} close={() => setModal(null)} action={action} guildId={guildId} />}
   </div>;
 }
 

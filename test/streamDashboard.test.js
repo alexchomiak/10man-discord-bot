@@ -217,3 +217,21 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal((await fetch(`${randomBase}/api/public/abcdef/state`)).status, 200);
   assert.equal((await fetch(`${randomBase}/api/public/one/state`)).status, 404);
 });
+
+test('admin schedules configured offline workers; public and unauthenticated scheduling denied', async () => {
+  const broker = { defaultWorkerId: 'primary', getWorker: () => null, listWorkers: () => [] };
+  const client = { users: { cache: new Map() }, guilds: { cache: new Map() } };
+  const dashboard = createStreamDashboard({ broker, client, password: 'secret', host: '127.0.0.1', port: 0, configuredWorkerIds: ['offline'], log: () => {} });
+  dashboard.listen(); await once(dashboard.server, 'listening');
+  const base = `http://127.0.0.1:${dashboard.server.address().port}`;
+  const headers = { Authorization: 'Bearer secret', 'Content-Type': 'application/json' };
+  try {
+    assert.equal((await fetch(`${base}/api/workers/offline/schedules`)).status, 401);
+    assert.equal((await fetch(`${base}/api/public/offline/schedules`)).status, 401);
+    const response = await fetch(`${base}/api/workers/offline/schedules`, { method: 'POST', headers, body: JSON.stringify({ sources: ['sports'], guildId, channelId, startAt: new Date(Date.now() + 60000).toISOString() }) });
+    assert.equal(response.status, 201); const { schedule } = await response.json();
+    const listed = await (await fetch(`${base}/api/workers/offline/schedules`, { headers })).json(); assert.equal(listed.schedules[0].id, schedule.id);
+    assert.equal((await fetch(`${base}/api/workers/unknown/schedules`, { headers })).status, 404);
+    const cancelled = await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'DELETE', headers }); assert.equal(cancelled.status, 200); assert.equal((await cancelled.json()).schedule.status, 'cancelled');
+  } finally { await dashboard.close(); }
+});

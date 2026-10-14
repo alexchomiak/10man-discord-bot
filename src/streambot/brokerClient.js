@@ -2,12 +2,16 @@
 
 const { WebSocket } = require('ws');
 
-const CAPABILITIES = ['play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name', 'resolve-channel'];
+const CAPABILITIES = ['play', 'scheduled-play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name', 'resolve-channel', 'set-content-nickname'];
 
-function ownProfile(user) {
+function ownProfile(user, manager) {
+  const guildId = manager?.voiceLink?.guildId;
+  const guild = manager?.client?.guilds?.cache?.get(guildId);
+  const nickname = guild?.members?.me?.nickname || guild?.members?.cache?.get(user?.id)?.nickname || null;
   if (!user) return null;
   return {
-    displayName: user.globalName || user.username || null,
+    displayName: nickname || user.globalName || user.username || null,
+    nickname, guildId,
     globalName: user.globalName || null,
     username: user.username || null,
     avatarUrl: user.displayAvatarURL?.({ extension: 'png', size: 128 }) || null
@@ -49,13 +53,15 @@ class StreamBrokerClient {
         workerId: this.workerId,
         accessCode: this.streamManager?.config?.dashboardAccessCode,
         userId: this.streamManager?.client?.user?.id || null,
-        profile: ownProfile(this.streamManager?.client?.user),
+        profile: ownProfile(this.streamManager?.client?.user, this.streamManager),
         capabilities: CAPABILITIES,
-        status: this.streamManager.status(), musicMode: this.streamManager.musicMode === true
+        status: this.streamManager.status(), deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true,
+        musicMode: this.streamManager.musicMode === true
       });
       void this._publishExternalChannels(socket);
       this.statusTimer = setInterval(() => this._send({ type: 'status', status: this.streamManager.status(),
-        profile: ownProfile(this.streamManager?.client?.user),
+        profile: ownProfile(this.streamManager?.client?.user, this.streamManager),
+        deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true,
         musicMode: this.streamManager.musicMode === true }), 5000);
       this.statusTimer.unref?.();
     });
@@ -137,8 +143,9 @@ class StreamBrokerClient {
       if (this.results.size > 100) this.results.delete(this.results.keys().next().value);
     }
     this._send({ type: 'status', status: this.streamManager.status(),
-      profile: ownProfile(this.streamManager?.client?.user),
-      musicMode: this.streamManager.musicMode === true });
+      profile: ownProfile(this.streamManager?.client?.user, this.streamManager),
+      deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true,
+        musicMode: this.streamManager.musicMode === true });
   }
 
   close() {

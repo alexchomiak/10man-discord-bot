@@ -4,12 +4,13 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { StreamSchedules } = require('./streamSchedules');
 const { searchYoutube: defaultSearchYoutube } = require('./youtubeSearch');
 const { parseExternalChannels } = require('./externalChannels');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
-const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'clear-queue', 'set-name']);
+const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'clear-queue', 'set-content-nickname', 'set-name']);
 const PUBLIC_ACTIONS = new Set(['play', 'skip', 'scrub', 'seek', 'pause', 'resume', 'reorder', 'remove-queued', 'clear-queue']);
 const ACCESS_CODE = /^[a-z]{6}$/;
 const MAX_REORDER_ITEMS = 1000;
@@ -64,9 +65,10 @@ function scopedStatus(status) {
 }
 
 function createStreamDashboard({ broker, client, password, token, randomCodes = false, configuredWorkerIds = [], channelIds = [], host = '0.0.0.0', port = 8082,
-  staticDir = path.resolve(__dirname, '../web/dist'), log = console.log, searchYoutube = defaultSearchYoutube } = {}) {
+  scheduleFilePath = null, scheduleConfig = {}, staticDir = path.resolve(__dirname, '../web/dist'), log = console.log, searchYoutube = defaultSearchYoutube } = {}) {
   const adminPassword = password || token;
   if (!adminPassword) return null;
+  const schedules = new StreamSchedules({ broker, filePath: scheduleFilePath, log });
   const publicWorkerFor = publicId => {
     if (!(randomCodes ? ACCESS_CODE : WORKER_ID).test(publicId || '')) return null;
     const worker = randomCodes ? broker.getWorkerByAccessCode?.(publicId) : broker.getWorker?.(publicId);
@@ -121,6 +123,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
       const member = guild?.members.cache.get(userId) || null;
       nickname = member?.nickname || null;
     }
+    if (reported?.guildId === guildId) nickname = reported.nickname || null;
     return { displayName: nickname || reported?.displayName || user?.globalName || user?.username || userId,
       globalName: reported?.globalName || user?.globalName || null,
       nickname,
@@ -174,6 +177,28 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
         }
         authFailures.delete(req.socket.remoteAddress || 'unknown');
       }
+      if (!scopedWorker && url.pathname === '/api/schedules/sharetv-hint' && req.method === 'POST') {
+        const body = await readBody(req);
+        if (typeof body?.source !== 'string' || body.source.length > 2048) return json(res, 400, { error: 'Invalid source.' });
+        const { getShareTvScheduleHint } = require('./streambot/sources');
+        return json(res, 200, await getShareTvScheduleHint(body.source, scheduleConfig));
+      }
+      const scheduleMatch = !scopedWorker && /^\/api\/workers\/([A-Za-z0-9_-]{1,32})\/schedules(?:\/([a-f0-9-]{36}))?$/.exec(url.pathname);
+      if (scheduleMatch) {
+        const workerId = scheduleMatch[1];
+        if (![broker.defaultWorkerId, ...configuredWorkerIds].includes(workerId) && !broker.getWorker(workerId) && !broker.knownWorkerIds?.has(workerId) && !schedules.list(workerId).length) return json(res, 404, { error: 'Unknown worker.' });
+        if (req.method === 'GET' && !scheduleMatch[2]) return json(res, 200, { schedules: schedules.list(workerId) });
+        if (req.method === 'POST' && !scheduleMatch[2]) {
+          const body = await readBody(req);
+          try { return json(res, 201, { schedule: await schedules.add(workerId, body) }); }
+          catch (error) { return json(res, 400, { error: error.message }); }
+        }
+        if (req.method === 'DELETE' && scheduleMatch[2]) {
+          try { const schedule = await schedules.cancel(workerId, scheduleMatch[2]); return json(res, schedule ? 200 : 404, schedule ? { schedule } : { error: 'Schedule not found.' }); }
+          catch (error) { return json(res, 409, { error: error.message }); }
+        }
+        return json(res, 405, { error: 'Method not allowed.' });
+      }
       const searchMatch = scopedMatch?.[2] === 'search' ? [null, scopedWorker.id]
         : scopedWorker ? null : /^\/api\/workers\/([A-Za-z0-9_-]{1,32})\/search$/.exec(url.pathname);
       if (searchMatch) {
@@ -210,6 +235,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           connectedAt: online.get(id)?.connectedAt || null,
           status: publicStatus(online.get(id)?.status),
           musicMode: online.get(id)?.musicMode === true,
+          deriveNicknameFromContent: online.get(id)?.deriveNicknameFromContent === true,
           externalChannels: online.get(id)?.externalChannels || [],
           profile: online.get(id)?.userId ? profile(online.get(id).userId, guildId, online.get(id).profile) : null
         })));
@@ -245,7 +271,11 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           }
           return json(res, 200, await setName(workerId, name, String(body.guildId)));
         }
+        if (operation === 'set-content-nickname' && typeof body.enabled !== 'boolean') {
+          return json(res, 400, { error: 'Enabled must be a boolean.' });
+        }
         const payload = { requestedBy: scopedWorker ? 'public-link' : 'dashboard' };
+        if (operation === 'set-content-nickname') payload.enabled = body.enabled;
         if (['play', 'join', 'move'].includes(operation)) {
           const targetGuild = scopedWorker ? scopedWorker.status?.guildId : body.guildId;
           const targetChannel = scopedWorker ? scopedWorker.status?.channelId : body.channelId;
@@ -328,9 +358,9 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
     });
   });
   return {
-    server,
-    listen() { server.listen(port, host, () => log(`[stream-dashboard] listening on http://${host}:${server.address().port}`)); },
-    close() { return new Promise(resolve => server.close(resolve)); }
+    server, schedules,
+    listen() { schedules.start(); server.listen(port, host, () => log(`[stream-dashboard] listening on http://${host}:${server.address().port}`)); },
+    close() { schedules.dispose(); return new Promise(resolve => server.close(resolve)); }
   };
 }
 

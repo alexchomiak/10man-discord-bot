@@ -4,8 +4,9 @@ const { resolveSource } = require('./sources');
 const { M } = require('./messages');
 
 class StreamControl {
-  constructor({ streamManager, config, client }) {
+  constructor({ streamManager, config, client, sourceResolver = resolveSource }) {
     this.streamManager = streamManager;
+    this.resolveSource = sourceResolver;
     this.config = config || {};
     this.client = client;
   }
@@ -13,7 +14,8 @@ class StreamControl {
   _result(ok, message, extra = {}) {
     return { ok, message, status: this.streamManager.status(),
       progressOverlay: this.streamManager.progressOverlay === true,
-      musicMode: this.streamManager.musicMode === true, ...extra };
+      musicMode: this.streamManager.musicMode === true,
+      deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true, ...extra };
   }
 
   // Broker responses cross a JSON boundary. StreamManager results also carry
@@ -51,6 +53,11 @@ class StreamControl {
         return { ok: true, guildId: targetGuildId, guildName: guild.name,
           channelId: targetChannelId, channelName: channel.name, channelType: channel.type };
       }
+      case 'set-content-nickname': {
+        if (typeof payload.enabled !== 'boolean') return this._result(false, 'Enabled must be a boolean.');
+        const r = this.streamManager.setContentNickname(payload.enabled);
+        return this._result(true, `Derive nickname from content ${r.enabled ? 'on' : 'off'}.`, { detail: { enabled: r.enabled } });
+      }
       case 'toggle-music-mode': {
         const r = await this.streamManager.toggleMusicMode();
         return this._result(r.ok === true, r.message || `Music Mode ${r.enabled ? 'on' : 'off'}.`, {
@@ -69,7 +76,9 @@ class StreamControl {
       case 'status': {
         const status = this.streamManager.status();
         return { ok: true, message: status ? M.STREAM_STATUS(status) : M.STREAM_NOTHING, status,
-          progressOverlay: this.streamManager.progressOverlay === true };
+          progressOverlay: this.streamManager.progressOverlay === true,
+          musicMode: this.streamManager.musicMode === true,
+          deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true };
       }
       case 'reorder': {
         const r = await this.streamManager.reorderQueue(payload.ids);
@@ -146,15 +155,44 @@ class StreamControl {
           ? (r.reason === 'live' ? M.SCRUB_LIVE : M.SCRUB_NEED_CONTENT) : M.SCRUB_APPLIED(r.newPosSec);
         return this._result(r?.ok === true, message, { detail: this._detail(r, ['noOp', 'reason', 'newPosSec']) });
       }
+      case 'scheduled-play': {
+        if (!guildId || !channelId || !Array.isArray(payload.sources) || !payload.sources.length || payload.sources.length > 100) return this._result(false, 'Invalid scheduled playback.');
+        const sourceConfig = { ...this.config, musicMode: this.streamManager.musicMode === true };
+        const entries = [];
+        const deadline = Number(payload.dispatchDeadline);
+        const expired = () => Number.isFinite(deadline) && Date.now() >= deadline;
+        for (const input of payload.sources) {
+          if (expired()) return this._result(false, 'Scheduled preparation deadline expired; content was not interrupted.');
+          let isPlaylist = false;
+          try { const url = new URL(input); isPlaylist = /(?:^|\.)(?:youtube\.com|youtu\.be)$/i.test(url.hostname) && url.searchParams.has('list'); } catch {}
+          if (entries.length && !isPlaylist) {
+            entries.push({ sourceInput: input });
+            continue;
+          }
+          const resolved = await this.resolveSource(input, sourceConfig);
+          if (!resolved?.available) return this._result(false, resolved?.note || M.SOURCE_UNRECOGNIZED);
+          if (resolved.kind === 'youtube-playlist') {
+            if (entries.length) { entries.push(...resolved.entries.map(entry => ({ ...entry, sourceKind: 'youtube' }))); continue; }
+            const first = await this.resolveSource(resolved.entries[0].sourceInput, sourceConfig);
+            if (!first?.available) return this._result(false, first?.note || 'Playlist unavailable.');
+            entries.push({ ...first, sourceInput: resolved.entries[0].sourceInput, sourceKind: first.sourceKind || first.kind });
+            entries.push(...resolved.entries.slice(1).map(entry => ({ ...entry, sourceKind: 'youtube' })));
+          } else entries.push({ ...resolved, sourceInput: input, sourceKind: resolved.sourceKind || resolved.kind });
+          if (entries.length > (this.config.streamQueueLimit || 100)) return this._result(false, 'Scheduled sources exceed the stream queue limit.');
+        }
+        if (expired()) return this._result(false, 'Scheduled preparation deadline expired; content was not interrupted.');
+        const r = await this.streamManager.startScheduled({ guildId, channelId, entries, dispatchDeadline: deadline });
+        return this._result(r?.ok === true, r?.ok ? 'Scheduled content started.' : r?.message || M.STREAM_START_FAILED);
+      }
       case 'play': {
         if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);
         const input = String(payload.source || '').trim();
         if (!input) return this._result(false, M.STREAM_USAGE);
         const sourceConfig = { ...this.config, musicMode: this.streamManager.musicMode === true };
-        const resolved = await resolveSource(input, sourceConfig);
+        const resolved = await this.resolveSource(input, sourceConfig);
         if (!resolved?.available) return this._result(false, resolved?.note || M.SOURCE_UNRECOGNIZED);
         if (resolved.kind === 'youtube-playlist') {
-          const first = await resolveSource(resolved.entries[0].sourceInput, sourceConfig);
+          const first = await this.resolveSource(resolved.entries[0].sourceInput, sourceConfig);
           if (!first?.available) return this._result(false, first?.note || 'The first playlist video is unavailable.');
           const r = await this.streamManager.startPlaylist({ guildId, channelId,
             entries: resolved.entries, firstResolved: first });
@@ -174,6 +212,9 @@ class StreamControl {
           videoUrl: resolved.videoUrl || null,
           audioUrl: resolved.audioUrl || null,
           title: resolved.title || null,
+          sourceKind: resolved.sourceKind || resolved.kind,
+          contentTitle: resolved.shareTvChannel ? resolved.contentTitle || null : resolved.contentTitle || resolved.title || null,
+          shareTvChannel: resolved.shareTvChannel === true,
           thumbnail: resolved.thumbnail || null,
           chapters: resolved.chapters || null,
           startOffsetSec: resolved.startOffsetSec || null,

@@ -1,5 +1,7 @@
 'use strict';
 
+const { ContentNickname } = require('./contentNickname');
+const { ShareTvNicknameRefresh } = require('./shareTvNicknameRefresh');
 const { M } = require('./messages');
 const { TAG, redactToken } = require('./config');
 const fs = require('fs');
@@ -22,6 +24,7 @@ const { createFillerArtwork, fillerCountdownFilter, workerDashboardUrl } = requi
 const { createMusicArtwork, updateMusicQueue, startMusicQueueFrames,
   stopMusicQueueFrames } = require('./musicArtwork');
 const { musicVisualizerFilter } = require('./musicVisualizer');
+const { uploadStreamPreview, snapshotPreview } = require('./streamPreview');
 
 function log(level, ...parts) {
   if (level === 'error') console.error(TAG, ...parts);
@@ -115,6 +118,14 @@ class StreamManager {
     this.session = null;
     this.progressOverlay = false;
     this.musicMode = false;
+    this.deriveNicknameFromContent = false;
+    this.contentNickname = new ContentNickname(this.client, error => log('warn', `content nickname: ${this._sanitize(error?.message || String(error))}`));
+    this.contentNickname.isCurrent = piece => this.session === piece && this.voiceLink === piece.voiceLink && !piece.voiceLink?.closing && !piece.voiceLink?.paused;
+    this.shareTvNicknameRefresh = new ShareTvNicknameRefresh({
+      fetchPreview: (input, signal) => require('./sources').getShareTvPreview(input, this.config, signal),
+      isCurrent: piece => this.deriveNicknameFromContent && this.contentNickname.isCurrent(piece) && !this.voiceLink?.paused,
+      onProgramme: (piece, title) => { piece.contentTitle = title; this.contentNickname.update(piece); }
+    });
     this._videoModule = null;
     this._vaapiReady = null;
     // A single shared Streamer for the manager's lifetime: `new Streamer()`
@@ -1271,9 +1282,14 @@ class StreamManager {
             piece.isLive = resolved.isLive === true;
             piece.totalDurationSec = resolved.totalDurationSec ?? piece.totalDurationSec;
             piece.chapters = piece.musicMode ? resolved.chapters || null : null;
+            piece.shareTvChannel = resolved.shareTvChannel === true;
+            piece.sourceKind = resolved.sourceKind || resolved.kind;
+            piece.contentTitle = piece.shareTvChannel ? resolved.contentTitle || piece.contentTitle : resolved.contentTitle || resolved.title || piece.contentTitle;
             piece.title ||= resolved.title;
             piece.thumbnail ||= resolved.thumbnail;
           }
+          this.contentNickname.update(piece);
+          this.shareTvNicknameRefresh.sync(piece);
           if (piece.musicMode) {
             let avatarUrl = null;
             try {
@@ -1322,6 +1338,12 @@ class StreamManager {
               log('error', `filler artwork unavailable; using default screen: ${error.message}`);
             }
           }
+          const previewCurrent = () => this.voiceLink === link && !link.closing && !p.closed && p.activeWriter === piece;
+          const previewFrame = snapshotPreview({ piece, pipeline: p, manager: this,
+            isCurrent: previewCurrent, codec: this._outputCodec(), ffmpegPath: this.config.ffmpegPath });
+          piece.previewFrame = previewFrame;
+          void uploadStreamPreview({ piece, pipeline: p, isCurrent: previewCurrent,
+            onFailure: () => this._verbose('Discord still preview unavailable') });
           if (piece.recoveryAttempt) {
             await sleep(piece.retryDelayMs, undefined, { signal: piece.control.signal });
             if (piece.sourceInput && !piece.browserPageUrl) {
@@ -1335,6 +1357,11 @@ class StreamManager {
               piece.videoUrl = resolved.videoUrl || null;
               piece.audioUrl = resolved.audioUrl || null;
               piece.isDash = !!(piece.videoUrl && piece.audioUrl);
+              piece.shareTvChannel = resolved.shareTvChannel === true;
+              piece.sourceKind = resolved.sourceKind || resolved.kind;
+              piece.contentTitle = piece.shareTvChannel ? resolved.contentTitle || piece.contentTitle : resolved.contentTitle || resolved.title || piece.contentTitle;
+              this.contentNickname.update(piece);
+              this.shareTvNicknameRefresh.sync(piece);
             }
           }
           if (piece.browserPageUrl) {
@@ -1402,11 +1429,12 @@ class StreamManager {
           } catch {}
           await this._prebuffer(result.output, piece);
           if (piece.ffmpegFailure) throw piece.ffmpegFailure;
-          appendTask = p.feeder.append(result.output, piece.control.signal, frameMs => {
+          appendTask = p.feeder.append(result.output, piece.control.signal, (frameMs, frame, isKeyframe) => {
             if (Number.isFinite(frameMs) && frameMs > 0) {
               piece.playedSec = (piece.playedSec || 0) + frameMs / 1000;
               lastVideoFrameAt = Date.now();
             }
+            piece.previewFrame?.(frame, isKeyframe);
           }, { syncVideoToAudio: piece.isLive || piece.isFiller, voiceAudio: piece.musicMode && !piece.isFiller });
           if (!piece.isLive && !piece.isFiller && piece.sourceInput) {
             const configuredMs = Number(this.config.vodStallTimeoutMs);
@@ -1733,6 +1761,14 @@ class StreamManager {
 
   async startFiller(guildId, channelId) { return this.ensureChannel(guildId, channelId); }
 
+  setContentNickname(enabled) {
+    this.deriveNicknameFromContent = enabled;
+    this.contentNickname.setEnabled(enabled);
+    this.shareTvNicknameRefresh.sync(enabled ? this.session : null);
+    if (enabled && this.voiceLink && !this.voiceLink.paused) this.contentNickname.update(this.session);
+    return { ok: true, enabled };
+  }
+
   status() {
     const link = this.voiceLink;
     if (!link) return null;
@@ -1756,6 +1792,7 @@ class StreamManager {
       queued: link.pipeline?.enqueue.length || 0,
       paused: !!link.paused, isLive: !!piece?.isLive,
       progressOverlay: this.progressOverlay, musicMode: this.musicMode,
+      deriveNicknameFromContent: this.deriveNicknameFromContent,
       positionSec: piece ? Math.round(link.paused && Number.isFinite(link.pausedPositionSec)
         ? link.pausedPositionSec : this.positionOf(piece)) : null,
       current: piece ? this._queueItem(piece) : null,
@@ -1776,7 +1813,7 @@ class StreamManager {
   }
 
   _queueItem(piece) {
-    return { id: piece.queueId, title: piece.title || (piece.isFiller ? 'Filler' : 'Untitled video'),
+    return { id: piece.queueId, sourceKind: piece.sourceKind || null, contentTitle: piece.contentTitle || null, title: piece.title || (piece.isFiller ? 'Filler' : 'Untitled video'),
       thumbnail: piece.thumbnail || null,
       isFiller: !!piece.isFiller, isLive: !!piece.isLive,
       durationSec: Number.isFinite(piece.totalDurationSec) ? piece.totalDurationSec : null };
@@ -1950,6 +1987,45 @@ class StreamManager {
     return result;
   }
 
+  // Scheduled playback replaces the active source and prepends its sources to
+  // the existing queue. The persistent pipeline remains open in the same channel.
+  async startScheduled({ guildId, channelId, entries, dispatchDeadline } = {}) {
+    const expired = () => Number.isFinite(dispatchDeadline) && Date.now() >= dispatchDeadline;
+    if (!Array.isArray(entries) || !entries.length) return { ok: false, message: 'No scheduled content.' };
+    const result = await this._serialize(async () => {
+      const channel = this.client.channels.cache.get(channelId) || await this.client.channels.fetch(channelId);
+      if (!channel) return { ok: false, message: M.STREAM_NO_CHANNEL };
+      const videoModule = await this.preparePlayback(await this._video());
+      if (expired()) return { ok: false, message: 'Scheduled preparation deadline expired.' };
+      const oldLink = this.voiceLink;
+      const activeId = oldLink?.pausedSession?.queueId || oldLink?.pipeline?.activeWriter?.queueId;
+      const preserved = (oldLink?.pipeline?.enqueue || []).filter(piece => piece.queueId !== activeId);
+      if (preserved.length + entries.length > (this.config.streamQueueLimit || 100)) return { ok: false, message: 'Scheduled content and existing queue exceed the stream queue limit.' };
+      const moved = oldLink && (oldLink.guildId !== guildId || oldLink.channelId !== channelId);
+      const r = await this._ensureVoiceLink(guildId, channelId, videoModule);
+      if (!r.ok) return r;
+      const link = r.voiceLink;
+      const p = this._ensurePipeline(link, videoModule);
+      if (expired()) return { ok: false, message: 'Scheduled preparation deadline expired.' };
+      const pieces = entries.map(entry => this._piece(link, {
+        ...entry, streamUrl: entry.streamUrl || null, videoUrl: entry.videoUrl || null,
+        audioUrl: entry.audioUrl || null,
+        contentTitle: entry.shareTvChannel ? entry.contentTitle || null : entry.contentTitle || entry.title || null,
+        chapters: this.musicMode ? entry.chapters || null : null,
+        isLive: entry.isLive === true, totalDurationSec: entry.totalDurationSec ?? null
+      }));
+      link.paused = false; link.pausedSession = null; link.pausedPositionSec = 0;
+      p.enqueue.splice(0, p.enqueue.length, ...pieces,
+        ...preserved.map(piece => moved ? this._copyQueuedPiece(link, piece) : piece));
+      if (p.activeWriter) this._cancelPiece(p.activeWriter);
+      this._pump(link, videoModule);
+      await this._refreshMusicQueue(link);
+      return { ok: true, pipeline: p, count: pieces.length };
+    });
+    if (result.ok && !await result.pipeline.ready) return { ok: false, message: M.STREAM_PLAY_STREAM_HANG };
+    return result;
+  }
+
   async startPlaylist({ guildId, channelId, entries, firstResolved } = {}) {
     if (!guildId || !channelId) return { ok: false, message: M.STREAM_NEED_CHANNEL };
     if (!Array.isArray(entries) || !entries.length || !firstResolved?.available) {
@@ -1977,6 +2053,8 @@ class StreamManager {
       const queued = !!p.activeWriter && !p.activeWriter.isFiller;
       const pieces = entries.map((entry, index) => this._piece(link, {
         sourceInput: entry.sourceInput,
+        sourceKind: index === 0 ? firstResolved.sourceKind || firstResolved.kind : 'youtube',
+        contentTitle: index === 0 ? firstResolved.contentTitle || firstResolved.title : entry.title,
         streamUrl: index === 0 ? firstResolved.streamUrl || null : null,
         videoUrl: index === 0 ? firstResolved.videoUrl || null : null,
         audioUrl: index === 0 ? firstResolved.audioUrl || null : null,
@@ -2105,6 +2183,9 @@ class StreamManager {
       inputFormat: piece.inputFormat,
       durationSec: piece.durationSec,
       title: piece.title,
+      sourceKind: piece.sourceKind,
+      contentTitle: piece.contentTitle,
+      shareTvChannel: piece.shareTvChannel,
       thumbnail: piece.thumbnail,
       chapters: piece.chapters,
       queueId: piece.queueId,

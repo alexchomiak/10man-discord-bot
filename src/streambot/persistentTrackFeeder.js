@@ -108,7 +108,7 @@ class TimedTrack extends Writable {
         waitedForAudio = true;
       }
       const sendStarted = this.diagnostics ? this.now() : null;
-      const accepted = this.send(Buffer.from(data), frameMs);
+      const accepted = this.send(Buffer.from(data), frameMs, packet.isKeyframe === true);
       const ended = this.now();
       if (this.diagnostics) {
         this.diagnostics.sendCallMaxMs = Math.max(this.diagnostics.sendCallMaxMs, ended - sendStarted);
@@ -297,11 +297,11 @@ class PersistentTrackFeeder {
       const media = await this.videoModule.demux(input, { format: 'nut' });
       signal?.throwIfAborted();
       if (!media.video || !media.audio) throw new Error('Content must contain normalized video and Opus audio');
-      const sendVideo = (frame, ms) => {
+      const sendVideo = (frame, ms, isKeyframe) => {
         if (!connection.ready) return false;
         connection.sendVideoFrame(frame, ms);
         this.rtcBytesSent += frame.length;
-        onVideoFrame?.(ms);
+        onVideoFrame?.(ms, frame, isKeyframe);
       };
       const sendAudio = (frame, ms) => {
         if (!audioConnection.ready) return false;

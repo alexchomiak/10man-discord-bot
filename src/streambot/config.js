@@ -243,6 +243,7 @@ function loadConfig() {
     ffmpegPath: (process.env.FFMPEG_PATH || '').trim() || 'ffmpeg',
 
     shareTvBase: normalizeBase(process.env.SHARETV_BASE),
+    shareTvApiKey: (process.env.SHARETV_API_KEY || '').trim(),
     shareTvAllowHosts: parseHostList(process.env.SHARETV_ALLOW_HOSTS),
     ytdlpPath: (process.env.YTDLP_PATH || 'yt-dlp').trim() || 'yt-dlp',
     ytdlpCookiesFile: (process.env.YTDLP_COOKIES_FILE || '').trim(),

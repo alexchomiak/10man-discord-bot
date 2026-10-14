@@ -100,6 +100,115 @@ async function fetchShareApi(baseUrl, slug) {
   }
 }
 
+function shareProgramme(share) {
+  const rows = Array.isArray(share.programs) ? share.programs : [];
+  const now = Number(share.server_now) || Date.now() / 1000;
+  const isCurrent = row => row && Number(row.start_at ?? row.starts_at) <= now &&
+    now < Number(row.end_at ?? row.ends_at);
+  const activeId = share.active_program_id ?? share.active_event_id;
+  const active = activeId != null && rows.find(row => isCurrent(row) && String(row.id) === String(activeId));
+  if (active) return active;
+  return rows.find(isCurrent) || null;
+}
+
+// Read-only scheduler suggestion. This never resolves or starts playable media.
+async function getShareTvScheduleHint(source, cfg = {}) {
+  const raw = typeof source === 'string' ? source.trim() : '';
+  const base = stripTrailingSlash(cfg.shareTvBase);
+  const shaped = looksLikeShareTv(raw) || /^\/s\/[A-Za-z0-9_-]+\/?$/.test(raw);
+  const slug = shaped ? detectShareSlug(raw, cfg) : null;
+  if (!slug || !base) return { detected: false, startAt: null };
+  const empty = { detected: true, startAt: null };
+  const controller = new AbortController();
+  let timer;
+  try {
+    const endpoint = new URL(`${base}/api/public/share/${encodeURIComponent(slug)}`);
+    if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) return empty;
+    const request = (async () => {
+      try {
+        const response = await fetch(endpoint.toString(), {
+          method: 'GET', headers: { accept: 'application/json' },
+          redirect: 'error', signal: controller.signal
+        });
+        if (!response.ok) return empty;
+        const { share } = await response.json();
+        if (!share || share.locked === true || share.mode === 'channel') return empty;
+        const now = Math.max(Date.now() / 1000, Number(share.server_now) || 0);
+        if (Number(share.ends_at) > 0 && Number(share.ends_at) <= now) return empty;
+        const rows = Array.isArray(share.programs) ? share.programs :
+          (Array.isArray(share.events) ? share.events : []);
+        const future = rows.filter(row => {
+          const start = Number(row?.start_at ?? row?.starts_at);
+          const end = Number(row?.end_at ?? row?.ends_at);
+          return Number.isFinite(start) && start > now && end > start &&
+            start * 1000 <= 8640000000000000 &&
+            (!(Number(share.ends_at) > 0) || start < Number(share.ends_at));
+        }).sort((a, b) => Number(a.start_at ?? a.starts_at) - Number(b.start_at ?? b.starts_at));
+        if (!future.length) return empty;
+        const programme = future[0];
+        return { detected: true, startAt: new Date(Number(programme.start_at ?? programme.starts_at) * 1000).toISOString(),
+          ...(typeof programme.title === 'string' && programme.title.trim() ? { title: programme.title } : {}) };
+      } catch { return empty; }
+    })();
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => { controller.abort(); resolve(empty); }, 1500);
+    });
+    return await Promise.race([request, timeout]);
+  } catch { return empty; }
+  finally { clearTimeout(timer); }
+}
+
+// Optional NEW integration endpoint: metadata failure must never fail playback.
+// Credentials go only to the configured base, with redirects disabled.
+async function fetchSharePreview(base, slug, cfg, signal) {
+  const key = String(cfg.shareTvApiKey || '').trim();
+  if (!key) return null;
+  const controller = new AbortController();
+  let timer;
+  const onAbort = () => controller.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) controller.abort();
+  let abortListener;
+  const cancelled = new Promise(resolve => {
+    abortListener = () => resolve(null);
+    controller.signal.addEventListener('abort', abortListener, { once: true });
+    if (controller.signal.aborted) resolve(null);
+  });
+  try {
+    if (controller.signal.aborted) return null;
+    const endpoint = new URL(`${base}/api/integrations/discord/share/${encodeURIComponent(slug)}/preview`);
+    if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) return null;
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => { controller.abort(); resolve(null); }, 1500);
+    });
+    const request = (async () => {
+      try {
+        const response = await fetch(endpoint.toString(), {
+          headers: { accept: 'application/json', 'X-API-Key': key },
+          redirect: 'error', signal: controller.signal
+        });
+        if (!response.ok) return null;
+        const body = await response.json();
+        return body?.preview && typeof body.preview === 'object' ? body.preview : null;
+      } catch { return null; }
+    })();
+    return await Promise.race([request, timeout, cancelled]);
+  } catch { return null; }
+  finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+    controller.signal.removeEventListener('abort', abortListener);
+  }
+}
+
+// Uses the configured integration host and credentials only; no playback resolution.
+async function getShareTvPreview(input, cfg, signal) {
+  const base = stripTrailingSlash(cfg.shareTvBase);
+  const slug = detectShareSlug(String(input || ''), cfg);
+  if (!base || !slug) return null;
+  return fetchSharePreview(base, slug, cfg, signal);
+}
+
 // Platform-page hosts (mirrors iptv-share's PLATFORM_PAGE_HOSTS). A URL on one
 // of these is a page, not a media endpoint: it must go through yt-dlp.
 const PLATFORM_PAGE_HOSTS = [
@@ -197,9 +306,16 @@ async function resolveShareTv(raw, cfg) {
     }
   }
 
-  const title = typeof share.title === 'string' ? share.title : null;
-  const channel = typeof share.channel_name === 'string' ? share.channel_name : null;
-  const thumbnail = thumbnailUrl(share.background_image_url || share.icon_url, base);
+  const programme = shareProgramme(share);
+  const publicImage = thumbnailUrl(programme?.icon_url, base);
+  const preview = publicImage && programme?.title ? null : await fetchSharePreview(base, slug, cfg);
+  const contentTitle = preview?.programme?.title || programme?.title || null;
+  const title = typeof share.title === 'string' ? share.title :
+    (typeof preview?.programme?.title === 'string' ? preview.programme.title : programme?.title || null);
+  const channel = typeof share.channel_name === 'string' ? share.channel_name :
+    (typeof preview?.channel_name === 'string' ? preview.channel_name : null);
+  const thumbnail = publicImage || thumbnailUrl(preview?.programme?.icon_url, base) ||
+    thumbnailUrl(share.background_image_url, base) || thumbnailUrl(share.icon_url, base);
 
   // Platform share: media_url is the ORIGINAL platform page URL (e.g.
   // https://twitch.tv/example). Not playable by ffmpeg, and the bot owns
@@ -214,7 +330,8 @@ async function resolveShareTv(raw, cfg) {
       const out = {
         kind: 'sharetv',
         title,
-        thumbnail: thumbnail || ytdlp.thumbnail || null,
+        contentTitle: ytdlp.title || contentTitle || title,
+        thumbnail: ytdlp.thumbnail || thumbnail || null,
         channel,
         available: true,
         startOffsetSec: ytdlp.startOffsetSec || null,
@@ -248,6 +365,8 @@ async function resolveShareTv(raw, cfg) {
     kind: 'sharetv',
     streamUrl,
     title,
+    contentTitle: contentTitle || ((share.kind !== 'static' && (share.mode === 'range' || (share.mode !== 'programs' && !!share.channel_id))) ? null : title),
+    shareTvChannel: share.kind !== 'static' && (share.mode === 'range' || (share.mode !== 'programs' && !!share.channel_id)),
     thumbnail,
     channel,
     available: true,
@@ -1024,14 +1143,14 @@ async function resolveSource(input, config) {
     ]);
     clearTimeout(graceTimer);
     return playback.available && metadata
-      ? { ...playback, title: metadata.title || playback.title,
+      ? { ...playback, sourceKind: 'jellyfin', contentTitle: metadata.title || playback.title, title: metadata.title || playback.title,
         thumbnail: metadata.thumbnail || playback.thumbnail,
         totalDurationSec: metadata.totalDurationSec ?? playback.totalDurationSec }
-      : playback;
+      : { ...playback, sourceKind: 'jellyfin', contentTitle: playback.title };
   }
   if (isHttp || isPrefixed) {
     const resolved = await resolveYtdlp(raw, cfg);
-    if (resolved.available || !isHttp) return resolved;
+    if (resolved.available || !isHttp) return { ...resolved, sourceKind: /^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)(?:[/:]|$)/i.test(raw) || /^(?:ytsearch|youtube):/i.test(raw) ? 'youtube' : resolved.kind };
     if (cfg.browserFallback === false) return resolved;
     verboseLog(cfg, 'yt-dlp could not resolve page; probing Chromium');
     const browser = await require('./browserStream').probeBrowser(raw, cfg);
@@ -1043,6 +1162,8 @@ async function resolveSource(input, config) {
 
 module.exports = {
   resolveSource,
+  getShareTvPreview,
+  getShareTvScheduleHint,
   resolveYoutubePlaylist,
   youtubePlaylistId,
   // Exposed for tests / advanced consumers:

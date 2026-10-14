@@ -266,6 +266,8 @@ if (!streamBroker.enabled) {
 }
 const streamDashboard = streamBroker.enabled && config.streamDashboardPassword
   ? createStreamDashboard({ broker: streamBroker, client, password: config.streamDashboardPassword,
+    scheduleFilePath: require('node:path').join(require('node:path').dirname(config.sqlitePath), 'stream-schedules.json'),
+    scheduleConfig: { shareTvApiKey: process.env.SHARETV_API_KEY, shareTvBase: process.env.SHARETV_BASE },
     randomCodes: config.streamDashboardRandomCodes,
     channelIds: config.streamDashboardChannelIds,
     configuredWorkerIds: (process.env.STREAMBOT_IDS || '').split(',').map(id => id.trim()).filter(Boolean),
