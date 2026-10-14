@@ -318,6 +318,13 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
   const channelName = channels.find(channel => channel.guildId === status?.guildId && channel.id === status?.channelId)?.name;
   const destination = () => ({ guildId: selected?.guildId, channelId: selected?.id });
   const send = (operation, payload = {}) => action(worker.id, operation, payload);
+  const selectDestination = key => {
+    if (!canControl) return;
+    const [guildId, channelId] = key.split(':');
+    setDestinationKey(key);
+    if (status?.inVoiceChannel && status.guildId === guildId && status.channelId === channelId) return;
+    return send(status?.inVoiceChannel ? 'move' : 'join', { guildId, channelId });
+  };
   const playSource = value => {
     const where = publicView ? {} : status?.guildId && status?.channelId
       ? { guildId: status.guildId, channelId: status.channelId }
@@ -447,8 +454,7 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
     </form>
     {!publicView && <div className="channel-controls">
       <ChannelPicker workerId={worker.id} channels={channels} selected={selected ? channelKey(selected) : ''}
-        onSelect={setDestinationKey} disabled={!canControl} onRefresh={refreshChannels} />
-      <button className="secondary-button" disabled={!canControl || !selected} onClick={() => send(status ? 'move' : 'join', destination())}><Icon name="move" size={15} /> {status ? 'Switch' : 'Join'}</button>
+        onSelect={selectDestination} disabled={!canControl} onRefresh={refreshChannels} />
       <button className="text-button manual" onClick={() => onModal({ kind: 'channel', worker, guildId, guilds })} disabled={!canControl}>Use IDs</button>
     </div>}
     {searchOpen && createPortal(<YoutubeSearchModal workerName={worker.profile?.displayName || worker.id}
