@@ -114,3 +114,38 @@ test('ShareTV preview polling stays active with content nickname off and dedupli
   manager.voiceLink = {};
   assert.equal(manager.shareTvNicknameRefresh.isCurrent(piece), false);
 });
+
+test('fixed schedule nickname works for direct sources with auto mode off and across toggles', async () => {
+ let release; const calls = [];
+ const member = { nickname: null, setNickname: async name => { calls.push(name); member.nickname = name; } };
+ const lookup = new Promise(resolve => { release = resolve; });
+ const automation = new ContentNickname({ user: { id: 'self' }, guilds: { cache: new Map([['g', { members: { fetch: () => lookup } }]]) } });
+ const piece = { guildId: 'g', sourceKind: 'direct', title: 'Content', scheduledNickname: 'Movie night' };
+ automation.update(piece); await Promise.resolve();
+ automation.setEnabled(true); automation.setEnabled(false);
+ release(member); await automation.pending;
+ assert.deepEqual(calls, ['Movie night']);
+ automation.setEnabled(true);
+ automation.update({ ...piece, sourceKind: 'sharetv', contentTitle: 'EPG title' }); await automation.pending;
+ assert.deepEqual(calls, ['Movie night']);
+ automation.update({ guildId: 'g', sourceKind: 'youtube', title: 'Next ordinary video' }); await automation.pending;
+ assert.deepEqual(calls, ['Movie night', 'Next ordinary video']);
+});
+
+test('fixed nickname permission failure remains best effort', async () => {
+ const automation = new ContentNickname({ guilds: { cache: new Map([['g', { members: { me: { setNickname: async () => { throw new Error('Missing permissions'); } } } }]]) } });
+ automation.update({ guildId: 'g', sourceKind: 'direct', scheduledNickname: 'Movie night' });
+ await assert.doesNotReject(automation.pending);
+});
+
+test('same fixed nickname follows the current event piece during an in-flight lookup', async () => {
+ let release, active; const calls = [];
+ const lookup = new Promise(resolve => { release = resolve; });
+ const automation = new ContentNickname({ user: { id: 'self' }, guilds: { cache: new Map([['g', { members: { fetch: () => lookup } }]]) } });
+ automation.isCurrent = piece => active === piece;
+ const first = { guildId: 'g', scheduledNickname: 'Movie night' }, second = { ...first };
+ active = first; automation.update(first); await Promise.resolve();
+ active = second; automation.update(second);
+ release({ setNickname: async name => calls.push(name) }); await automation.pending;
+ assert.deepEqual(calls, ['Movie night']);
+});

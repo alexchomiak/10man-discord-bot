@@ -26,6 +26,7 @@ test('broker: default and explicit worker routing, command correlation and statu
     displayAvatarURL: () => 'https://cdn.discordapp.com/avatars/111111111111111111/avatar.png' } }, config: { dashboardAccessCode: 'abcdef' },
     status: () => ({ title: 'Video', paused: false, queued: 1 }) };
   const control = { execute: async (operation, payload) => {
+    if (operation === 'list-channels') return { ok: true, availableChannels: [] };
     calls.push({ operation, payload });
     return { ok: true, message: `${operation} ok`, status: manager.status() };
   } };
@@ -38,6 +39,7 @@ test('broker: default and explicit worker routing, command correlation and statu
     url: `ws://127.0.0.1:${broker.port}`,
     secret: 'test-secret', workerId: 'youtube',
     control: { execute: async (operation, payload) => {
+      if (operation === 'list-channels') return { ok: true, availableChannels: [] };
       secondaryCalls.push({ operation, payload });
       return { ok: true, message: `youtube ${operation} ok`, status: manager.status() };
     } },
@@ -104,7 +106,7 @@ test('progress toggle is routed to one worker and returns its new state', async 
   assert.match(result.message, /VOD with a known duration/);
 });
 
-test('each worker reports only its accessible configured external channels at startup', async t => {
+test('each worker reports its own discovered accessible channels at startup', async t => {
   const broker = new StreamBroker({ host: '127.0.0.1', port: 0, secret: 'test-secret', defaultWorkerId: 'one', log: () => {} });
   await once(broker.start(), 'listening');
   const guildId = '555555555555555555';
@@ -115,26 +117,26 @@ test('each worker reports only its accessible configured external channels at st
     streamManager: { client: { user: { id: id === 'one' ? '111111111111111111' : '222222222222222222' } },
       config: { dashboardAccessCode: id === 'one' ? 'abcdef' : 'ghijkl',
         externalChannels: [{ guildId, id: firstId }, { guildId, id: secondId }] }, status: () => null },
-    control: { execute: async (_operation, payload) => accessible.includes(payload.channelId)
-      ? { ok: true, guildId, guildName: 'Friends', channelId: payload.channelId,
-        channelName: payload.channelId === firstId ? 'Movies' : 'Music', channelType: 'GUILD_VOICE' }
+    control: { execute: async operation => operation === 'list-channels'
+      ? { ok: true, availableChannels: accessible.map(channelId => ({ guildId, guildName: 'Friends',
+        id: channelId, name: channelId === firstId ? 'Movies' : 'Music', type: 'GUILD_VOICE' })) }
       : { ok: false } }, log: () => {}
   });
   const one = makeWorker('one', [firstId]);
   const two = makeWorker('two', [secondId]);
   t.after(async () => { one.close(); two.close(); await broker.close(); });
   one.start(); two.start();
-  await until(() => broker.getWorker('one')?.externalChannels.length === 1 &&
-    broker.getWorker('two')?.externalChannels.length === 1);
-  assert.deepStrictEqual(broker.getWorker('one').externalChannels.map(channel => channel.id), [firstId]);
-  assert.deepStrictEqual(broker.getWorker('two').externalChannels.map(channel => channel.id), [secondId]);
+  await until(() => broker.getWorker('one')?.availableChannels.length === 1 &&
+    broker.getWorker('two')?.availableChannels.length === 1);
+  assert.deepStrictEqual(broker.getWorker('one').availableChannels.map(channel => channel.id), [firstId]);
+  assert.deepStrictEqual(broker.getWorker('two').availableChannels.map(channel => channel.id), [secondId]);
 });
 
 test('primary worker resolves external voice channel names without serializing Discord objects', async () => {
   const guildId = '555555555555555555';
   const channelId = '666666666666666666';
-  const channel = { id: channelId, guildId, name: 'Watch party', type: 'GUILD_VOICE' };
-  const guild = { id: guildId, name: 'Friends server', channels: {
+  const channel = { id: channelId, guildId, name: 'Watch party', type: 'GUILD_VOICE', permissionsFor: () => ({ has: () => true }) };
+  const guild = { id: guildId, name: 'Friends server', members: { me: {} }, channels: {
     cache: new Map(), fetch: async id => id === channelId ? channel : null
   } };
   const control = new StreamControl({ streamManager: { status: () => null }, client: {
@@ -234,4 +236,34 @@ test('/set-stream-name changes the connected worker nickname through the CS app 
     () => setStreambotNickname(interaction, broker, 'offline', 'Movie Night'),
     /offline or has not registered/
   );
+});
+
+test('broker accepts more than 100 worker channels, sanitizes them and omits public discovery', async t => {
+  const broker = new StreamBroker({ host: '127.0.0.1', port: 0, secret: 'test-secret', log: () => {} });
+  await once(broker.start(), 'listening');
+  const worker = new StreamBrokerClient({ url: `ws://127.0.0.1:${broker.port}`, secret: 'test-secret', workerId: 'primary',
+    streamManager: { config: { dashboardAccessCode: 'abcdef' }, client: { user: { id: '111111111111111111' } }, status: () => null },
+    control: { execute: async () => ({ ok: true, availableChannels: [] }) }, log: () => {} });
+  t.after(async () => { worker.close(); await broker.close(); });
+  worker.start();
+  await until(() => broker.getWorker('primary'));
+  const channels = Array.from({ length: 250 }, (_, i) => ({ guildId: '555555555555555555', guildName: 'Friends',
+    id: String(100000000000000000n + BigInt(i)), name: 'Voice', type: 2, privateMetadata: 'omit' }));
+  worker._send({ type: 'available-channels', channels: [...channels, { guildId: 'bad', id: 'bad', name: 'Bad' }] });
+  await until(() => broker.getWorker('primary').availableChannels.length === 250);
+  assert.equal(broker.getWorker('primary').availableChannels[0].privateMetadata, undefined);
+  assert.equal(broker.getWorkerByAccessCode('abcdef').availableChannels, undefined);
+  assert.equal(broker.getWorkerByAccessCode('abcdef').externalChannels, undefined);
+});
+
+test('preview controls accept atomic snapshot mode and reject conflicting or malformed modes', async () => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const manager = new StreamManager({}, null, {});
+  const control = new StreamControl({ streamManager: manager });
+  const snapshots = await control.execute('set-content-preview', { enabled: false, snapshotEnabled: true });
+  assert.equal(snapshots.contentSnapshotPreview, true); assert.equal(snapshots.contentAwareImagePreview, false);
+  assert.equal((await control.execute('set-content-preview', { enabled: true, snapshotEnabled: true })).ok, false);
+  assert.equal((await control.execute('set-content-preview', { enabled: false, snapshotEnabled: 'bad' })).ok, false);
+  const aware = await control.execute('set-content-preview', { enabled: true });
+  assert.equal(aware.contentSnapshotPreview, false); assert.equal(aware.contentAwareImagePreview, true);
 });

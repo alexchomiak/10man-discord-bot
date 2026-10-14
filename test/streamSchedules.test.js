@@ -49,8 +49,12 @@ test('scheduled playback interrupts active or paused content and preserves queue
    _ensureVoiceLink: async () => ({ ok: true, voiceLink: link }), _ensurePipeline: () => pipeline,
    _piece: (_, args) => ({ ...args, queueId: args.title }), _refreshMusicQueue: async () => {},
    _cancelPiece: piece => cancelled.push(piece), _pump: () => {} });
-  const result = await manager.startScheduled({ guildId: 'g', channelId: 'c', entries: [{ title: 'Scheduled 1' }, { title: 'Scheduled 2' }] });
+  const result = await manager.startScheduled({ guildId: 'g', channelId: 'c', entries: [{ title: 'Scheduled 1' }, { title: 'Scheduled 2' }], nickname: 'Movie night', scheduleId: 'event' });
   assert.equal(result.ok, true); assert.deepEqual(pipeline.enqueue.map(piece => piece.title), ['Scheduled 1', 'Scheduled 2', 'Queued']);
+  assert.deepEqual(pipeline.enqueue.slice(0, 2).map(piece => piece.scheduledNickname), ['Movie night', 'Movie night']);
+  assert.equal(pipeline.enqueue[2].scheduledNickname, undefined);
+  assert.equal(manager._reopenSession(link, pipeline.enqueue[0]).scheduledNickname, 'Movie night');
+  assert.equal(manager._copyQueuedPiece(link, pipeline.enqueue[0]).scheduleId, 'event');
   assert.deepEqual(cancelled, [active]); assert.equal(manager.voiceLink.pipeline, pipeline); assert.equal(link.paused, false); assert.equal(link.pausedSession, null);
  }
 });
@@ -81,4 +85,58 @@ test('scheduled control prepares only first ordinary source and rejects late pre
   const lateControl = new StreamControl({ streamManager: manager, sourceResolver: async input => { clock += 60001; return { available: true, streamUrl: input, kind: 'direct' }; } });
   const result = await lateControl.execute('scheduled-play', { ...payload, dispatchDeadline: clock + 60000 }); assert.equal(result.ok, false); assert.equal(starts.length, 1);
  } finally { Date.now = originalNow; }
+});
+
+test('legacy schedules load without migration; pending edits keep ID and survive restart', async () => {
+ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'schedule-edit-')); const filePath = path.join(dir, 'jobs.json');
+ let now = Date.now(), payload;
+ const broker = { getWorker: () => ({ availableChannels: [{ guildId: '12345678901234567', id: '23456789012345678', guildName: 'Friends', name: 'Movies' }] }), request: async (_, body) => { payload = body; return { ok: true }; } };
+ const legacy = { id: 'legacy-id', workerId: 'one', ...input(now), status: 'pending' };
+ fs.writeFileSync(filePath, JSON.stringify([legacy]));
+ const original = fs.readFileSync(filePath, 'utf8');
+ try {
+  const store = new StreamSchedules({ broker, filePath, now: () => now });
+  assert.equal(fs.readFileSync(filePath, 'utf8'), original);
+  assert.equal(store.jobs[0].nickname, undefined);
+  assert.equal(store.list('one')[0].channelName, 'Movies');
+  const edited = await store.update('one', legacy.id, { ...input(now), sources: ['newslug'], nickname: 'Movie night' });
+  assert.equal(edited.id, legacy.id); assert.equal(edited.status, 'pending'); assert.equal(edited.nickname, 'Movie night');
+  const restarted = new StreamSchedules({ broker, filePath, now: () => now });
+  assert.equal(restarted.jobs[0].nickname, 'Movie night'); assert.equal(restarted.jobs[0].id, legacy.id);
+  now += 2000; await restarted.tick();
+  assert.equal(payload.nickname, 'Movie night'); assert.equal(payload.scheduleId, legacy.id); assert.deepEqual(payload.sources, ['newslug']);
+ } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('schedule edit validation and persistence failures roll back every field', async () => {
+ const now = Date.now();
+ const store = new StreamSchedules({ broker: { getWorker: () => null }, now: () => now });
+ const job = await store.add('one', input(now)); const before = JSON.stringify(store.jobs);
+ await assert.rejects(store.update('one', job.id, { ...input(now), startAt: new Date(now - 100).toISOString() }));
+ await assert.rejects(store.update('one', job.id, { ...input(now), nickname: {} }));
+ assert.equal(JSON.stringify(store.jobs), before);
+ store._save = async () => { store.jobs = []; throw new Error('disk full'); };
+ await assert.rejects(store.update('one', job.id, { ...input(now), sources: ['different'], nickname: 'Changed' }), /disk full/);
+ assert.equal(JSON.stringify(store.jobs), before);
+ assert.equal(await store.update('another-worker', job.id, input(now)), null);
+});
+
+test('dispatch claim wins edit race; running and terminal schedules reject edits', async () => {
+ let now = Date.now(), finish;
+ const store = new StreamSchedules({ now: () => now, broker: { getWorker: () => ({}), request: () => new Promise(resolve => { finish = resolve; }) } });
+ const job = await store.add('one', input(now)); now += 2000;
+ const ticking = store.tick();
+ await store.serial; await new Promise(resolve => setImmediate(resolve));
+ await assert.rejects(store.update('one', job.id, input(now)), /Only pending/);
+ finish({ ok: true }); await ticking;
+ await assert.rejects(store.update('one', job.id, input(now)), /Only pending/);
+ const another = await store.add('one', input(now)); await store.cancel('one', another.id);
+ await assert.rejects(store.update('one', another.id, input(now)), /Only pending/);
+});
+
+test('schedule nickname truncates at a Unicode-safe word boundary and blank is optional', async () => {
+ const now = Date.now(); const store = new StreamSchedules({ now: () => now, broker: { getWorker: () => null } });
+ const job = await store.add('one', { ...input(now), nickname: 'A fantastic movie night with friends 👩‍👩‍👧‍👦' });
+ assert.ok(job.nickname.length <= 32); assert.ok(job.nickname.endsWith('...'));
+ assert.equal((await store.update('one', job.id, { ...input(now), nickname: '  ' })).nickname, null);
 });

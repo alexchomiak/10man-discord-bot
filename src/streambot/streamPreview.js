@@ -12,7 +12,7 @@ async function uploadStreamPreview({ piece, pipeline, isCurrent, onFailure = () 
     if (signal.aborted || !isCurrent()) return;
     const artwork = piece.musicArtwork || piece.fillerArtwork;
     const sourceImage = !imageOverride && piece.thumbnail
-      ? await fetchArtworkImage(piece.thumbnail, { width: 512, height: 288, fit: 'contain' }, signal)
+      ? await fetchArtworkImage(piece.thumbnail, { width: 512, height: 288, fit: 'contain', onFailure: reason => onFailure(`artwork-${reason}`) }, signal)
       : null;
     if (signal.aborted || !isCurrent()) return;
     piece.previewSourceImageFailed = Boolean(!imageOverride && piece.thumbnail && !sourceImage);
@@ -36,7 +36,7 @@ async function uploadStreamPreview({ piece, pipeline, isCurrent, onFailure = () 
     return true;
   } catch {
     // URLs and upload errors can contain credentials; never log their details.
-    if (!signal.aborted && isCurrent()) onFailure();
+    if (!signal.aborted && isCurrent()) onFailure('upload-or-transform');
   } finally {
     if (abort) signal.removeEventListener('abort', abort);
   }
@@ -113,7 +113,7 @@ function decodeSnapshot(frame, codec, signal, ffmpegPath = 'ffmpeg') {
 function snapshotPreview({ piece, pipeline, manager, isCurrent, codec, ffmpegPath, decode = decodeSnapshot }) {
   let nextScan = 0;
   return (frame, isKeyframe) => {
-    if (manager.contentAwareImagePreview === false || !isKeyframe || !piece.previewFallbackWanted || piece.control.signal.aborted || !isCurrent() ||
+    if ((manager.contentAwareImagePreview === false && manager.contentSnapshotPreview !== true) || !isKeyframe || !piece.previewFallbackWanted || piece.control.signal.aborted || !isCurrent() ||
         manager._previewSnapshotJob || Date.now() < nextScan ||
         Date.now() < (manager._previewSnapshotAt || 0) + 60000 || !['H264', 'H265'].includes(codec)) return;
     nextScan = Date.now() + 1000;
@@ -126,9 +126,9 @@ function snapshotPreview({ piece, pipeline, manager, isCurrent, codec, ffmpegPat
       ? AbortSignal.any([piece.control.signal, manager.previewModeController.signal]) : piece.control.signal;
     setImmediate(async () => {
       try {
-        if (signal.aborted || manager.contentAwareImagePreview === false) return;
+        if (signal.aborted || (manager.contentAwareImagePreview === false && manager.contentSnapshotPreview !== true)) return;
         const jpeg = await decode(copied, codec, signal, ffmpegPath);
-        if (jpeg && manager.contentAwareImagePreview !== false && piece.previewFallbackWanted && !piece.control.signal.aborted && isCurrent()) await pipeline.streamer.setStreamPreview(jpeg);
+        if (jpeg && !signal.aborted && (manager.contentAwareImagePreview !== false || manager.contentSnapshotPreview === true) && piece.previewFallbackWanted && !piece.control.signal.aborted && isCurrent()) await pipeline.streamer.setStreamPreview(jpeg);
       } catch { /* Still previews must never interrupt playback. */ }
       finally { if (manager._previewSnapshotJob === token) manager._previewSnapshotJob = null; }
     });

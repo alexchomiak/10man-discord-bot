@@ -120,6 +120,7 @@ class StreamManager {
     this.musicMode = false;
     this.deriveNicknameFromContent = false;
     this.contentAwareImagePreview = false;
+    this.contentSnapshotPreview = false;
     this.previewModeController = new AbortController();
     this.contentNickname = new ContentNickname(this.client, error => log('warn', `content nickname: ${this._sanitize(error?.message || String(error))}`));
     this.contentNickname.isCurrent = piece => this.session === piece && this.voiceLink === piece.voiceLink && !piece.voiceLink?.closing && !piece.voiceLink?.paused;
@@ -134,6 +135,7 @@ class StreamManager {
         const image = programmeImage(programme, this.config.shareTvBase);
         const key = programmePreviewKey(programme, image);
         piece.thumbnail = image;
+        if (!image) this._verbose('EPG preview artwork missing; using fallback snapshots');
         if (!piece.previewPipeline) return false;
         if (piece.previewProgrammeKey === key && !piece.previewImageFailed) return true;
         const uploaded = await this._updateStillPreview(piece);
@@ -1784,6 +1786,11 @@ class StreamManager {
     piece.previewRequest = request;
     const signal = AbortSignal.any([piece.control.signal, request.signal]);
     let imageOverride;
+    if (this.contentSnapshotPreview) {
+      piece.previewFallbackWanted = true;
+      piece.previewImageFailed = false;
+      return true;
+    }
     if (!this.contentAwareImagePreview) {
       piece.previewFallbackWanted = false;
       let avatarUrl = null;
@@ -1797,7 +1804,7 @@ class StreamManager {
     }
     const uploaded = await uploadStreamPreview({ piece, pipeline: piece.previewPipeline, signal, imageOverride,
       isCurrent: () => piece.previewRequest === request && piece.previewCurrent(),
-      onFailure: () => this._verbose('Discord still preview unavailable') });
+      onFailure: reason => this._verbose(`Discord still preview unavailable (${reason || 'unknown'})`) });
     if (!signal.aborted && piece.previewRequest === request) {
       piece.previewImageFailed = !uploaded || piece.previewSourceImageFailed || !piece.thumbnail;
       return !piece.previewImageFailed;
@@ -1805,8 +1812,10 @@ class StreamManager {
     return false;
   }
 
-  setContentPreview(enabled) {
+  setContentPreview(enabled, snapshotEnabled = enabled ? false : this.contentSnapshotPreview) {
+    if (enabled && snapshotEnabled) return { ok: false, message: 'Preview modes are mutually exclusive.' };
     this.contentAwareImagePreview = enabled;
+    this.contentSnapshotPreview = snapshotEnabled === true;
     this.previewModeController.abort();
     this.previewModeController = new AbortController();
     const piece = this.session;
@@ -1818,7 +1827,7 @@ class StreamManager {
     }
     this.shareTvNicknameRefresh.stop();
     this.shareTvNicknameRefresh.sync(piece);
-    return { ok: true, enabled };
+    return { ok: true, enabled, snapshotEnabled: this.contentSnapshotPreview };
   }
 
   setContentNickname(enabled) {
@@ -1854,6 +1863,7 @@ class StreamManager {
       progressOverlay: this.progressOverlay, musicMode: this.musicMode,
       deriveNicknameFromContent: this.deriveNicknameFromContent,
       contentAwareImagePreview: this.contentAwareImagePreview,
+      contentSnapshotPreview: this.contentSnapshotPreview,
       positionSec: piece ? Math.round(link.paused && Number.isFinite(link.pausedPositionSec)
         ? link.pausedPositionSec : this.positionOf(piece)) : null,
       current: piece ? this._queueItem(piece) : null,
@@ -2050,7 +2060,7 @@ class StreamManager {
 
   // Scheduled playback replaces the active source and prepends its sources to
   // the existing queue. The persistent pipeline remains open in the same channel.
-  async startScheduled({ guildId, channelId, entries, dispatchDeadline } = {}) {
+  async startScheduled({ guildId, channelId, entries, dispatchDeadline, nickname, scheduleId } = {}) {
     const expired = () => Number.isFinite(dispatchDeadline) && Date.now() >= dispatchDeadline;
     if (!Array.isArray(entries) || !entries.length) return { ok: false, message: 'No scheduled content.' };
     const result = await this._serialize(async () => {
@@ -2069,7 +2079,7 @@ class StreamManager {
       const p = this._ensurePipeline(link, videoModule);
       if (expired()) return { ok: false, message: 'Scheduled preparation deadline expired.' };
       const pieces = entries.map(entry => this._piece(link, {
-        ...entry, streamUrl: entry.streamUrl || null, videoUrl: entry.videoUrl || null,
+        ...entry, scheduledNickname: nickname || null, scheduleId: scheduleId || null, streamUrl: entry.streamUrl || null, videoUrl: entry.videoUrl || null,
         audioUrl: entry.audioUrl || null,
         contentTitle: entry.shareTvChannel ? entry.contentTitle || null : entry.contentTitle || entry.title || null,
         chapters: this.musicMode ? entry.chapters || null : null,
@@ -2247,6 +2257,8 @@ class StreamManager {
       sourceKind: piece.sourceKind,
       contentTitle: piece.contentTitle,
       shareTvChannel: piece.shareTvChannel,
+      scheduledNickname: piece.scheduledNickname,
+      scheduleId: piece.scheduleId,
       thumbnail: piece.thumbnail,
       chapters: piece.chapters,
       queueId: piece.queueId,

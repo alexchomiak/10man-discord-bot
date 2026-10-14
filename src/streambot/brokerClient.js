@@ -1,8 +1,9 @@
 'use strict';
 
 const { WebSocket } = require('ws');
+const { BROKER_MAX_PAYLOAD } = require('../workerChannels');
 
-const CAPABILITIES = ['play', 'scheduled-play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name', 'resolve-channel', 'set-content-nickname', 'set-content-preview'];
+const CAPABILITIES = ['play', 'scheduled-play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name', 'resolve-channel', 'list-channels', 'set-content-nickname', 'set-content-preview'];
 
 function ownProfile(user, manager) {
   const guildId = manager?.voiceLink?.guildId;
@@ -39,7 +40,7 @@ class StreamBrokerClient {
     if (!this.enabled || this.closed || this.socket) return;
     let socket;
     try {
-      socket = new WebSocket(this.url, { headers: { Authorization: `Bearer ${this.secret}` }, maxPayload: 64 * 1024 });
+      socket = new WebSocket(this.url, { headers: { Authorization: `Bearer ${this.secret}` }, maxPayload: BROKER_MAX_PAYLOAD });
     } catch (error) {
       this.log(`[streambot:${this.workerId}] broker error: ${error.message}`);
       this._scheduleReconnect();
@@ -56,13 +57,15 @@ class StreamBrokerClient {
         profile: ownProfile(this.streamManager?.client?.user, this.streamManager),
         capabilities: CAPABILITIES,
         status: this.streamManager.status(), contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
+        contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
       deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true,
         musicMode: this.streamManager.musicMode === true
       });
-      void this._publishExternalChannels(socket);
+      void this._publishAvailableChannels(socket);
       this.statusTimer = setInterval(() => this._send({ type: 'status', status: this.streamManager.status(),
         profile: ownProfile(this.streamManager?.client?.user, this.streamManager),
         contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
+        contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
       deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true,
         musicMode: this.streamManager.musicMode === true }), 5000);
       this.statusTimer.unref?.();
@@ -77,24 +80,14 @@ class StreamBrokerClient {
     });
   }
 
-  async _publishExternalChannels(socket) {
-    const entries = this.streamManager?.config?.externalChannels || [];
-    const resolved = await Promise.all(entries.map(async entry => {
-      let timer;
-      try {
-        const result = await Promise.race([
-          this.control.execute('resolve-channel', { guildId: entry.guildId, channelId: entry.id }),
-          new Promise(resolve => { timer = setTimeout(() => resolve(null), 4000); })
-        ]);
-        if (!result?.ok) return null;
-        return { guildId: result.guildId, guildName: result.guildName,
-          id: result.channelId, name: result.channelName, type: result.channelType };
-      } catch { return null; }
-      finally { clearTimeout(timer); }
-    }));
-    if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
-      this._send({ type: 'external-channels', channels: resolved.filter(Boolean) });
-    }
+  async _publishAvailableChannels(socket) {
+    try {
+      const result = await this.control.execute('list-channels', { refresh: true });
+      if (this.socket === socket && socket.readyState === WebSocket.OPEN && result?.ok) {
+        this._send({ type: 'available-channels', channels: result.availableChannels || [],
+          channelsTruncated: result.channelsTruncated === true });
+      }
+    } catch (error) { this.log(`[streambot:${this.workerId}] channel discovery failed: ${error.message}`); }
   }
 
   _scheduleReconnect() {
@@ -140,13 +133,14 @@ class StreamBrokerClient {
       result = { ok: false, message: error?.message || 'Stream command failed.', status: this.streamManager.status() };
     }
     const response = { type: 'result', requestId: message.requestId, result };
-    if (this._send(response)) {
+    if (this._send(response) && message.operation !== 'list-channels') {
       this.results.set(message.requestId, response);
       if (this.results.size > 100) this.results.delete(this.results.keys().next().value);
     }
     this._send({ type: 'status', status: this.streamManager.status(),
       profile: ownProfile(this.streamManager?.client?.user, this.streamManager),
       contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
+        contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
       deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true,
         musicMode: this.streamManager.musicMode === true });
   }

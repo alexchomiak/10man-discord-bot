@@ -78,14 +78,15 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
     users: { cache: new Map([[userId, user]]), fetch: async () => user } };
   let online = true;
   const activeWorker = { id: 'one', userId, connectedAt: 1,
-    externalChannels: [{ guildId: externalGuildId, guildName: 'Friends server',
-      id: externalChannelId, name: 'Watch party', type: 2, external: true }],
+    availableChannels: [{ guildId: externalGuildId, guildName: 'Friends server',
+      id: externalChannelId, name: 'Watch party', type: 2 }],
     status: { guildId, channelId, alive: true, inChannel: true, streamUrl: 'https://secret/?ApiKey=private',
       queue: [{ id: 'q1', title: 'Next' }], current: { id: 'now', title: 'Playing' } } };
   const broker = { defaultWorkerId: 'one', listWorkers: () => online ? [activeWorker] : [],
   getWorkerByAccessCode: code => online && code === 'abcdef' ? activeWorker : null,
   getWorker: id => online && id === 'one' ? activeWorker : null, request: async (operation, payload, workerId) => {
     calls.push({ operation, payload, workerId });
+    if (operation === 'list-channels') return { ok: true, availableChannels: activeWorker.availableChannels, cached: false };
     if (operation === 'set-global-name') return { ok: false, message: 'CAPTCHA_SOLVER_NOT_IMPLEMENTED' };
     return { ok: true, message: 'Done.', status: null };
   } };
@@ -125,11 +126,18 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(state.workers.length,2);
   assert.equal(state.workers[1].online,false);
   assert.equal(state.workers[0].profile.displayName,'Streamer');
-  assert.deepEqual(state.workers[0].externalChannels, activeWorker.externalChannels);
-  assert.deepEqual(state.workers[1].externalChannels, []);
+  assert.deepEqual(state.workers[0].availableChannels, activeWorker.availableChannels);
+  assert.deepEqual(state.workers[1].availableChannels, []);
+  assert.deepEqual(state.guilds, [{ id: externalGuildId, name: 'Friends server' }]);
+  const discovered = await (await request('/api/workers/one/channels?refresh=true')).json();
+  assert.deepEqual(discovered.availableChannels, activeWorker.availableChannels);
+  assert.deepEqual(calls.pop(), { operation: 'list-channels', payload: { refresh: true }, workerId: 'one' });
+  assert.equal((await request('/api/workers/one/channels', null, 'wrong')).status, 401);
+  assert.deepEqual((await (await request('/api/workers/two/channels')).json()).availableChannels, []);
+  assert.equal((await request('/api/workers/unknown/channels')).status, 404);
   assert(!JSON.stringify(state).includes('ApiKey'));
   const channels = await (await request(`/api/guilds/${guildId}/channels`)).json();
-  assert.deepEqual(channels.channels.map(channel=>channel.name),['Movies']);
+  assert.deepEqual(channels.channels.map(channel=>channel.name),['Hidden', 'Movies']);
   const move = await (await request('/api/workers/one/actions', { operation:'move', guildId, channelId })).json();
   assert.equal(move.ok,true);
   const externalMove = await (await request('/api/workers/one/actions', { operation:'move', guildId: externalGuildId,
@@ -171,6 +179,7 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(scoped.worker.status.guildId, undefined);
   assert.equal(scoped.worker.status.channelId, undefined);
   assert.equal(scoped.guilds, undefined);
+  assert.equal(scoped.worker.availableChannels, undefined);
   assert.equal((await publicFetch('/api/public/one/search?q=x')).status, 400);
   assert.deepEqual((await (await publicFetch('/api/public/one/search?q=music')).json()).results.map(item => item.title), ['Found']);
   assert.deepEqual(searches, [{ query: 'music', page: 1 }, { query: 'music', page: 2 }, { query: 'music', page: 1 }]);
@@ -193,6 +202,9 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal((await publicFetch('/api/public/two/state')).status, 404);
   assert.equal((await publicFetch(`/api/guilds/${guildId}/channels`)).status, 401);
   assert.equal((await publicFetch('/api/state')).status, 401);
+  assert.equal((await publicFetch('/api/workers/one/channels')).status, 401);
+  assert.equal((await publicFetch('/api/public/one/channels')).status, 401);
+  assert.equal((await publicFetch('/api/public/one/actions', { operation: 'list-channels' })).status, 403);
   activeWorker.status = { ...activeWorker.status, alive: false };
   assert.equal((await publicFetch('/one')).status, 404);
   assert.equal((await publicFetch('/api/public/one/state')).status, 404);
@@ -232,6 +244,15 @@ test('admin schedules configured offline workers; public and unauthenticated sch
     assert.equal(response.status, 201); const { schedule } = await response.json();
     const listed = await (await fetch(`${base}/api/workers/offline/schedules`, { headers })).json(); assert.equal(listed.schedules[0].id, schedule.id);
     assert.equal((await fetch(`${base}/api/workers/unknown/schedules`, { headers })).status, 404);
+    const editBody = { sources: ['news'], guildId, channelId, startAt: new Date(Date.now() + 120000).toISOString(), nickname: 'Movie night' };
+    const edited = await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'PUT', headers, body: JSON.stringify(editBody) });
+    assert.equal(edited.status, 200);
+    const updated = (await edited.json()).schedule;
+    assert.equal(updated.id, schedule.id); assert.equal(updated.nickname, 'Movie night'); assert.deepEqual(updated.sources, ['news']);
+    assert.equal((await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'PUT', body: JSON.stringify(editBody) })).status, 401);
+    assert.equal((await fetch(`${base}/api/public/offline/schedules/${schedule.id}`, { method: 'PUT', body: JSON.stringify(editBody) })).status, 401);
+    assert.equal((await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'PUT', headers, body: JSON.stringify({ ...editBody, nickname: {} }) })).status, 400);
     const cancelled = await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'DELETE', headers }); assert.equal(cancelled.status, 200); assert.equal((await cancelled.json()).schedule.status, 'cancelled');
+    assert.equal((await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'PUT', headers, body: JSON.stringify(editBody) })).status, 409);
   } finally { await dashboard.close(); }
 });

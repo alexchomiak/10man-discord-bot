@@ -1,6 +1,7 @@
 'use strict';
 
 const { resolveSource } = require('./sources');
+const { WorkerChannelDiscovery, canJoinChannel } = require('../workerChannels');
 const { M } = require('./messages');
 
 class StreamControl {
@@ -9,6 +10,7 @@ class StreamControl {
     this.resolveSource = sourceResolver;
     this.config = config || {};
     this.client = client;
+    this.channelDiscovery = new WorkerChannelDiscovery(client, this.config);
   }
 
   _result(ok, message, extra = {}) {
@@ -16,6 +18,7 @@ class StreamControl {
       progressOverlay: this.streamManager.progressOverlay === true,
       musicMode: this.streamManager.musicMode === true,
       contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
+      contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
       deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true, ...extra };
   }
 
@@ -36,6 +39,7 @@ class StreamControl {
     const channelId = payload.channelId || this.config.streamChannelId;
     switch (operation) {
       case 'ping': return this._result(true, M.PONG);
+      case 'list-channels': return this.channelDiscovery.list(payload);
       case 'resolve-channel': {
         const targetGuildId = String(payload.guildId || '');
         const targetChannelId = String(payload.channelId || '');
@@ -47,7 +51,9 @@ class StreamControl {
         if (!guild) return { ok: false, message: 'Server unavailable to this worker.' };
         const channel = guild.channels?.cache?.get(targetChannelId)
           || await guild.channels?.fetch(targetChannelId).catch(() => null);
-        if (!channel || String(channel.guildId || channel.guild?.id || targetGuildId) !== targetGuildId ||
+        const member = guild.members?.me || guild.members?.cache?.get(this.client?.user?.id)
+          || await Promise.resolve(guild.members?.fetchMe?.() || guild.members?.fetch?.(this.client?.user?.id)).catch(() => null);
+        if (!canJoinChannel(channel, member) || String(channel.guildId || channel.guild?.id || targetGuildId) !== targetGuildId ||
             ![2, 13, 'GUILD_VOICE', 'GUILD_STAGE_VOICE'].includes(channel.type)) {
           return { ok: false, message: 'Voice channel unavailable to this worker.' };
         }
@@ -56,8 +62,10 @@ class StreamControl {
       }
       case 'set-content-preview': {
         if (typeof payload.enabled !== 'boolean') return this._result(false, 'Enabled must be a boolean.');
-        const r = this.streamManager.setContentPreview(payload.enabled);
-        return this._result(true, `Content Aware Image Preview ${r.enabled ? 'on' : 'off'}.`, { detail: { enabled: r.enabled } });
+        if (payload.snapshotEnabled !== undefined && typeof payload.snapshotEnabled !== 'boolean') return this._result(false, 'Snapshot enabled must be a boolean.');
+        if (payload.enabled && payload.snapshotEnabled) return this._result(false, 'Preview modes are mutually exclusive.');
+        const r = this.streamManager.setContentPreview(payload.enabled, payload.snapshotEnabled);
+        return this._result(r.ok === true, r.message || 'Preview mode updated.', { detail: { enabled: r.enabled, snapshotEnabled: r.snapshotEnabled } });
       }
       case 'set-content-nickname': {
         if (typeof payload.enabled !== 'boolean') return this._result(false, 'Enabled must be a boolean.');
@@ -85,6 +93,7 @@ class StreamControl {
           progressOverlay: this.streamManager.progressOverlay === true,
           musicMode: this.streamManager.musicMode === true,
           contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
+      contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
       deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true };
       }
       case 'reorder': {
@@ -188,7 +197,7 @@ class StreamControl {
           if (entries.length > (this.config.streamQueueLimit || 100)) return this._result(false, 'Scheduled sources exceed the stream queue limit.');
         }
         if (expired()) return this._result(false, 'Scheduled preparation deadline expired; content was not interrupted.');
-        const r = await this.streamManager.startScheduled({ guildId, channelId, entries, dispatchDeadline: deadline });
+        const r = await this.streamManager.startScheduled({ guildId, channelId, entries, dispatchDeadline: deadline, nickname: payload.nickname || null, scheduleId: payload.scheduleId });
         return this._result(r?.ok === true, r?.ok ? 'Scheduled content started.' : r?.message || M.STREAM_START_FAILED);
       }
       case 'play': {

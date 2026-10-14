@@ -1,3 +1,4 @@
+const { parseDashboardServerIds } = require('./workerChannels');
 require('./processHeartbeat');
 require('dotenv').config();
 
@@ -82,6 +83,7 @@ const config = {
   streamDashboardRandomCodes: process.env.STREAM_DASHBOARD_RANDOM_CODES?.trim().toLowerCase() === 'true',
   streamDashboardHost: process.env.STREAM_DASHBOARD_HOST || '0.0.0.0',
   streamDashboardPort: Number.parseInt(process.env.STREAM_DASHBOARD_PORT || '8082', 10),
+  dashboardServerIds: parseDashboardServerIds(process.env.STREAM_DASHBOARD_SERVER_IDS),
   streamDashboardChannelIds: (process.env.STREAM_DASHBOARD_CHANNEL_IDS || '')
     .split(',').map(id => id.trim()).filter(Boolean),
   streamAllowedUserIds: parseDiscordIdList(
@@ -269,7 +271,7 @@ const streamDashboard = streamBroker.enabled && config.streamDashboardPassword
     scheduleFilePath: require('node:path').join(require('node:path').dirname(config.sqlitePath), 'stream-schedules.json'),
     scheduleConfig: { shareTvApiKey: process.env.SHARETV_API_KEY, shareTvBase: process.env.SHARETV_BASE },
     randomCodes: config.streamDashboardRandomCodes,
-    channelIds: config.streamDashboardChannelIds,
+    serverIds: config.dashboardServerIds,
     configuredWorkerIds: (process.env.STREAMBOT_IDS || '').split(',').map(id => id.trim()).filter(Boolean),
     host: config.streamDashboardHost, port: config.streamDashboardPort })
   : null;

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useId, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from '@dnd-kit/core';
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -84,55 +84,68 @@ function SortableQueueItem({ item, index, canControl, onRemove, onTop, isFirst }
 
 const channelKey = channel => `${channel.guildId}:${channel.id}`;
 
-function ChannelPicker({ workerId, channels, selected, onSelect, disabled }) {
+function ChannelPicker({ workerId, channels, selected, onSelect, disabled, onRefresh }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
-  const root = useRef(null);
-  const search = useRef(null);
-  const chosen = channels.find(channel => channelKey(channel) === selected);
-  const matches = channels.filter(channel =>
-    `${channel.guildName} ${channel.name}`.toLowerCase().includes(query.toLowerCase()));
-  const localMatches = matches.filter(channel => !channel.external);
-  const externalMatches = matches.filter(channel => channel.external);
+  const [refreshing, setRefreshing] = useState(false);
+  const root = useRef(null), search = useRef(null), trigger = useRef(null), options = useRef(null);
+  const listId = useId();
+  const unique = [...new Map(channels.map(channel => [channelKey(channel), channel])).values()];
+  const chosen = unique.find(channel => channelKey(channel) === selected);
+  const groups = new Map();
+  unique.filter(channel => `${channel.guildName || channel.guildId} ${channel.name}`.toLowerCase().includes(query.trim().toLowerCase()))
+    .sort((a, b) => (a.guildName || a.guildId).localeCompare(b.guildName || b.guildId) || a.guildId.localeCompare(b.guildId) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+    .forEach(channel => { if (!groups.has(channel.guildId)) groups.set(channel.guildId, []); groups.get(channel.guildId).push(channel); });
+  const matches = [...groups.values()].flat();
+  const activeIndex = Math.min(active, Math.max(0, matches.length - 1));
   useEffect(() => {
     if (!open) return;
     search.current?.focus();
     const dismiss = event => { if (!root.current?.contains(event.target)) setOpen(false); };
     document.addEventListener('pointerdown', dismiss);
-    return () => document.removeEventListener('pointerdown', dismiss);
+    document.addEventListener('focusin', dismiss);
+    return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('focusin', dismiss); };
   }, [open]);
-  const choose = channel => { onSelect(channelKey(channel)); setOpen(false); setQuery(''); };
+  useEffect(() => { if (open) options.current?.querySelector(`[data-index="${activeIndex}"]`)?.scrollIntoView({ block: 'nearest' }); }, [open, activeIndex, query, matches.length]);
+  const choose = channel => { onSelect(channelKey(channel)); setOpen(false); setQuery(''); trigger.current?.focus(); };
   const onKeyDown = event => {
-    if (event.key === 'Escape') { setOpen(false); return; }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      setActive(index => Math.max(0, Math.min(matches.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1))));
+    if (!open) {
+      if (!disabled && event.target === trigger.current && event.key === 'ArrowDown') { event.preventDefault(); setQuery(''); setActive(0); setOpen(true); }
+      return;
     }
-    if (event.key === 'Enter' && matches[active]) { event.preventDefault(); choose(matches[active]); }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus(); return; }
+    if (event.target !== search.current) return;
+    if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); setActive(event.key === 'Home' ? 0 : Math.max(0, matches.length - 1)); }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault(); setActive(Math.max(0, Math.min(matches.length - 1, activeIndex + (event.key === 'ArrowDown' ? 1 : -1))));
+    }
+    if (event.key === 'Enter') { event.preventDefault(); if (matches[activeIndex]) choose(matches[activeIndex]); }
   };
-  return <div className="channel-picker" ref={root}>
-    <button type="button" className="channel-picker-trigger" aria-label={`Destination voice channel for ${workerId}`}
-      aria-expanded={open} aria-haspopup="listbox" disabled={disabled || !channels.length}
+  const refreshChannels = async () => { setRefreshing(true); try { await onRefresh(); } finally { setRefreshing(false); } };
+  let offset = 0;
+  return <div className="channel-picker" ref={root} onKeyDown={onKeyDown}>
+    <button ref={trigger} type="button" className="channel-picker-trigger" aria-label={`Destination voice channel for ${workerId}`}
+      aria-expanded={open} aria-haspopup="listbox" aria-controls={open ? listId : undefined} disabled={disabled}
       onClick={() => { setOpen(value => !value); setQuery(''); setActive(0); }}>
-      <span className="channel-picker-label">
-        <strong>{chosen ? `# ${chosen.name}` : 'Choose a voice channel'}</strong>
-        {chosen && <small>{chosen.guildName}</small>}
-      </span><span className="channel-picker-chevron">⌄</span>
+      <span className="channel-picker-label"><strong>{chosen ? `# ${chosen.name}` : 'Choose a voice channel'}</strong>{chosen && <small>{chosen.guildName || chosen.guildId}</small>}</span><span className="channel-picker-chevron">⌄</span>
     </button>
     {open && <div className="channel-picker-menu">
-      <input ref={search} className="channel-picker-search" value={query} placeholder="Search servers or channels…"
-        aria-label="Search voice channels" onChange={event => { setQuery(event.target.value); setActive(0); }} onKeyDown={onKeyDown} />
-      <div className="channel-picker-options" role="listbox" aria-label="Voice channels">
-        {localMatches.length > 0 && <div className="channel-picker-group">CURRENT SERVER</div>}
-        {localMatches.map((channel, index) => <button type="button" role="option"
-          aria-selected={selected === channelKey(channel)} key={channelKey(channel)} onClick={() => choose(channel)}
-          className={`channel-picker-option ${active === index ? 'keyboard-active' : ''}`}><span># {channel.name}</span><small>{channel.guildName}</small></button>)}
-        {externalMatches.length > 0 && <div className="channel-picker-group">EXTERNAL SERVERS</div>}
-        {externalMatches.map((channel, index) => <button type="button" role="option"
-          aria-selected={selected === channelKey(channel)} key={channelKey(channel)} onClick={() => choose(channel)}
-          className={`channel-picker-option ${active === localMatches.length + index ? 'keyboard-active' : ''}`}><span># {channel.name}</span><small>{channel.guildName}</small></button>)}
-        {!matches.length && <div className="channel-picker-empty">No matching channels</div>}
+      <div className="channel-picker-search-row"><input ref={search} className="channel-picker-search" value={query} placeholder="Search servers or channels…"
+        role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list"
+        aria-activedescendant={matches.length ? `${listId}-${activeIndex}` : undefined}
+        aria-label="Search voice channels" onChange={event => { setQuery(event.target.value); setActive(0); }} />
+        {query && <button type="button" className="channel-picker-clear" aria-label="Clear channel search" onClick={() => { setQuery(''); setActive(0); search.current?.focus(); }}>×</button>}
+        {onRefresh && <button type="button" className="channel-picker-clear" aria-label="Refresh worker channels" disabled={refreshing} onClick={refreshChannels}><Icon name="refresh" /></button>}
+      </div>
+      <div ref={options} id={listId} className="channel-picker-options" role="listbox" aria-label="Voice channels" aria-busy={refreshing}>
+        {[...groups].map(([guildId, group]) => { const start = offset; offset += group.length; return <div key={guildId} role="group" aria-label={group[0].guildName || guildId}>
+          <div className="channel-picker-group">{group[0].guildName || guildId}</div>
+          {group.map((channel, index) => <button type="button" role="option" tabIndex={-1} id={`${listId}-${start + index}`} data-index={start + index}
+            aria-selected={selected === channelKey(channel)} key={channelKey(channel)} onClick={() => choose(channel)}
+            className={`channel-picker-option ${activeIndex === start + index ? 'keyboard-active' : ''}`}><span># {channel.name}</span></button>)}
+        </div>; })}
+        {!matches.length && <div className="channel-picker-empty">{unique.length ? 'No matching channels' : 'No channels available. Refresh or use server / channel IDs.'}</div>}
       </div>
     </div>}
   </div>;
@@ -141,12 +154,14 @@ function ChannelPicker({ workerId, channels, selected, onSelect, disabled }) {
 function WorkerSettings({ worker, action, busy }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
+  const [previewPending, setPreviewPending] = useState(null);
   const [position, setPosition] = useState({ top: 0, left: 0 });
   const trigger = useRef(null);
   const panel = useRef(null);
   const switchRef = useRef(null);
   const enabled = worker.deriveNicknameFromContent === true;
-  const previewEnabled = worker.contentAwareImagePreview === true;
+  const previewEnabled = previewPending?.aware ?? (worker.contentAwareImagePreview === true);
+  const snapshotEnabled = previewPending?.snapshot ?? (worker.contentSnapshotPreview === true);
   const disabled = !worker.online || busy || pending;
   const panelId = `settings-${worker.id}`;
   useLayoutEffect(() => {
@@ -188,6 +203,16 @@ function WorkerSettings({ worker, action, busy }) {
     try { await action(worker.id, operation, { enabled: nextEnabled }); }
     finally { setPending(false); }
   };
+  const togglePreview = async kind => {
+    if (disabled) return;
+    const next = kind === 'aware'
+      ? { aware: !previewEnabled, snapshot: previewEnabled ? snapshotEnabled : false }
+      : { aware: snapshotEnabled ? previewEnabled : false, snapshot: !snapshotEnabled };
+    setPreviewPending(next);
+    setPending(true);
+    try { await action(worker.id, 'set-content-preview', { enabled: next.aware, snapshotEnabled: next.snapshot }); }
+    finally { setPreviewPending(null); setPending(false); }
+  };
   return <>
     <button ref={trigger} type="button" className="icon-button worker-settings-trigger" title="Worker settings"
       aria-label={`Settings for ${worker.id}`} aria-haspopup="dialog" aria-expanded={open}
@@ -208,15 +233,23 @@ function WorkerSettings({ worker, action, busy }) {
         <button id={`${panelId}-preview-switch`} type="button" role="switch"
           className="worker-setting-switch" aria-labelledby={`${panelId}-preview-label`} aria-checked={previewEnabled}
           aria-describedby={`${panelId}-preview-description`} aria-busy={pending || busy || undefined}
-          disabled={disabled} onClick={() => toggle('set-content-preview', !previewEnabled)}><span /></button>
+          disabled={disabled} onClick={() => togglePreview('aware')}><span /></button>
       </div>
-      <p id={`${panelId}-preview-description`}>Off shows this worker’s QR preview. On shows source artwork or stream snapshots.</p>
+      <p id={`${panelId}-preview-description`}>Use source artwork or a fallback snapshot. Enabling this turns off minute-by-minute snapshots.</p>
+      <div className="worker-setting-row">
+        <label id={`${panelId}-snapshot-label`} htmlFor={`${panelId}-snapshot-switch`}>Content Snapshot Preview (Every 1 Minute)</label>
+        <button id={`${panelId}-snapshot-switch`} type="button" role="switch"
+          className="worker-setting-switch" aria-labelledby={`${panelId}-snapshot-label`} aria-checked={snapshotEnabled}
+          aria-describedby={`${panelId}-snapshot-description`} aria-busy={pending || busy || undefined}
+          disabled={disabled} onClick={() => togglePreview('snapshot')}><span /></button>
+      </div>
+      <p id={`${panelId}-snapshot-description`}>Show a fresh stream snapshot every minute. Enabling this turns off content-aware artwork. Both previews off shows this worker’s QR preview.</p>
       {!worker.online && <div className="worker-settings-status">Worker offline</div>}
     </div>, document.body)}
   </>;
 }
 
-function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, onModal, busy, expanded = false, publicView = false }) {
+function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, onModal, busy, refreshChannels, expanded = false, publicView = false }) {
   const status = worker.status;
   const musicMode = worker.musicMode === true || status?.musicMode === true;
   const queue = status?.queue || [];
@@ -385,7 +418,7 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
     </form>
     {!publicView && <div className="channel-controls">
       <ChannelPicker workerId={worker.id} channels={channels} selected={selected ? channelKey(selected) : ''}
-        onSelect={setDestinationKey} disabled={!canControl || !guildId} />
+        onSelect={setDestinationKey} disabled={!canControl} onRefresh={refreshChannels} />
       <button className="secondary-button" disabled={!canControl || !selected} onClick={() => send(status ? 'move' : 'join', destination())}><Icon name="move" size={15} /> {status ? 'Switch' : 'Join'}</button>
       <button className="text-button manual" onClick={() => onModal({ kind: 'channel', worker, guildId, guilds })} disabled={!canControl}>Use IDs</button>
     </div>}
@@ -573,7 +606,6 @@ function AdminApp() {
   const [login, setLogin] = useState('');
   const [state, setState] = useState(null);
   const [guildId, setGuildId] = useState('');
-  const [channels, setChannels] = useState([]);
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState({});
   const [error, setError] = useState('');
@@ -596,18 +628,14 @@ function AdminApp() {
     }
   }, [answer, guildId]);
   useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 5000); return () => clearInterval(timer); }, [refresh]);
-  useEffect(() => {
-    if (!answer || !guildId) { setChannels([]); return; }
-    setChannels([]);
-    let live = true;
-    api(answer, `/api/guilds/${guildId}/channels`).then(result => { if (live) setChannels(result.channels); })
-      .catch(() => { if (live) setChannels([]); });
-    return () => { live = false; };
-  }, [answer, guildId]);
   const workers = useMemo(() => state?.workers || [], [state]);
-  const channelsFor = worker => {
-    const localKeys = new Set(channels.map(channelKey));
-    return [...channels, ...(worker.externalChannels || []).filter(channel => !localKeys.has(channelKey(channel)))];
+  const channelsFor = worker => worker.availableChannels || [];
+  const loadWorkerChannels = async workerId => {
+    try {
+      const result = await api(answer, `/api/workers/${encodeURIComponent(workerId)}/channels?refresh=true`);
+      setState(previous => previous && ({ ...previous, workers: previous.workers.map(worker => worker.id === workerId ? { ...worker, availableChannels: result.availableChannels || [] } : worker) }));
+      return result;
+    } catch (failure) { toast.error(failure.message); return null; }
   };
   const selectedWorker = workers.find(worker => worker.id === selectedWorkerId);
   const action = async (workerId, operation, payload = {}) => {
@@ -625,7 +653,7 @@ function AdminApp() {
   const searchYoutube = async (workerId, query, page = 1) => api(answer, `/api/workers/${encodeURIComponent(workerId)}/search?q=${encodeURIComponent(query)}&page=${page}`);
   const scheduleRequest = async (route, options = {}, quiet = false) => {
     if (!route) { toast.error(options.error); return null; }
-    try { const result = await api(answer, route, options); if (options.method === 'POST' && !quiet) toast.success('Schedule created.'); if (options.method === 'DELETE') toast.success('Schedule cancelled.'); return result; }
+    try { const result = await api(answer, route, options); if (options.method === 'POST' && !quiet) toast.success('Schedule created.'); if (options.method === 'PUT' && !quiet) toast.success('Schedule updated.'); if (options.method === 'DELETE') toast.success('Schedule cancelled.'); return result; }
     catch (failure) { if (!quiet) toast.error(failure.message); return null; }
   };
   if (!answer) return <div className="login-page"><Toaster position="top-right" theme="dark" richColors closeButton />
@@ -650,19 +678,19 @@ function AdminApp() {
           <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
         </section>
         {!state ? <div className="empty-fleet">Connecting to stream workers…</div>
-          : selectedWorker ? <WorkerCard worker={selectedWorker} guildId={guildId} guilds={state.guilds} channels={channelsFor(selectedWorker)} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[selectedWorker.id]} expanded />
+          : selectedWorker ? <WorkerCard worker={selectedWorker} guildId={guildId} guilds={state.guilds} channels={channelsFor(selectedWorker)} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[selectedWorker.id]} refreshChannels={() => loadWorkerChannels(selectedWorker.id)} expanded />
             : <div className="empty-fleet">Worker “{selectedWorkerId}” is not configured. <a href="#/">View all workers</a></div>}
       </div> : <>
         <section className="page-heading"><div><div className="eyebrow highlight">LIVE OPERATIONS</div><h1>Stream Deck<span className="heading-period">.</span></h1><p>Manage your Discord stream workers and playback queues.</p></div>
           <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
         </section>
         <div className="overview"><div><span className="overview-number">{workers.length}</span><span className="overview-label">WORKERS</span></div><div><span className="overview-number">{workers.filter(worker => worker.online).length}</span><span className="overview-label">ONLINE</span></div><div><span className="overview-number">{workers.filter(worker => worker.status?.current && !worker.status.current.isFiller).length}</span><span className="overview-label">ON AIR</span></div><div className="overview-note"><span className="pulse" /> Auto-refreshing every 5 seconds</div></div>
-        <div className="cards-grid">{workers.map(worker => <div key={worker.id}><WorkerCard worker={worker} guildId={guildId} guilds={state.guilds} channels={channelsFor(worker)} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[worker.id]} /></div>)}</div>
+        <div className="cards-grid">{workers.map(worker => <div key={worker.id}><WorkerCard worker={worker} guildId={guildId} guilds={state.guilds} channels={channelsFor(worker)} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[worker.id]} refreshChannels={() => loadWorkerChannels(worker.id)} /></div>)}</div>
         {!workers.length && <div className="empty-fleet">No stream workers configured or connected.</div>}
       </>}
       <footer>10MAN STREAM DECK <span>·</span> Persistent Go Live control</footer>
     </main>
-    {modal?.kind === 'schedule' && <ScheduleModal worker={modal.worker} close={() => setModal(null)} request={scheduleRequest} channels={channelsFor(modal.worker)} guilds={state?.guilds || []} guildId={guildId} ChannelPicker={ChannelPicker} loadChannels={id => scheduleRequest(`/api/guilds/${encodeURIComponent(id)}/channels`, {}, true)} />}
+    {modal?.kind === 'schedule' && <ScheduleModal worker={workers.find(worker => worker.id === modal.worker.id) || modal.worker} close={() => setModal(null)} request={scheduleRequest} channels={channelsFor(workers.find(worker => worker.id === modal.worker.id) || modal.worker)} ChannelPicker={ChannelPicker} loadChannels={() => loadWorkerChannels(modal.worker.id)} />}
     {modal && modal.kind !== 'schedule' && <Modal key={`${modal.kind}-${modal.worker.id}`} modal={modal} close={() => setModal(null)} action={action} guildId={guildId} />}
   </div>;
 }

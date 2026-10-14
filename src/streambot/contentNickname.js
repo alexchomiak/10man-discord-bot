@@ -28,17 +28,22 @@ class ContentNickname {
       this.enabled = enabled;
       this.generation++;
       this.attempted.clear();
-      this.wanted = null;
+      const explicitRequest = this.wanted?.explicit ? this.wanted : this.inFlight?.explicit ? this.inFlight : null;
+      if (explicitRequest) this.attempted.set(explicitRequest.guildId, explicitRequest.nickname);
+      if (!this.wanted?.explicit) this.wanted = null;
     }
   }
   update(piece) {
-    if (!this.enabled || !piece || piece.isFiller ||
-        !['sharetv', 'youtube', 'jellyfin'].includes(piece.sourceKind)) return;
-    const nickname = contentNickname(piece.shareTvChannel ? piece.contentTitle : piece.contentTitle || piece.title);
+    if (!piece || piece.isFiller) return;
+    const explicit = !!piece.scheduledNickname;
+    if (!explicit && (!this.enabled || !['sharetv', 'youtube', 'jellyfin'].includes(piece.sourceKind))) return;
+    const nickname = contentNickname(explicit ? piece.scheduledNickname : piece.shareTvChannel ? piece.contentTitle : piece.contentTitle || piece.title);
     const guildId = piece.guildId;
-    if (!guildId || !nickname || this.attempted.get(guildId) === nickname) return;
+    if (!guildId || !nickname) return;
+    if (this.attempted.get(guildId) === nickname &&
+        (!this.running || (this.wanted || this.inFlight)?.piece === piece)) return;
     this.attempted.set(guildId, nickname);
-    this.wanted = { piece, nickname, guildId, generation: this.generation };
+    this.wanted = { piece, nickname, guildId, generation: this.generation, explicit };
     if (this.running) return;
     this.running = true;
     this.pending = Promise.resolve().then(() => this._drain());
@@ -47,9 +52,10 @@ class ContentNickname {
     while (this.wanted) {
       const wanted = this.wanted;
       this.wanted = null;
-      const { piece, nickname, guildId, generation } = wanted;
-      const current = () => this.enabled && generation === this.generation &&
-        !piece.control?.signal?.aborted && this.attempted.get(guildId) === nickname &&
+      this.inFlight = wanted;
+      const { piece, nickname, guildId, generation, explicit } = wanted;
+      const current = () => (explicit || this.enabled && generation === this.generation) &&
+        !piece.control?.signal?.aborted && (explicit || this.attempted.get(guildId) === nickname) &&
         (!this.isCurrent || this.isCurrent(piece));
       try {
         if (!current()) continue;
@@ -59,6 +65,7 @@ class ContentNickname {
         if (!current() || member?.nickname === nickname || typeof member?.setNickname !== 'function') continue;
         await member.setNickname(nickname, 'Derive nickname from content');
       } catch (error) { this.report(error); }
+      finally { this.inFlight = null; }
     }
     this.running = false;
   }

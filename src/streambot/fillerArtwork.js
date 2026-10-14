@@ -41,24 +41,26 @@ function titleLines(value) {
   return lines.map((line, index) => `<text x="90" y="${index ? 867 : 817}" font-size="39" font-weight="700" fill="#f0f4f6">${escapeXml(line)}</text>`).join('');
 }
 
-async function fetchArtworkImage(url, { width, height, timeoutMs = 800, fit = 'cover' }, signal) {
+async function fetchArtworkImage(url, { width, height, timeoutMs = 800, fit = 'cover', onFailure = () => {} }, signal) {
   if (!/^https?:\/\//i.test(url || '')) return null;
+  let timeout;
   try {
-    const timeout = AbortSignal.timeout(timeoutMs);
+    timeout = AbortSignal.timeout(timeoutMs);
     const response = await fetch(url, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
-    if (!response.ok || !/^image\/(?:jpeg|png|webp)(?:;|$)/i.test(response.headers.get('content-type') || '')) return null;
+    if (!response.ok) { onFailure(`http-${response.status}`); return null; }
+    if (!/^image\/(?:jpeg|png|webp)(?:;|$)/i.test(response.headers.get('content-type') || '')) { onFailure('content-type'); return null; }
     const length = Number(response.headers.get('content-length'));
-    if (length > 3 * 1024 * 1024) return null;
+    if (length > 3 * 1024 * 1024) { onFailure('image-too-large'); return null; }
     let bytes = 0;
     const chunks = [];
     for await (const chunk of response.body) {
       bytes += chunk.length;
-      if (bytes > 3 * 1024 * 1024) { await response.body.cancel().catch(() => {}); return null; }
+      if (bytes > 3 * 1024 * 1024) { await response.body.cancel().catch(() => {}); onFailure('image-too-large'); return null; }
       chunks.push(chunk);
     }
     return await sharp(Buffer.concat(chunks), { limitInputPixels: 4096 * 4096 })
       .rotate().resize(width, height, { fit, background: '#000000' }).png().toBuffer();
-  } catch { return null; }
+  } catch { onFailure(signal?.aborted ? 'cancelled' : timeout?.aborted ? 'timeout' : 'fetch-or-decode'); return null; }
 }
 
 async function circularAvatar(image, size) {

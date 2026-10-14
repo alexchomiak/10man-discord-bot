@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { sanitizeAvailableChannels, BROKER_MAX_PAYLOAD } = require('./workerChannels');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
@@ -59,7 +60,7 @@ class StreamBroker {
 
   start() {
     if (!this.enabled || this.server) return this.server;
-    this.server = new WebSocketServer({ host: this.host, port: this.port, maxPayload: 64 * 1024 });
+    this.server = new WebSocketServer({ host: this.host, port: this.port, maxPayload: BROKER_MAX_PAYLOAD });
     this.server.on('connection', (socket, request) => this._connection(socket, request));
     this.server.on('listening', () => {
       const address = this.server.address();
@@ -107,8 +108,8 @@ class StreamBroker {
         this.knownWorkerIds.add(id);
         this.workers.set(id, { id, userId, socket, status: message.status || null,
           profile: workerProfile(message.profile),
-          accessCode, contentAwareImagePreview: message.contentAwareImagePreview === true, deriveNicknameFromContent: message.deriveNicknameFromContent === true, musicMode: message.musicMode === true, capabilities: message.capabilities || [],
-          externalChannels: [], connectedAt: Date.now() });
+          accessCode, contentSnapshotPreview: message.contentSnapshotPreview === true && message.contentAwareImagePreview !== true, contentAwareImagePreview: message.contentAwareImagePreview === true, deriveNicknameFromContent: message.deriveNicknameFromContent === true, musicMode: message.musicMode === true, capabilities: message.capabilities || [],
+          externalChannels: [], availableChannels: [], channelsTruncated: false, connectedAt: Date.now() });
         this.log(`[stream-broker] worker connected: ${id}`);
         return;
       }
@@ -118,8 +119,13 @@ class StreamBroker {
         worker.status = message.status || null;
         worker.musicMode = message.musicMode === true;
         worker.contentAwareImagePreview = message.contentAwareImagePreview === true;
+        worker.contentSnapshotPreview = message.contentSnapshotPreview === true && !worker.contentAwareImagePreview;
         worker.deriveNicknameFromContent = message.deriveNicknameFromContent === true;
         if (message.profile) worker.profile = workerProfile(message.profile);
+      }
+      if (message.type === 'available-channels' && worker) {
+        worker.availableChannels = sanitizeAvailableChannels(message.channels);
+        worker.channelsTruncated = message.channelsTruncated === true || message.channels?.length > 5000;
       }
       if (message.type === 'external-channels' && worker) {
         worker.externalChannels = workerExternalChannels(message.channels);
@@ -133,7 +139,12 @@ class StreamBroker {
             worker.status = message.result.status;
             worker.musicMode = message.result.musicMode === true;
             worker.contentAwareImagePreview = message.result.contentAwareImagePreview === true;
+            worker.contentSnapshotPreview = message.result.contentSnapshotPreview === true && !worker.contentAwareImagePreview;
             worker.deriveNicknameFromContent = message.result.deriveNicknameFromContent === true;
+          }
+          if (worker && pending.operation === 'list-channels' && message.result?.ok) {
+            worker.availableChannels = sanitizeAvailableChannels(message.result.availableChannels);
+            worker.channelsTruncated = message.result.channelsTruncated === true || message.result.availableChannels?.length > 5000;
           }
           pending.resolve(message.result || { ok: false, message: 'Worker returned no result.' });
         }
@@ -156,23 +167,23 @@ class StreamBroker {
   }
 
   listWorkers() {
-    return [...this.workers.values()].map(({ id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt }) => ({ id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt }));
+    return [...this.workers.values()].map(({ id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt }) => ({ id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt }));
   }
 
   getWorker(requested) {
     const workerId = this.resolveWorkerId(requested);
     const worker = this.workers.get(workerId);
     if (!worker || worker.socket.readyState !== WebSocket.OPEN) return null;
-    const { id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt } = worker;
-    return { id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt };
+    const { id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt } = worker;
+    return { id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt };
   }
 
   getWorkerByAccessCode(code) {
     if (!ACCESS_CODE.test(code || '')) return null;
     for (const worker of this.workers.values()) {
       if (worker.accessCode === code && worker.socket.readyState === WebSocket.OPEN) {
-        const { id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, connectedAt } = worker;
-        return { id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, connectedAt };
+        const { id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, connectedAt } = worker;
+        return { id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, connectedAt };
       }
     }
     return null;
@@ -197,7 +208,7 @@ class StreamBroker {
         reject(new Error(`Streambot '${workerId}' timed out handling ${operation}.`));
       }, this.requestTimeoutMs);
       timer.unref?.();
-      this.pending.set(requestId, { workerId, resolve, reject, timer });
+      this.pending.set(requestId, { workerId, operation, resolve, reject, timer });
       worker.socket.send(JSON.stringify({ type: 'command', requestId, operation, payload }));
     });
   }

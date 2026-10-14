@@ -336,3 +336,64 @@ test('default off uploads QR without fetching content image or enabling snapshot
     assert.equal(f.piece.previewFallbackWanted, false);
   } finally { global.fetch = original; }
 });
+
+test('snapshot-only mode skips artwork and keeps preview modes mutually exclusive', async () => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const manager = new StreamManager({}, null, {});
+  const f = await fixture();
+  f.piece.thumbnail = 'https://example.com/artwork'; f.piece.previewPipeline = f.pipeline; f.piece.previewCurrent = () => true;
+  manager.session = f.piece;
+  assert.equal(manager.contentSnapshotPreview, false);
+  manager.setContentPreview(false, true);
+  await manager._updateStillPreview(f.piece);
+  assert.equal(manager.contentAwareImagePreview, false);
+  assert.equal(manager.contentSnapshotPreview, true);
+  assert.equal(f.piece.previewFallbackWanted, true);
+  assert.equal(f.uploads.length, 0);
+  manager.session = null;
+  assert.equal(manager.setContentPreview(true).ok, true);
+  assert.equal(manager.contentSnapshotPreview, false);
+  assert.equal(manager.setContentPreview(true, true).ok, false);
+});
+
+test('same-show consecutive programmes upload distinct images; failed artwork recovers on retry', async t => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const f = await fixture(), image = f.piece.musicArtwork.file;
+  f.piece.musicArtwork = null; f.piece.previewPipeline = f.pipeline; f.piece.previewCurrent = () => true;
+  const manager = new StreamManager({}, null, { shareTvBase: 'https://tv.example' });
+  manager.contentAwareImagePreview = true;
+  let fail = false; const requests = [], diagnostics = [];
+  manager._verbose = reason => diagnostics.push(reason);
+  t.mock.method(global, 'fetch', async url => { requests.push(url); return fail ? new Response('', { status: 502 }) : new Response(image, { headers: { 'content-type': 'image/png' } }); });
+  const update = manager.shareTvNicknameRefresh.onProgramme;
+  assert.equal(await update(f.piece, 'Same cartoon', { id: 1, title: 'Same cartoon', end_at: 100, icon_url: '/image?sig=one' }), true);
+  fail = true;
+  assert.equal(await update(f.piece, 'Same cartoon', { id: 2, title: 'Same cartoon', end_at: 200, icon_url: '/image?sig=two' }), false);
+  assert.equal(f.piece.previewFallbackWanted, true);
+  assert.ok(diagnostics.some(reason => reason.includes('artwork-http-502')));
+  fail = false;
+  assert.equal(await update(f.piece, 'Same cartoon', { id: 2, title: 'Same cartoon', end_at: 200, icon_url: '/image?sig=fresh' }), true);
+  assert.equal(f.piece.previewFallbackWanted, false);
+  assert.equal(f.uploads.length, 2);
+  assert.equal(requests.length, 3);
+});
+
+test('snapshot-only retains one decoder and a minimum one-minute interval', async () => {
+  const { snapshotPreview } = require('../src/streambot/streamPreview');
+  const f = await fixture(); f.piece.previewFallbackWanted = true;
+  const manager = { contentAwareImagePreview: false, contentSnapshotPreview: true, previewModeController: new AbortController() };
+  let calls = 0, finish, now = 100000;
+  const originalNow = Date.now; Date.now = () => now;
+  const frame = Buffer.from([0, 0, 1, 7, 0, 0, 1, 8, 0, 0, 1, 5, 0]);
+  const hook = snapshotPreview({ ...f, manager, codec: 'H264', decode: () => { calls++; return new Promise(resolve => { finish = resolve; }); } });
+  try {
+    hook(frame, true); hook(frame, true);
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(calls, 1);
+    finish(Buffer.from('snapshot')); await new Promise(resolve => setImmediate(resolve));
+    now += 59999; hook(frame, true); assert.equal(calls, 1);
+    now++; hook(frame, true); await new Promise(resolve => setImmediate(resolve)); assert.equal(calls, 2);
+    manager.previewModeController.abort(); manager.contentSnapshotPreview = false;
+    finish(Buffer.from('obsolete')); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.uploads.length, 1);
+  } finally { Date.now = originalNow; }
+});

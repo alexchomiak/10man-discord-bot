@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const { StreamSchedules } = require('./streamSchedules');
 const { searchYoutube: defaultSearchYoutube } = require('./youtubeSearch');
 const { parseExternalChannels } = require('./externalChannels');
+const { sanitizeAvailableChannels } = require('./workerChannels');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
@@ -64,7 +65,7 @@ function scopedStatus(status) {
   return value;
 }
 
-function createStreamDashboard({ broker, client, password, token, randomCodes = false, configuredWorkerIds = [], channelIds = [], host = '0.0.0.0', port = 8082,
+function createStreamDashboard({ broker, client, password, token, randomCodes = false, configuredWorkerIds = [], channelIds = [], serverIds = [], host = '0.0.0.0', port = 8082,
   scheduleFilePath = null, scheduleConfig = {}, staticDir = path.resolve(__dirname, '../web/dist'), log = console.log, searchYoutube = defaultSearchYoutube } = {}) {
   const adminPassword = password || token;
   if (!adminPassword) return null;
@@ -113,6 +114,9 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
     });
     req.on('error', reject);
   });
+  const populatedServerIds = new Set(serverIds);
+  const availableFor = worker => sanitizeAvailableChannels(worker?.availableChannels)
+    .filter(channel => !populatedServerIds.size || populatedServerIds.has(channel.guildId));
   function profile(userId, guildId, reported = null) {
     // The worker reports its own identity at login. Local Discord caches can
     // provide a server nickname, but state polling never waits on REST.
@@ -193,6 +197,13 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           try { return json(res, 201, { schedule: await schedules.add(workerId, body) }); }
           catch (error) { return json(res, 400, { error: error.message }); }
         }
+        if (req.method === 'PUT' && scheduleMatch[2]) {
+          const body = await readBody(req);
+          try {
+            const schedule = await schedules.update(workerId, scheduleMatch[2], body);
+            return json(res, schedule ? 200 : 404, schedule ? { schedule } : { error: 'Schedule not found.' });
+          } catch (error) { return json(res, error.code === 'SCHEDULE_NOT_PENDING' ? 409 : 400, { error: error.message }); }
+        }
         if (req.method === 'DELETE' && scheduleMatch[2]) {
           try { const schedule = await schedules.cancel(workerId, scheduleMatch[2]); return json(res, schedule ? 200 : 404, schedule ? { schedule } : { error: 'Schedule not found.' }); }
           catch (error) { return json(res, 409, { error: error.message }); }
@@ -237,22 +248,39 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           musicMode: online.get(id)?.musicMode === true,
           deriveNicknameFromContent: online.get(id)?.deriveNicknameFromContent === true,
           contentAwareImagePreview: online.get(id)?.contentAwareImagePreview === true,
-          externalChannels: online.get(id)?.externalChannels || [],
+          contentSnapshotPreview: online.get(id)?.contentSnapshotPreview === true,
+          availableChannels: availableFor(online.get(id)),
+          channelsTruncated: online.get(id)?.channelsTruncated === true,
           profile: online.get(id)?.userId ? profile(online.get(id).userId, guildId, online.get(id).profile) : null
         })));
-        const guilds = [...client.guilds.cache.values()].map(guild => ({ id: guild.id, name: guild.name }))
+        const guilds = [...new Map(workers.flatMap(worker => worker.availableChannels)
+          .map(channel => [channel.guildId, { id: channel.guildId, name: channel.guildName }])).values()]
           .sort((a, b) => a.name.localeCompare(b.name));
         return json(res, 200, { defaultWorkerId: broker.defaultWorkerId, workers, guilds });
+      }
+      const workerChannelsMatch = !scopedWorker && /^\/api\/workers\/([A-Za-z0-9_-]{1,32})\/channels$/.exec(url.pathname);
+      if (workerChannelsMatch) {
+        if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
+        const workerId = workerChannelsMatch[1];
+        let worker = broker.getWorker(workerId);
+        if (!worker && ![broker.defaultWorkerId, ...configuredWorkerIds].includes(workerId) && !broker.knownWorkerIds?.has(workerId)) return json(res, 404, { error: 'Unknown worker.' });
+        let cached = true;
+        if (worker && url.searchParams.get('refresh') === 'true') {
+          const result = await broker.request('list-channels', { refresh: true }, workerId);
+          if (!result?.ok) return json(res, 502, { error: result?.message || 'Channel discovery failed.' });
+          worker = { ...worker, availableChannels: result.availableChannels || [], channelsTruncated: result.channelsTruncated === true || result.availableChannels?.length > 5000 };
+          cached = result.cached === true;
+        }
+        return json(res, 200, { online: !!worker, availableChannels: availableFor(worker),
+          channelsTruncated: worker?.channelsTruncated === true, cached });
       }
       const channelMatch = /^\/api\/guilds\/(\d{17,20})\/channels$/.exec(url.pathname);
       if (!scopedWorker && req.method === 'GET' && channelMatch) {
         const guild = client.guilds.cache.get(channelMatch[1]) || await client.guilds.fetch(channelMatch[1]).catch(() => null);
         if (!guild) return json(res, 404, { error: 'Server unavailable to the CS bot; use manual IDs.' });
         const channels = await guild.channels.fetch();
-        const allowed = new Set(channelIds);
         const local = [...channels.values()]
-          .filter(channel => channel && (channel.type === 2 || channel.type === 13) &&
-            (!allowed.size || allowed.has(channel.id)))
+          .filter(channel => channel && (channel.type === 2 || channel.type === 13))
           .map(channel => ({ guildId: guild.id, guildName: guild.name,
             id: channel.id, name: channel.name, type: channel.type, external: false }))
           .sort((a, b) => a.name.localeCompare(b.name));
@@ -275,8 +303,11 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
         if (['set-content-nickname', 'set-content-preview'].includes(operation) && typeof body.enabled !== 'boolean') {
           return json(res, 400, { error: 'Enabled must be a boolean.' });
         }
+        if (operation === 'set-content-preview' && body.snapshotEnabled !== undefined && typeof body.snapshotEnabled !== 'boolean') return json(res, 400, { error: 'Snapshot enabled must be a boolean.' });
+        if (operation === 'set-content-preview' && body.enabled && body.snapshotEnabled) return json(res, 400, { error: 'Preview modes are mutually exclusive.' });
         const payload = { requestedBy: scopedWorker ? 'public-link' : 'dashboard' };
         if (['set-content-nickname', 'set-content-preview'].includes(operation)) payload.enabled = body.enabled;
+        if (operation === 'set-content-preview' && body.snapshotEnabled !== undefined) payload.snapshotEnabled = body.snapshotEnabled;
         if (['play', 'join', 'move'].includes(operation)) {
           const targetGuild = scopedWorker ? scopedWorker.status?.guildId : body.guildId;
           const targetChannel = scopedWorker ? scopedWorker.status?.channelId : body.channelId;
