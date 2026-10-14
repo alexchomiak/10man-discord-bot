@@ -32,6 +32,18 @@ class StreamBrokerClient {
     this.reconnectTimer = null;
     this.statusTimer = null;
     this.results = new Map();
+    this.occupantTimer = null;
+    this.onVoiceStateUpdate = () => {
+      if (this.closed || !this.socket || this.occupantTimer) return;
+      this.occupantTimer = setTimeout(() => {
+        this.occupantTimer = null;
+        const result = this.control?.channelDiscovery?.cached();
+        if (result && this.socket?.readyState === WebSocket.OPEN) this._send({ type: 'available-channels',
+          channels: result.availableChannels, channelsTruncated: result.channelsTruncated === true });
+      }, 1000);
+      this.occupantTimer.unref?.();
+    };
+    this.streamManager?.client?.on?.('voiceStateUpdate', this.onVoiceStateUpdate);
   }
 
   get enabled() { return !!(this.url && this.secret); }
@@ -74,6 +86,7 @@ class StreamBrokerClient {
     socket.on('error', error => this.log(`[streambot:${this.workerId}] broker error: ${error.message}`));
     socket.on('close', () => {
       if (this.socket === socket) this.socket = null;
+      clearTimeout(this.occupantTimer); this.occupantTimer = null;
       clearInterval(this.statusTimer);
       this.statusTimer = null;
       this._scheduleReconnect();
@@ -147,6 +160,9 @@ class StreamBrokerClient {
 
   close() {
     this.closed = true;
+    clearTimeout(this.occupantTimer);
+    this.occupantTimer = null;
+    this.streamManager?.client?.off?.('voiceStateUpdate', this.onVoiceStateUpdate);
     clearTimeout(this.reconnectTimer);
     clearInterval(this.statusTimer);
     this.socket?.terminate();

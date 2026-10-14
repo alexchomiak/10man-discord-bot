@@ -64,6 +64,7 @@ export default function ScheduleModal({ worker, close, request, channels, loadCh
     .sort((a, b) => a.name.localeCompare(b.name));
   const visibleChannels = server ? available.filter(channel => channel.guildId === server) : available;
   useEffect(() => { if (server && !guilds.some(guild => guild.id === server)) { setServer(''); setDestination(''); } }, [available, server]);
+  useEffect(() => { if (destination && !available.some(channel => `${channel.guildId}:${channel.id}` === destination)) { setDestination(''); if (editingId) setManual(true); } }, [available, destination, editingId]);
   const refreshChannels = async () => { const result = await loadChannels(); if (result) setAvailable(result.availableChannels || []); };
   useEffect(() => { root.current?.focus(); root.current?.scrollTo({ top: 0 }); }, [page, cancel]);
   useEffect(() => {
@@ -92,8 +93,8 @@ export default function ScheduleModal({ worker, close, request, channels, loadCh
   }, [sources, page]);
   const editTime = (setter, value) => { revision.current++; setHint(null); setter(value); };
   const openForm = item => {
-    const guild = item?.guildId || worker.status?.guildId || '';
-    const channel = item?.channelId || worker.status?.channelId || '';
+    const guild = item?.guildId || '';
+    const channel = item?.channelId || '';
     const known = available.some(c => c.guildId === guild && c.id === channel);
     const fields = item ? localFields(new Date(item.startAt)) : { day: '', time: '' };
     setEditingId(item?.id || null); setOriginalStartAt(item?.startAt || null); setSources(item?.sources?.join('\n') || ''); setNickname(item?.nickname || '');

@@ -88,3 +88,64 @@ test('broker descriptors remove invalid, duplicate and extraneous data without o
   assert.equal(result.length, 500);
   assert.equal(result[0].secret, undefined);
 });
+
+test('cached occupants include self and bots, cap avatars and update presence without REST', async () => {
+  let fetches = 0;
+  const g = guild(A, [channel(B, 'Voice'), channel(C, 'Empty')], () => fetches++);
+  g.voiceStates = { cache: new Map() }; g.members.cache = new Map();
+  for (let i = 0; i < 10; i++) {
+    const id = String(100000000000000000n + BigInt(i));
+    g.voiceStates.cache.set(id, { id, channelId: B });
+    g.members.cache.set(id, { id, displayName: `Member ${i}`, user: { bot: i === 0 }, displayAvatarURL: () => `https://cdn.discordapp.com/avatars/${id}/avatar.png` });
+  }
+  const discovery = new WorkerChannelDiscovery(client([g]));
+  const first = await discovery.list();
+  const occupied = first.availableChannels.find(ch => ch.id === B);
+  assert.equal(occupied.memberCount, 10); assert.equal(occupied.members.length, 8);
+  assert.equal(occupied.members[0].displayName, 'Member 0');
+  assert.ok(occupied.members[0].avatarUrl.startsWith('https://cdn.discordapp.com/'));
+  assert.deepEqual(first.availableChannels.find(ch => ch.id === C).members, []);
+  g.voiceStates.cache.clear();
+  const next = await discovery.list();
+  assert.equal(next.availableChannels.find(ch => ch.id === B).memberCount, 0);
+  assert.equal(fetches, 1);
+});
+
+test('unknown cached member uses cached user identity without fetching member', async () => {
+  const g = guild(A, [channel(B, 'Voice')]);
+  g.voiceStates = { cache: new Map([[C, { id: C, channelId: B }]]) };
+  g.members.fetch = async () => { throw new Error('No member REST allowed'); };
+  const c = client([g]); c.users = { cache: new Map([[C, { username: 'Cached user' }]]) };
+  const result = await new WorkerChannelDiscovery(c).list();
+  assert.equal(result.availableChannels[0].members[0].displayName, 'Cached user');
+  assert.equal(result.availableChannels[0].members[0].avatarUrl, null);
+});
+
+test('global occupant budget stays below broker payload limit and retains total counts', () => {
+  const { MAX_TOTAL_MEMBERS, BROKER_MAX_PAYLOAD } = require('../src/workerChannels');
+  const channels = Array.from({ length: 5000 }, (_, i) => ({ guildId: A, guildName: '\uffff'.repeat(100),
+    id: String(100000000000000000n + BigInt(i)), name: '\uffff'.repeat(100), type: 'GUILD_STAGE_VOICE', memberCount: 100,
+    members: Array.from({ length: 8 }, (_, j) => ({ id: String(200000000000000000n + BigInt(j)), displayName: '\uffff'.repeat(64), avatarUrl: 'https://cdn.discordapp.com/' + 'a'.repeat(220) })) }));
+  const result = sanitizeAvailableChannels(channels);
+  assert.equal(result.reduce((sum, ch) => sum + ch.members.length, 0), MAX_TOTAL_MEMBERS);
+  assert.equal(result.at(-1).memberCount, 100);
+  assert.ok(Buffer.byteLength(JSON.stringify({ type: 'available-channels', channels: result })) < BROKER_MAX_PAYLOAD);
+});
+
+test('voice state updates publish one coalesced cached update and clean up on close', t => {
+  const { EventEmitter } = require('node:events');
+  const { StreamBrokerClient } = require('../src/streambot/brokerClient');
+  const { WebSocket } = require('ws');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const c = new EventEmitter(), sent = []; let cachedReads = 0;
+  const worker = new StreamBrokerClient({ streamManager: { client: c }, control: {
+    execute: () => { throw new Error('No discovery REST'); },
+    channelDiscovery: { cached: () => { cachedReads++; return { availableChannels: [{ id: B, memberCount: 1, members: [] }] }; } }
+  } });
+  worker.socket = { readyState: WebSocket.OPEN, send: value => sent.push(JSON.parse(value)), terminate: () => {} };
+  c.emit('voiceStateUpdate'); c.emit('voiceStateUpdate');
+  t.mock.timers.tick(999); assert.equal(sent.length, 0);
+  t.mock.timers.tick(1); assert.equal(sent.length, 1); assert.equal(cachedReads, 1);
+  c.emit('voiceStateUpdate'); worker.close(); t.mock.timers.tick(1000);
+  assert.equal(sent.length, 1); assert.equal(c.listenerCount('voiceStateUpdate'), 0);
+});

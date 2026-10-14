@@ -84,6 +84,26 @@ function SortableQueueItem({ item, index, canControl, onRemove, onTop, isFirst }
 
 const channelKey = channel => `${channel.guildId}:${channel.id}`;
 
+function ChannelMemberAvatar({ member }) {
+  const [failedUrl, setFailedUrl] = useState(null);
+  const name = member.displayName || 'Member';
+  return <span className="channel-member-avatar" title={name} aria-hidden="true">
+    {name.slice(0, 1).toUpperCase()}
+    {member.avatarUrl && failedUrl !== member.avatarUrl && <img src={member.avatarUrl} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailedUrl(member.avatarUrl)} />}
+  </span>;
+}
+
+function ChannelMembers({ channel }) {
+  const members = Array.isArray(channel.members) ? channel.members.slice(0, 8) : [];
+  const count = Math.max(members.length, Number(channel.memberCount) || 0);
+  if (!count) return null;
+  const overflow = count - members.length;
+  return <span className="channel-members" role="img" aria-label={`${count} ${count === 1 ? 'member' : 'members'} in channel${members.length ? `: ${members.map(member => member.displayName || 'Member').join(', ')}` : ''}${overflow && members.length ? ` and ${overflow} more` : ''}`}>
+    {members.map(member => <ChannelMemberAvatar key={member.id} member={member} />)}
+    {overflow > 0 && <span className="channel-member-overflow" aria-hidden="true">+{overflow}</span>}
+  </span>;
+}
+
 function ChannelPicker({ workerId, channels, selected, onSelect, disabled, onRefresh }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -128,7 +148,7 @@ function ChannelPicker({ workerId, channels, selected, onSelect, disabled, onRef
     <button ref={trigger} type="button" className="channel-picker-trigger" aria-label={`Destination voice channel for ${workerId}`}
       aria-expanded={open} aria-haspopup="listbox" aria-controls={open ? listId : undefined} disabled={disabled}
       onClick={() => { setOpen(value => !value); setQuery(''); setActive(0); }}>
-      <span className="channel-picker-label"><strong>{chosen ? `# ${chosen.name}` : 'Choose a voice channel'}</strong>{chosen && <small>{chosen.guildName || chosen.guildId}</small>}</span><span className="channel-picker-chevron">⌄</span>
+      <span className="channel-picker-label"><strong>{chosen ? `# ${chosen.name}` : 'Select a channel'}</strong>{chosen && <small>{chosen.guildName || chosen.guildId}</small>}</span><span className="channel-picker-chevron">⌄</span>
     </button>
     {open && <div className="channel-picker-menu">
       <div className="channel-picker-search-row"><input ref={search} className="channel-picker-search" value={query} placeholder="Search servers or channels…"
@@ -143,7 +163,7 @@ function ChannelPicker({ workerId, channels, selected, onSelect, disabled, onRef
           <div className="channel-picker-group">{group[0].guildName || guildId}</div>
           {group.map((channel, index) => <button type="button" role="option" tabIndex={-1} id={`${listId}-${start + index}`} data-index={start + index}
             aria-selected={selected === channelKey(channel)} key={channelKey(channel)} onClick={() => choose(channel)}
-            className={`channel-picker-option ${activeIndex === start + index ? 'keyboard-active' : ''}`}><span># {channel.name}</span></button>)}
+            className={`channel-picker-option ${activeIndex === start + index ? 'keyboard-active' : ''}`}><span># {channel.name}</span><ChannelMembers channel={channel} /></button>)}
         </div>; })}
         {!matches.length && <div className="channel-picker-empty">{unique.length ? 'No matching channels' : 'No channels available. Refresh or use server / channel IDs.'}</div>}
       </div>
@@ -282,10 +302,10 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
     const timer = setTimeout(() => setPreviewIds(null), 10000);
     return () => clearTimeout(timer);
   }, [actualQueueIds, previewIds]);
-  const preferred = destinationKey || (status?.guildId && status?.channelId ? `${status.guildId}:${status.channelId}` : '');
-  const selected = channels.find(channel => channelKey(channel) === preferred) || channels[0];
+  useEffect(() => { if (destinationKey && !channels.some(channel => channelKey(channel) === destinationKey)) setDestinationKey(''); }, [channels, destinationKey]);
+  const selected = channels.find(channel => channelKey(channel) === destinationKey);
   const canControl = worker.online && !busy;
-  const canAdd = canControl && (!publicView || !!status?.inVoiceChannel);
+  const canAdd = canControl && (publicView ? !!status?.inVoiceChannel : !!(status?.guildId && status?.channelId) || !!selected);
   const channelName = channels.find(channel => channel.guildId === status?.guildId && channel.id === status?.channelId)?.name;
   const destination = () => ({ guildId: selected?.guildId, channelId: selected?.id });
   const send = (operation, payload = {}) => action(worker.id, operation, payload);
@@ -678,7 +698,7 @@ function AdminApp() {
           <div className="guild-picker"><label htmlFor="guild-select">SERVER</label><select id="guild-select" value={guildId} onChange={event => setGuildId(event.target.value)}><option value="">Select a server</option>{state?.guilds?.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}</select></div>
         </section>
         {!state ? <div className="empty-fleet">Connecting to stream workers…</div>
-          : selectedWorker ? <WorkerCard worker={selectedWorker} guildId={guildId} guilds={state.guilds} channels={channelsFor(selectedWorker)} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[selectedWorker.id]} refreshChannels={() => loadWorkerChannels(selectedWorker.id)} expanded />
+          : selectedWorker ? <WorkerCard key={selectedWorker.id} worker={selectedWorker} guildId={guildId} guilds={state.guilds} channels={channelsFor(selectedWorker)} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[selectedWorker.id]} refreshChannels={() => loadWorkerChannels(selectedWorker.id)} expanded />
             : <div className="empty-fleet">Worker “{selectedWorkerId}” is not configured. <a href="#/">View all workers</a></div>}
       </div> : <>
         <section className="page-heading"><div><div className="eyebrow highlight">LIVE OPERATIONS</div><h1>Stream Deck<span className="heading-period">.</span></h1><p>Manage your Discord stream workers and playback queues.</p></div>
