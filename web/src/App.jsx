@@ -322,8 +322,8 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
     if (!canControl) return;
     const [guildId, channelId] = key.split(':');
     setDestinationKey(key);
-    if (status?.inVoiceChannel && status.guildId === guildId && status.channelId === channelId) return;
-    return send(status?.inVoiceChannel ? 'move' : 'join', { guildId, channelId });
+    if (status && status.guildId === guildId && status.channelId === channelId) return;
+    return send(status ? 'move' : 'join', { guildId, channelId });
   };
   const playSource = value => {
     const where = publicView ? {} : status?.guildId && status?.channelId
