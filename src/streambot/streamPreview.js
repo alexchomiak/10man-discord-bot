@@ -5,26 +5,26 @@ const { spawn } = require('node:child_process');
 const { fetchArtworkImage } = require('./fillerArtwork');
 
 // One still per piece; independent of media decoding and playback pacing.
-async function uploadStreamPreview({ piece, pipeline, isCurrent, onFailure = () => {}, signal = piece.control.signal }) {
+async function uploadStreamPreview({ piece, pipeline, isCurrent, onFailure = () => {}, signal = piece.control.signal, imageOverride }) {
   piece.previewFallbackWanted = false;
   let abort;
   try {
     if (signal.aborted || !isCurrent()) return;
     const artwork = piece.musicArtwork || piece.fillerArtwork;
-    const sourceImage = piece.thumbnail
-      ? await fetchArtworkImage(piece.thumbnail, { width: 512, height: 288 }, signal)
+    const sourceImage = !imageOverride && piece.thumbnail
+      ? await fetchArtworkImage(piece.thumbnail, { width: 512, height: 288, fit: 'contain' }, signal)
       : null;
     if (signal.aborted || !isCurrent()) return;
-    piece.previewSourceImageFailed = Boolean(piece.thumbnail && !sourceImage);
-    const image = sourceImage || artwork?.file;
+    piece.previewSourceImageFailed = Boolean(!imageOverride && piece.thumbnail && !sourceImage);
+    const image = imageOverride || sourceImage || artwork?.file;
     if (!image) {
       piece.previewFallbackWanted = !artwork && !signal.aborted && isCurrent();
       return;
     }
     if (signal.aborted || !isCurrent()) return;
     const jpeg = await sharp(image, { limitInputPixels: 4096 * 4096 })
-      .resize(512, 288, { fit: 'contain', background: '#0b111a' })
-      .flatten({ background: '#0b111a' }).jpeg({ quality: 80 }).toBuffer();
+      .resize(512, 288, { fit: 'contain', background: '#000000' })
+      .flatten({ background: '#000000' }).jpeg({ quality: 80 }).toBuffer();
     const cancelled = new Promise(resolve => {
       abort = () => resolve(false);
       signal.addEventListener('abort', abort, { once: true });
@@ -113,7 +113,7 @@ function decodeSnapshot(frame, codec, signal, ffmpegPath = 'ffmpeg') {
 function snapshotPreview({ piece, pipeline, manager, isCurrent, codec, ffmpegPath, decode = decodeSnapshot }) {
   let nextScan = 0;
   return (frame, isKeyframe) => {
-    if (!isKeyframe || !piece.previewFallbackWanted || piece.control.signal.aborted || !isCurrent() ||
+    if (manager.contentAwareImagePreview === false || !isKeyframe || !piece.previewFallbackWanted || piece.control.signal.aborted || !isCurrent() ||
         manager._previewSnapshotJob || Date.now() < nextScan ||
         Date.now() < (manager._previewSnapshotAt || 0) + 60000 || !['H264', 'H265'].includes(codec)) return;
     nextScan = Date.now() + 1000;
@@ -122,10 +122,13 @@ function snapshotPreview({ piece, pipeline, manager, isCurrent, codec, ffmpegPat
     const copied = Buffer.from(frame);
     const token = {};
     manager._previewSnapshotJob = token;
+    const signal = manager.previewModeController
+      ? AbortSignal.any([piece.control.signal, manager.previewModeController.signal]) : piece.control.signal;
     setImmediate(async () => {
       try {
-        const jpeg = await decode(copied, codec, piece.control.signal, ffmpegPath);
-        if (jpeg && piece.previewFallbackWanted && !piece.control.signal.aborted && isCurrent()) await pipeline.streamer.setStreamPreview(jpeg);
+        if (signal.aborted || manager.contentAwareImagePreview === false) return;
+        const jpeg = await decode(copied, codec, signal, ffmpegPath);
+        if (jpeg && manager.contentAwareImagePreview !== false && piece.previewFallbackWanted && !piece.control.signal.aborted && isCurrent()) await pipeline.streamer.setStreamPreview(jpeg);
       } catch { /* Still previews must never interrupt playback. */ }
       finally { if (manager._previewSnapshotJob === token) manager._previewSnapshotJob = null; }
     });

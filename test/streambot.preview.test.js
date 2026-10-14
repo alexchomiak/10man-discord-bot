@@ -250,7 +250,7 @@ test('fresh active programme image supersedes a stale queued signature fetch', a
     });
     return new Response(image, { headers: { 'content-type': 'image/png' } });
   };
-  const manager = { _verbose: () => {} };
+  const manager = { contentAwareImagePreview: true, _verbose: () => {} };
   try {
     const stale = StreamManager.prototype._updateStillPreview.call(manager, f.piece);
     f.piece.thumbnail = 'https://tv.example/image?sig=fresh';
@@ -260,5 +260,79 @@ test('fresh active programme image supersedes a stale queued signature fetch', a
     assert.equal(f.uploads.length, 1);
     assert.equal(f.piece.previewFallbackWanted, false);
     assert.equal(f.piece.previewImageFailed, false);
+  } finally { global.fetch = original; }
+});
+
+test('portrait artwork remains fully visible centered inside black 16:9 bars', async () => {
+  const { fetchArtworkImage } = require('../src/streambot/fillerArtwork');
+  const original = global.fetch;
+  const portrait = await sharp({ create: { width: 40, height: 80, channels: 3, background: '#ff0000' } }).png().toBuffer();
+  global.fetch = async () => new Response(portrait, { headers: { 'content-type': 'image/png' } });
+  try {
+    const result = await fetchArtworkImage('https://example.com/portrait', { width: 160, height: 90, fit: 'contain' });
+    const { data } = await sharp(result).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const pixel = (x, y) => [...data.subarray((y * 160 + x) * 3, (y * 160 + x) * 3 + 3)];
+    assert.deepEqual(pixel(0, 45), [0, 0, 0]);
+    assert.deepEqual(pixel(80, 0), [255, 0, 0]);
+    assert.deepEqual(pixel(80, 89), [255, 0, 0]);
+    assert.deepEqual(pixel(159, 45), [0, 0, 0]);
+  } finally { global.fetch = original; }
+});
+
+test('default QR preview uses exact worker access link, brand colours, avatar and centered black bars', async t => {
+  const QRCode = require('qrcode');
+  const { createQrPreview } = require('../src/streambot/fillerArtwork');
+  const original = QRCode.toBuffer;
+  let qrUrl, options;
+  t.mock.method(QRCode, 'toBuffer', async (url, opts) => { qrUrl = url; options = opts; return original(url, opts); });
+  const blue = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#0000ff' } }).png().toBuffer();
+  t.mock.method(global, 'fetch', async () => new Response(blue, { headers: { 'content-type': 'image/png' } }));
+  const image = await createQrPreview({ baseUrl: 'https://dashboard.example/', workerId: 'worker', accessCode: 'secret', randomCodes: true,
+    avatarUrl: 'https://example.com/avatar', signal: new AbortController().signal });
+  assert.equal(qrUrl, 'https://dashboard.example/secret');
+  assert.deepEqual(options.color, { dark: '#d9ff62', light: '#17232d' });
+  assert.equal(options.width, 288);
+  const { data } = await sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const pixel = (x, y) => [...data.subarray((y * 512 + x) * 3, (y * 512 + x) * 3 + 3)];
+  assert.deepEqual(pixel(111, 144), [0, 0, 0]);
+  assert.deepEqual(pixel(400, 144), [0, 0, 0]);
+  assert.deepEqual(pixel(256, 144), [0, 0, 255]);
+});
+
+test('content aware preview defaults off and toggles without changing playback', async () => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const manager = new StreamManager({}, null, {});
+  assert.equal(manager.contentAwareImagePreview, false);
+  const piece = { control: new AbortController(), previewRequest: new AbortController(), previewFallbackWanted: true };
+  manager.session = piece;
+  const previous = manager.previewModeController;
+  let updates = 0;
+  manager._updateStillPreview = async () => updates++;
+  manager.shareTvNicknameRefresh.sync = () => {};
+  manager.setContentPreview(true);
+  assert.equal(previous.signal.aborted, true);
+  assert.equal(piece.previewRequest.signal.aborted, true);
+  assert.equal(piece.control.signal.aborted, false);
+  assert.equal(updates, 1);
+  assert.equal(manager.session, piece);
+  manager.setContentPreview(false);
+  assert.equal(piece.previewFallbackWanted, false);
+});
+
+test('default off uploads QR without fetching content image or enabling snapshots', async () => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const original = global.fetch;
+  const manager = new StreamManager({}, null, { dashboardBaseUrl: 'https://dashboard.example', workerId: 'test' });
+  const f = await fixture();
+  f.piece.thumbnail = 'https://example.com/content';
+  f.piece.previewPipeline = f.pipeline;
+  f.piece.previewCurrent = () => true;
+  let requests = 0;
+  global.fetch = async () => { requests++; throw new Error('unexpected content fetch'); };
+  try {
+    await manager._updateStillPreview(f.piece);
+    assert.equal(f.uploads.length, 1);
+    assert.equal(requests, 0);
+    assert.equal(f.piece.previewFallbackWanted, false);
   } finally { global.fetch = original; }
 });

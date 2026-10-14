@@ -107,7 +107,7 @@ class StreamBroker {
         this.knownWorkerIds.add(id);
         this.workers.set(id, { id, userId, socket, status: message.status || null,
           profile: workerProfile(message.profile),
-          accessCode, deriveNicknameFromContent: message.deriveNicknameFromContent === true, musicMode: message.musicMode === true, capabilities: message.capabilities || [],
+          accessCode, contentAwareImagePreview: message.contentAwareImagePreview === true, deriveNicknameFromContent: message.deriveNicknameFromContent === true, musicMode: message.musicMode === true, capabilities: message.capabilities || [],
           externalChannels: [], connectedAt: Date.now() });
         this.log(`[stream-broker] worker connected: ${id}`);
         return;
@@ -117,6 +117,7 @@ class StreamBroker {
       if (message.type === 'status' && worker) {
         worker.status = message.status || null;
         worker.musicMode = message.musicMode === true;
+        worker.contentAwareImagePreview = message.contentAwareImagePreview === true;
         worker.deriveNicknameFromContent = message.deriveNicknameFromContent === true;
         if (message.profile) worker.profile = workerProfile(message.profile);
       }
@@ -131,6 +132,7 @@ class StreamBroker {
           if (worker && message.result && Object.hasOwn(message.result, 'status')) {
             worker.status = message.result.status;
             worker.musicMode = message.result.musicMode === true;
+            worker.contentAwareImagePreview = message.result.contentAwareImagePreview === true;
             worker.deriveNicknameFromContent = message.result.deriveNicknameFromContent === true;
           }
           pending.resolve(message.result || { ok: false, message: 'Worker returned no result.' });
@@ -154,23 +156,23 @@ class StreamBroker {
   }
 
   listWorkers() {
-    return [...this.workers.values()].map(({ id, userId, status, profile, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt }) => ({ id, userId, status, profile, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt }));
+    return [...this.workers.values()].map(({ id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt }) => ({ id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt }));
   }
 
   getWorker(requested) {
     const workerId = this.resolveWorkerId(requested);
     const worker = this.workers.get(workerId);
     if (!worker || worker.socket.readyState !== WebSocket.OPEN) return null;
-    const { id, userId, status, profile, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt } = worker;
-    return { id, userId, status, profile, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt };
+    const { id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt } = worker;
+    return { id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, connectedAt };
   }
 
   getWorkerByAccessCode(code) {
     if (!ACCESS_CODE.test(code || '')) return null;
     for (const worker of this.workers.values()) {
       if (worker.accessCode === code && worker.socket.readyState === WebSocket.OPEN) {
-        const { id, userId, status, profile, deriveNicknameFromContent, musicMode, connectedAt } = worker;
-        return { id, userId, status, profile, deriveNicknameFromContent, musicMode, connectedAt };
+        const { id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, connectedAt } = worker;
+        return { id, userId, status, profile, contentAwareImagePreview, deriveNicknameFromContent, musicMode, connectedAt };
       }
     }
     return null;

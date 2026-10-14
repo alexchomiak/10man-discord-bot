@@ -10,7 +10,7 @@ const { parseExternalChannels } = require('./externalChannels');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
-const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'clear-queue', 'set-content-nickname', 'set-name']);
+const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'clear-queue', 'set-content-nickname', 'set-content-preview', 'set-name']);
 const PUBLIC_ACTIONS = new Set(['play', 'skip', 'scrub', 'seek', 'pause', 'resume', 'reorder', 'remove-queued', 'clear-queue']);
 const ACCESS_CODE = /^[a-z]{6}$/;
 const MAX_REORDER_ITEMS = 1000;
@@ -236,6 +236,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           status: publicStatus(online.get(id)?.status),
           musicMode: online.get(id)?.musicMode === true,
           deriveNicknameFromContent: online.get(id)?.deriveNicknameFromContent === true,
+          contentAwareImagePreview: online.get(id)?.contentAwareImagePreview === true,
           externalChannels: online.get(id)?.externalChannels || [],
           profile: online.get(id)?.userId ? profile(online.get(id).userId, guildId, online.get(id).profile) : null
         })));
@@ -271,11 +272,11 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           }
           return json(res, 200, await setName(workerId, name, String(body.guildId)));
         }
-        if (operation === 'set-content-nickname' && typeof body.enabled !== 'boolean') {
+        if (['set-content-nickname', 'set-content-preview'].includes(operation) && typeof body.enabled !== 'boolean') {
           return json(res, 400, { error: 'Enabled must be a boolean.' });
         }
         const payload = { requestedBy: scopedWorker ? 'public-link' : 'dashboard' };
-        if (operation === 'set-content-nickname') payload.enabled = body.enabled;
+        if (['set-content-nickname', 'set-content-preview'].includes(operation)) payload.enabled = body.enabled;
         if (['play', 'join', 'move'].includes(operation)) {
           const targetGuild = scopedWorker ? scopedWorker.status?.guildId : body.guildId;
           const targetChannel = scopedWorker ? scopedWorker.status?.channelId : body.channelId;

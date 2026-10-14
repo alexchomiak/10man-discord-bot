@@ -244,12 +244,13 @@ class PersistentTrackFeeder {
     const onEvent = event => {
       // Only fixed lifecycle fields; never forward gateway payloads, endpoints,
       // credentials, raw ErrorEvents, or user-controlled close reasons.
-      const types = ['websocket-error', 'websocket-close', 'identify', 'resume', 'resumed', 'ready', 'native-state'];
+      const types = ['websocket-error', 'websocket-close', 'identify', 'resume', 'resumed', 'ready', 'native-state', 'native-repair', 'native-repair-deferred', 'protocol-failure'];
       if (!types.includes(event?.type)) return;
       const fields = [kind, event.type];
       if (Number.isInteger(event.generation)) fields.push(`generation=${event.generation}`);
       if (Number.isInteger(event.code)) fields.push(`code=${event.code}`);
       if (['new', 'connecting', 'connected', 'disconnected', 'failed', 'closed'].includes(event.state)) fields.push(`state=${event.state}`);
+      if (['websocket-unrecoverable', 'protocol-setup-failed', 'protocol-ack-failed', 'native-repair-exhausted', 'native-init-failed'].includes(event.reason)) fields.push(`reason=${event.reason}`);
       this.transportLog?.(fields.join(' '));
     };
     const onReady = event => {

@@ -20,7 +20,7 @@ const browserStream = require('./browserStream');
 const { isYoutubeHlsUrl } = require('./sources');
 const { createAlertSink } = require('./alerts');
 const { progressOverlayFilter } = require('./progressOverlay');
-const { createFillerArtwork, fillerCountdownFilter, workerDashboardUrl } = require('./fillerArtwork');
+const { createFillerArtwork, fillerCountdownFilter, workerDashboardUrl, createQrPreview } = require('./fillerArtwork');
 const { createMusicArtwork, updateMusicQueue, startMusicQueueFrames,
   stopMusicQueueFrames } = require('./musicArtwork');
 const { musicVisualizerFilter } = require('./musicVisualizer');
@@ -119,14 +119,18 @@ class StreamManager {
     this.progressOverlay = false;
     this.musicMode = false;
     this.deriveNicknameFromContent = false;
+    this.contentAwareImagePreview = false;
+    this.previewModeController = new AbortController();
     this.contentNickname = new ContentNickname(this.client, error => log('warn', `content nickname: ${this._sanitize(error?.message || String(error))}`));
     this.contentNickname.isCurrent = piece => this.session === piece && this.voiceLink === piece.voiceLink && !piece.voiceLink?.closing && !piece.voiceLink?.paused;
     this.shareTvNicknameRefresh = new ShareTvNicknameRefresh({
       fetchPreview: (input, signal) => require('./sources').getShareTvPreview(input, this.config, signal),
-      isCurrent: piece => Boolean(this.config.shareTvBase && this.config.shareTvApiKey) && this.contentNickname.isCurrent(piece),
+      isCurrent: piece => Boolean(this.config.shareTvBase && this.config.shareTvApiKey) &&
+        (this.contentAwareImagePreview || this.deriveNicknameFromContent) && this.contentNickname.isCurrent(piece),
       onProgramme: async (piece, title, programme) => {
         piece.contentTitle = title;
         this.contentNickname.update(piece);
+        if (!this.contentAwareImagePreview) return true;
         const image = programmeImage(programme, this.config.shareTvBase);
         const key = programmePreviewKey(programme, image);
         piece.thumbnail = image;
@@ -1779,7 +1783,19 @@ class StreamManager {
     const request = new AbortController();
     piece.previewRequest = request;
     const signal = AbortSignal.any([piece.control.signal, request.signal]);
-    const uploaded = await uploadStreamPreview({ piece, pipeline: piece.previewPipeline, signal,
+    let imageOverride;
+    if (!this.contentAwareImagePreview) {
+      piece.previewFallbackWanted = false;
+      let avatarUrl = null;
+      try { avatarUrl = this.client?.user?.displayAvatarURL?.({ size: 128, extension: 'png', format: 'png' }) ||
+        this.client?.user?.avatarURL?.({ size: 128, format: 'png' }) || null; } catch {}
+      try { imageOverride = await createQrPreview({ baseUrl: this.config.dashboardBaseUrl,
+        workerId: this.config.workerId || this.config.defaultWorkerId || 'primary',
+        accessCode: this.config.dashboardAccessCode, randomCodes: this.config.dashboardRandomCodes,
+        avatarUrl, signal }); } catch { return false; }
+      if (!imageOverride || signal.aborted) return false;
+    }
+    const uploaded = await uploadStreamPreview({ piece, pipeline: piece.previewPipeline, signal, imageOverride,
       isCurrent: () => piece.previewRequest === request && piece.previewCurrent(),
       onFailure: () => this._verbose('Discord still preview unavailable') });
     if (!signal.aborted && piece.previewRequest === request) {
@@ -1787,6 +1803,22 @@ class StreamManager {
       return !piece.previewImageFailed;
     }
     return false;
+  }
+
+  setContentPreview(enabled) {
+    this.contentAwareImagePreview = enabled;
+    this.previewModeController.abort();
+    this.previewModeController = new AbortController();
+    const piece = this.session;
+    if (piece) {
+      piece.previewRequest?.abort();
+      piece.previewFallbackWanted = false;
+      piece.previewProgrammeKey = null;
+      void this._updateStillPreview(piece);
+    }
+    this.shareTvNicknameRefresh.stop();
+    this.shareTvNicknameRefresh.sync(piece);
+    return { ok: true, enabled };
   }
 
   setContentNickname(enabled) {
@@ -1821,6 +1853,7 @@ class StreamManager {
       paused: !!link.paused, isLive: !!piece?.isLive,
       progressOverlay: this.progressOverlay, musicMode: this.musicMode,
       deriveNicknameFromContent: this.deriveNicknameFromContent,
+      contentAwareImagePreview: this.contentAwareImagePreview,
       positionSec: piece ? Math.round(link.paused && Number.isFinite(link.pausedPositionSec)
         ? link.pausedPositionSec : this.positionOf(piece)) : null,
       current: piece ? this._queueItem(piece) : null,

@@ -15,6 +15,7 @@ class StreamControl {
     return { ok, message, status: this.streamManager.status(),
       progressOverlay: this.streamManager.progressOverlay === true,
       musicMode: this.streamManager.musicMode === true,
+      contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
       deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true, ...extra };
   }
 
@@ -53,6 +54,11 @@ class StreamControl {
         return { ok: true, guildId: targetGuildId, guildName: guild.name,
           channelId: targetChannelId, channelName: channel.name, channelType: channel.type };
       }
+      case 'set-content-preview': {
+        if (typeof payload.enabled !== 'boolean') return this._result(false, 'Enabled must be a boolean.');
+        const r = this.streamManager.setContentPreview(payload.enabled);
+        return this._result(true, `Content Aware Image Preview ${r.enabled ? 'on' : 'off'}.`, { detail: { enabled: r.enabled } });
+      }
       case 'set-content-nickname': {
         if (typeof payload.enabled !== 'boolean') return this._result(false, 'Enabled must be a boolean.');
         const r = this.streamManager.setContentNickname(payload.enabled);
@@ -78,7 +84,8 @@ class StreamControl {
         return { ok: true, message: status ? M.STREAM_STATUS(status) : M.STREAM_NOTHING, status,
           progressOverlay: this.streamManager.progressOverlay === true,
           musicMode: this.streamManager.musicMode === true,
-          deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true };
+          contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
+      deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true };
       }
       case 'reorder': {
         const r = await this.streamManager.reorderQueue(payload.ids);

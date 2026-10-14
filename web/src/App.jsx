@@ -146,6 +146,7 @@ function WorkerSettings({ worker, action, busy }) {
   const panel = useRef(null);
   const switchRef = useRef(null);
   const enabled = worker.deriveNicknameFromContent === true;
+  const previewEnabled = worker.contentAwareImagePreview === true;
   const disabled = !worker.online || busy || pending;
   const panelId = `settings-${worker.id}`;
   useLayoutEffect(() => {
@@ -181,10 +182,10 @@ function WorkerSettings({ worker, action, busy }) {
       window.removeEventListener('scroll', place, true);
     };
   }, [open]);
-  const toggle = async () => {
+  const toggle = async (operation, nextEnabled) => {
     if (disabled) return;
     setPending(true);
-    try { await action(worker.id, 'set-content-nickname', { enabled: !enabled }); }
+    try { await action(worker.id, operation, { enabled: nextEnabled }); }
     finally { setPending(false); }
   };
   return <>
@@ -199,9 +200,17 @@ function WorkerSettings({ worker, action, busy }) {
         <button ref={switchRef} id={`${panelId}-switch`} type="button" role="switch"
           className="worker-setting-switch" aria-labelledby={`${panelId}-label`} aria-checked={enabled}
           aria-describedby={`${panelId}-description`} aria-busy={pending || busy || undefined}
-          disabled={disabled} onClick={toggle}><span /></button>
+          disabled={disabled} onClick={() => toggle('set-content-nickname', !enabled)}><span /></button>
       </div>
       <p id={`${panelId}-description`}>Uses the current title as this bot’s server nickname. Turning off keeps the last nickname.</p>
+      <div className="worker-setting-row">
+        <label id={`${panelId}-preview-label`} htmlFor={`${panelId}-preview-switch`}>Content Aware Image Preview</label>
+        <button id={`${panelId}-preview-switch`} type="button" role="switch"
+          className="worker-setting-switch" aria-labelledby={`${panelId}-preview-label`} aria-checked={previewEnabled}
+          aria-describedby={`${panelId}-preview-description`} aria-busy={pending || busy || undefined}
+          disabled={disabled} onClick={() => toggle('set-content-preview', !previewEnabled)}><span /></button>
+      </div>
+      <p id={`${panelId}-preview-description`}>Off shows this worker’s QR preview. On shows source artwork or stream snapshots.</p>
       {!worker.online && <div className="worker-settings-status">Worker offline</div>}
     </div>, document.body)}
   </>;

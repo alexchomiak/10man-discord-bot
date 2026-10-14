@@ -89,7 +89,7 @@ async function queueFrame(artwork, items, signal) {
     if (!item.thumbnail) return null;
     if (!artwork.thumbnailCache.has(item.thumbnail)) {
       artwork.thumbnailCache.set(item.thumbnail,
-        fetchArtworkImage(item.thumbnail, { width: 80, height: 45 }, signal)
+        fetchArtworkImage(item.thumbnail, { width: 80, height: 45, fit: 'contain' }, signal)
           .then(image => translucentImage(image, 80, 45, 0.65)));
     }
     return artwork.thumbnailCache.get(item.thumbnail);
@@ -143,7 +143,7 @@ async function createMusicArtwork({ baseUrl, workerId, accessCode, randomCodes =
   const [qr, currentThumbnail, avatarImage] = await Promise.all([
     QRCode.toBuffer(url, { type: 'png', width: 230, margin: 3,
       errorCorrectionLevel: 'H', color: { dark: '#d9ff62', light: '#17232d' } }),
-    thumbnail ? fetchArtworkImage(thumbnail, { width: 384, height: 216 }, signal) : null,
+    thumbnail ? fetchArtworkImage(thumbnail, { width: 384, height: 216, fit: 'contain' }, signal) : null,
     avatarUrl ? fetchArtworkImage(avatarUrl, { width: 48, height: 48 }, signal) : null
   ]);
   signal?.throwIfAborted();

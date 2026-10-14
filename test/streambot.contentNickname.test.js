@@ -91,6 +91,7 @@ test('ShareTV preview polling stays active with content nickname off and dedupli
   const manager = new StreamManager({}, null, { shareTvBase: 'https://tv.example', shareTvApiKey: 'test-key' });
   const link = { paused: false, closing: false };
   const piece = { voiceLink: link, previewPipeline: {}, control: new AbortController() };
+  manager.contentAwareImagePreview = true;
   manager.session = piece;
   manager.voiceLink = link;
   let synced, uploads = 0;

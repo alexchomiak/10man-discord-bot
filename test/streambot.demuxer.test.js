@@ -657,7 +657,7 @@ test('Music Mode negotiated voice transport delivers Opus RTP after packetizer s
 });
 
 test('transport install patch upgrades old installs, patches fresh installs, and rejects drift before writing', () => {
-  const { patchDiscordTransport, replacements, generationReplacements, mediaReplacements } = require('../scripts/patch-discord-transport');
+  const { patchDiscordTransport, replacements, generationReplacements, mediaReplacements, recoveryReplacements } = require('../scripts/patch-discord-transport');
   const installed = path.resolve(path.dirname(require.resolve('@dank074/discord-video-stream')), '..');
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'transport-patch-'));
   const undo = (source, edits) => [...edits].reverse().reduce((text, [before, after]) => text.replace(after, before), source);
@@ -672,7 +672,7 @@ test('transport install patch upgrades old installs, patches fresh installs, and
     fs.writeFileSync(mediaTarget, patchedMedia);
     assert.equal(patchDiscordTransport(fixture), false);
     const previous = undo(patched, generationReplacements);
-    const originalMedia = undo(patchedMedia, mediaReplacements);
+    const originalMedia = undo(undo(patchedMedia, recoveryReplacements), mediaReplacements);
     const videoOnly = previous.replace('        if (!this._audioDef.hasSSRC(audioSsrc)) this._audioDef.addSSRC(audioSsrc);\n', '').replace(
       'const { audioSsrc, videoSsrc, rtxSsrc } = this.mediaConnection.webRtcParams;',
       'const { videoSsrc, rtxSsrc } = this.mediaConnection.webRtcParams;');
@@ -684,6 +684,10 @@ test('transport install patch upgrades old installs, patches fresh installs, and
       assert.equal(fs.readFileSync(mediaTarget, 'utf8'), patchedMedia);
       assert.equal(patchDiscordTransport(fixture), false);
     }
+    fs.writeFileSync(target, patched);
+    fs.writeFileSync(mediaTarget, undo(patchedMedia, recoveryReplacements));
+    assert.equal(patchDiscordTransport(fixture), true, 'upgrade the previously deployed READY repair');
+    assert.equal(fs.readFileSync(mediaTarget, 'utf8'), patchedMedia);
     fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"7.0.0"}');
     assert.throws(() => patchDiscordTransport(fixture), /requires discord-video-stream 6.0.0/);
     fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"6.0.0"}');
@@ -860,6 +864,10 @@ test('protocol generations replace RTCP observers and log only sanitized lifecyc
   assert.equal(logs.at(-1), 'stream websocket-close generation=5 code=4015');
   media.emit('transport_event', { type: 'secret-payload', generation: 5 });
   assert.equal(logs.at(-1), 'stream websocket-close generation=5 code=4015');
+  media.emit('transport_event', { type: 'protocol-failure', reason: 'native-repair-exhausted', generation: 5, state: 'failed', message: 'private' });
+  assert.equal(logs.at(-1), 'stream protocol-failure generation=5 state=failed reason=native-repair-exhausted');
+  media.emit('transport_event', { type: 'protocol-failure', reason: 'private token', generation: 5 });
+  assert.equal(logs.at(-1), 'stream protocol-failure generation=5');
   assert.equal(enabled, 6);
   const firstVoice = new EventEmitter(), secondVoice = new EventEmitter();
   let voiceSpeaking = 0;
@@ -884,4 +892,174 @@ test('protocol generations replace RTCP observers and log only sanitized lifecyc
   await feeder.close();
   assert.equal(feeder.videoTransport, null);
   assert.equal(feeder.mediaObservers.size, 0);
+});
+
+async function mediaRecoveryFixture() {
+  const { pathToFileURL } = require('node:url');
+  const root = path.dirname(require.resolve('@dank074/discord-video-stream'));
+  const { BaseMediaConnection } = await import(pathToFileURL(path.join(root, 'client/voice/BaseMediaConnection.js')));
+  const sockets = [], peers = [], events = [];
+  class FixtureSocket {
+    static OPEN = 1;
+    constructor() { this.readyState = 0; this.handlers = {}; this.sent = []; sockets.push(this); }
+    addEventListener(type, callback) { (this.handlers[type] ||= []).push(callback); }
+    send(payload) { this.sent.push(JSON.parse(payload)); }
+    async fire(type, event = {}) { await Promise.all((this.handlers[type] || []).map(callback => callback(event))); }
+    close() { this.readyState = 3; void this.fire('close', { code: 1000 }); }
+  }
+  const previousWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = FixtureSocket;
+  const media = new BaseMediaConnection({}, 'guild', 'bot', 'channel', () => {});
+  Object.defineProperty(media, 'serverId', { value: 'fixture' });
+  Object.assign(media, { server: 'fixture.invalid', token: 'fixture', session_id: 'fixture' });
+  media.status.hasSession = media.status.hasToken = true;
+  media.on('transport_event', event => events.push(event));
+  const wrapper = media.webRtcConn;
+  let throwOnInit = false, deferNextOffer = false;
+  wrapper.initWebRtc = () => {
+    if (throwOnInit) throw new Error('private endpoint and credentials must never reach logs');
+    wrapper._webRtcConn?.close();
+    const deferOffer = deferNextOffer;
+    deferNextOffer = false;
+    const peer = {
+      current: 'new', state() { return this.current; },
+      onStateChange(callback) { this.stateCallback = callback; },
+      onLocalDescription(callback) { this.offerCallback = callback; },
+      setLocalDescription() { if (!deferOffer) this.offerCallback('fixture-sdp'); },
+      setRemoteDescription() { this.change('connected'); },
+      change(state) { this.current = state; this.stateCallback?.(state); },
+      close() { this.change('closed'); }
+    };
+    wrapper._webRtcConn = peer;
+    peers.push(peer);
+    return peer;
+  };
+  const gateway = (socket, op, d = {}) => socket.fire('message', { data: JSON.stringify({ op, d }) });
+  const ack = socket => gateway(socket, 4, { sdp: '', dave_protocol_version: 0 });
+  media.start();
+  sockets[0].readyState = 1;
+  await sockets[0].fire('open');
+  await gateway(sockets[0], 2, { ssrc: 10, streams: [{ ssrc: 11, rtx_ssrc: 12 }], modes: [] });
+  await ack(sockets[0]);
+  return { media, wrapper, sockets, peers, events, gateway, ack,
+    failNextInit() { throwOnInit = true; },
+    deferNextOffer() { deferNextOffer = true; },
+    async cleanup() {
+      media.stop();
+      await Promise.resolve();
+      globalThis.WebSocket = previousWebSocket;
+    } };
+}
+
+test('real media socket resume renegotiates a closed native peer only after RESUMED', async () => {
+  const f = await mediaRecoveryFixture();
+  try {
+    const socket = f.sockets[0], peer = f.peers[0];
+    await socket.fire('error', { error: new Error('private socket details') });
+    assert.equal(f.peers.length, 1, 'socket error alone must never force a media reconnect');
+    peer.change('disconnected');
+    assert.equal(f.peers.length, 1, 'disconnected callback itself preserves existing native lifecycle');
+    peer.change('connected');
+    socket.readyState = 3;
+    await socket.fire('close', { code: 1006 });
+    peer.change('failed');
+    peer.change('closed'); // libdatachannel schedules remoteClose after failed.
+    assert.equal(f.peers.length, 1, 'do not build a peer whose SDP would be dropped during socket outage');
+    assert.equal(f.media._nativeReconnectPending, true);
+    const resumed = f.sockets[1];
+    resumed.readyState = 1;
+    await resumed.fire('open');
+    assert.equal(resumed.sent.filter(packet => packet.op === 7).length, 1);
+    assert.equal(f.peers.length, 1, 'socket OPEN is insufficient; wait for Discord RESUMED');
+    await f.gateway(resumed, 9);
+    assert.equal(f.peers.length, 2);
+    assert.equal(resumed.sent.filter(packet => packet.op === 1).length, 1, 'send exactly one fresh SELECT_PROTOCOL');
+    await f.ack(resumed);
+    assert.equal(f.wrapper.ready, true);
+    assert.equal(f.media._nativeRepairUsed, false);
+    assert.equal(f.media._daveSession, undefined);
+    assert.equal(f.media.listenerCount('select_protocol_ack'), 0);
+    // Retired socket/native callbacks must not damage the repaired generation.
+    await socket.fire('error');
+    await socket.fire('close', { code: 4004 });
+    await f.gateway(socket, 2, { ssrc: 99, streams: [{ ssrc: 100, rtx_ssrc: 101 }], modes: [] });
+    peer.stateCallback('closed');
+    peer.offerCallback('retired-sdp');
+    assert.equal(f.media._closed, false);
+    assert.equal(f.media.webRtcParams.audioSsrc, 10);
+    assert.equal(f.peers.length, 2);
+    assert.equal(f.sockets.length, 2);
+    assert.equal(resumed.sent.filter(packet => packet.op === 1).length, 1);
+    assert.ok(f.events.some(event => event.type === 'native-repair-deferred'));
+    assert.ok(f.events.some(event => event.type === 'native-repair'));
+    assert.equal(f.events.filter(event => event.type === 'protocol-failure').length, 0);
+    f.media.stop();
+    await Promise.resolve();
+    assert.equal(f.sockets.length, 2, 'intentional stop1000 must not reopen a media socket');
+  } finally { await f.cleanup(); }
+});
+
+test('native repair is bounded until connected and never loops after terminal failure', async () => {
+  const f = await mediaRecoveryFixture();
+  try {
+    f.peers[0].change('closed');
+    assert.equal(f.peers.length, 2, 'existing closed recovery remains immediate with an open control socket');
+    f.peers[1].change('failed');
+    f.peers[1].change('closed');
+    f.peers[1].stateCallback('closed');
+    assert.equal(f.peers.length, 2);
+    assert.equal(f.events.filter(event => event.type === 'protocol-failure').length, 1);
+    assert.equal(f.events.at(-2).reason || f.events.at(-1).reason, 'native-repair-exhausted');
+    const offers = f.sockets[0].sent.filter(packet => packet.op === 1).length;
+    f.peers[1].offerCallback('late terminal offer');
+    assert.equal(f.sockets[0].sent.filter(packet => packet.op === 1).length, offers, 'terminal failure suppresses late SDP within the same generation');
+  } finally { await f.cleanup(); }
+  const exception = await mediaRecoveryFixture();
+  try {
+    exception.failNextInit();
+    assert.doesNotThrow(() => exception.peers[0].change('closed'));
+    assert.equal(exception.peers.length, 1);
+    assert.equal(exception.events.at(-1).reason, 'native-init-failed');
+    assert.equal(JSON.stringify(exception.events).includes('private endpoint'), false);
+  } finally { await exception.cleanup(); }
+});
+
+test('an SDP offer lost to a socket race is deferred and successful connection resets repair allowance', async () => {
+  const f = await mediaRecoveryFixture();
+  try {
+    const socket = f.sockets[0];
+    f.deferNextOffer();
+    f.peers[0].change('closed');
+    assert.equal(f.peers.length, 2);
+    assert.equal(f.media._nativeRepairUsed, true);
+    socket.readyState = 0;
+    f.peers[1].offerCallback('deferred-sdp');
+    assert.equal(f.media._nativeReconnectPending, true);
+    assert.equal(f.peers.length, 2);
+    assert.equal(f.media._nativeRepairUsed, false, 'an unsent offer must not exhaust recovery');
+    socket.readyState = 1;
+    await f.gateway(socket, 9);
+    assert.equal(f.peers.length, 3);
+    await f.ack(socket);
+    f.peers[2].change('closed');
+    assert.equal(f.peers.length, 4, 'connected permits one recovery for a later separate outage');
+    await f.ack(socket);
+    assert.equal(f.wrapper.ready, true);
+  } finally { await f.cleanup(); }
+});
+
+
+test('nonresumable media close surfaces a terminal failure without creating another transport', async () => {
+  const f = await mediaRecoveryFixture();
+  try {
+    f.sockets[0].readyState = 3;
+    await f.sockets[0].fire('close', { code: 4006, reason: 'private close reason' });
+    assert.equal(f.media._closed, true);
+    assert.equal(f.peers.length, 1);
+    assert.equal(f.sockets.length, 1);
+    const failure = f.events.find(event => event.type === 'protocol-failure');
+    assert.equal(failure.reason, 'websocket-unrecoverable');
+    assert.equal(failure.code, 4006);
+    assert.equal(JSON.stringify(f.events).includes('private close reason'), false);
+  } finally { await f.cleanup(); }
 });

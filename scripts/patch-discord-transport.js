@@ -78,6 +78,72 @@ const mediaReplacements = [
     ['        this.sendOpcode(VoiceOpCodes.IDENTIFY, {', '        this.emit("transport_event", { type: "identify", generation: this._transportGeneration });\n        this.sendOpcode(VoiceOpCodes.IDENTIFY, {'],
     ['        this.sendOpcode(VoiceOpCodes.RESUME, {', '        this.emit("transport_event", { type: "resume", generation: this._transportGeneration });\n        this.sendOpcode(VoiceOpCodes.RESUME, {'],
 ];
+// Native libdatachannel failures close their peer asynchronously. Defer that
+// existing Closed recovery until the media control socket has actually resumed;
+// SELECT_PROTOCOL would otherwise be silently discarded by sendOpcode.
+const recoveryReplacements = [
+    ['    _transportGeneration = 0;', `    _transportGeneration = 0;
+    _nativeReconnect = null;
+    _nativeReconnectPending = false;
+    _nativeRepairUsed = false;
+    _awaitingResume = false;
+    _transportFatal = false;`],
+    ['    start() {', '    start() {\n        if (this._closed) return;'],
+    ['            this.ws.binaryType = "arraybuffer";', '            this.ws.binaryType = "arraybuffer";\n            const socket = this.ws;'],
+    ['            this.ws.addEventListener("open", () => {', '            this.ws.addEventListener("open", () => {\n                if (socket !== this.ws || this._closed) return;'],
+    ['            this.ws.addEventListener("error", (err) => {', '            this.ws.addEventListener("error", (err) => {\n                if (socket !== this.ws || this._closed) return;'],
+    ['{ type: "websocket-error", generation: this._transportGeneration }', '{ type: "websocket-error", generation: this._transportGeneration, state: this._webRtcWrapper.webRtcConn?.state() }'],
+    ['            this.ws.addEventListener("close", (e) => {', '            this.ws.addEventListener("close", (e) => {\n                if (socket !== this.ws) return;'],
+    ['                if (canResume && wasStarted) {', '                if (canResume && wasStarted && !this._closed) {'],
+    ['                    this._closed = true;\n                    this._webRtcWrapper?.close();', '                    if (!this._closed) this._reportTransportFailure("websocket-unrecoverable", e.code);\n                    this._closed = true;\n                    this._webRtcWrapper?.close();'],
+    ['    setupEvents() {\n        this.ws?.addEventListener("message", async (e) => {', '    setupEvents() {\n        const socket = this.ws;\n        socket?.addEventListener("message", async (e) => {\n            if (socket !== this.ws || this._closed) return;'],
+    ['                this.handleReady(d);', '                this._awaitingResume = false;\n                this.handleReady(d);'],
+    ['                    this.ready(this._webRtcWrapper);\n                });', '                    this.ready(this._webRtcWrapper);\n                }).catch(() => this._reportTransportFailure("protocol-setup-failed"));'],
+    ['                this.handleProtocolAck(d);', '                this.handleProtocolAck(d).catch(() => this._reportTransportFailure("protocol-ack-failed"));'],
+    ['                this.emit("transport_event", { type: "resumed", generation: this._transportGeneration });', '                this.emit("transport_event", { type: "resumed", generation: this._transportGeneration });\n                this._awaitingResume = false;\n                if (this._nativeReconnectPending) this._requestNativeReconnect();'],
+    ['        this.emit("transport_event", { type: "resume", generation: this._transportGeneration });', '        this._awaitingResume = true;\n        this.emit("transport_event", { type: "resume", generation: this._transportGeneration });'],
+    ['    async setProtocols() {', `    _reportTransportFailure(reason, code) {
+        if (this._transportFatal || this._closed) return;
+        this._transportFatal = true;
+        this._nativeReconnectPending = false;
+        this.emit("transport_event", { type: "protocol-failure", reason, code, generation: this._transportGeneration });
+    }
+    _requestNativeReconnect() {
+        if (this._closed || this._transportFatal) return;
+        this._nativeReconnectPending = true;
+        if (this.ws?.readyState !== WebSocket.OPEN || this._awaitingResume) {
+            this.emit("transport_event", { type: "native-repair-deferred", generation: this._transportGeneration });
+            return;
+        }
+        if (this._nativeRepairUsed) {
+            this._reportTransportFailure("native-repair-exhausted");
+            return;
+        }
+        this._nativeRepairUsed = true;
+        this._nativeReconnectPending = false;
+        this.emit("transport_event", { type: "native-repair", generation: this._transportGeneration + 1 });
+        try { this._nativeReconnect(); }
+        catch { this._reportTransportFailure("native-init-failed"); }
+    }
+    async setProtocols() {`],
+    ['                if (state === "closed" && !this._closed)\n                    reconnect();', `                if (state === "connected") {
+                    this._nativeRepairUsed = false;
+                    this._nativeReconnectPending = false;
+                }
+                if (state === "closed" && !this._closed)
+                    this._requestNativeReconnect();`],
+    ['            webRtcConn.onLocalDescription((sdp) => {', `            webRtcConn.onLocalDescription((sdp) => {
+                if (generation !== this._transportGeneration || this._closed || this._transportFatal) return;
+                if (this.ws?.readyState !== WebSocket.OPEN || this._awaitingResume) {
+                    // The socket can disappear between native creation and SDP.
+                    // No offer was sent, so this does not consume a repair attempt.
+                    this._nativeRepairUsed = false;
+                    this._nativeReconnectPending = true;
+                    this.emit("transport_event", { type: "native-repair-deferred", generation });
+                    return;
+                }`],
+    ['        reconnect();\n        return new Promise((resolve) => {', '        this._nativeReconnect = reconnect;\n        reconnect();\n        return new Promise((resolve) => {'],
+];
 function replaceChecked(source, edits) {
     let result = source;
     for (const [oldText, newText] of edits) {
@@ -105,7 +171,13 @@ function patchDiscordTransport(root = path.resolve(path.dirname(require.resolve(
     after = replaceChecked(after, generationReplacements);
     const mediaTarget = path.join(root, 'dist/client/voice/BaseMediaConnection.js');
     const mediaBefore = fs.readFileSync(mediaTarget, 'utf8');
-    const mediaAfter = replaceChecked(mediaBefore, mediaReplacements);
+    // Recovery anchors extend previously patched lifecycle methods. Normalize
+    // only exact known edits before validating the full current patch again.
+    let mediaBase = mediaBefore;
+    for (const [oldText, newText] of [...recoveryReplacements].reverse()) {
+        if (mediaBase.includes(newText)) mediaBase = mediaBase.replace(newText, oldText);
+    }
+    const mediaAfter = replaceChecked(replaceChecked(mediaBase, mediaReplacements), recoveryReplacements);
     if (fs.existsSync(helper) && fs.readFileSync(helper, 'utf8') !== calculator)
         throw new Error('Discord bitrate calculator differs from pinned backport');
     fs.writeFileSync(helper, calculator);
@@ -120,4 +192,4 @@ if (require.main === module) {
         throw new Error('Native transport requires setBitrate and addRtxSSRC');
     console.log(patchDiscordTransport() ? 'patched Discord adaptive pacing and RTX' : 'Discord transport patch already applied');
 }
-module.exports = { patchDiscordTransport, calculator, replacements, generationReplacements, mediaReplacements };
+module.exports = { patchDiscordTransport, calculator, replacements, generationReplacements, mediaReplacements, recoveryReplacements };

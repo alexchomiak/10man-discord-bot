@@ -41,7 +41,7 @@ function titleLines(value) {
   return lines.map((line, index) => `<text x="90" y="${index ? 867 : 817}" font-size="39" font-weight="700" fill="#f0f4f6">${escapeXml(line)}</text>`).join('');
 }
 
-async function fetchArtworkImage(url, { width, height, timeoutMs = 800 }, signal) {
+async function fetchArtworkImage(url, { width, height, timeoutMs = 800, fit = 'cover' }, signal) {
   if (!/^https?:\/\//i.test(url || '')) return null;
   try {
     const timeout = AbortSignal.timeout(timeoutMs);
@@ -57,7 +57,7 @@ async function fetchArtworkImage(url, { width, height, timeoutMs = 800 }, signal
       chunks.push(chunk);
     }
     return await sharp(Buffer.concat(chunks), { limitInputPixels: 4096 * 4096 })
-      .resize(width, height, { fit: 'cover' }).png().toBuffer();
+      .rotate().resize(width, height, { fit, background: '#000000' }).png().toBuffer();
   } catch { return null; }
 }
 
@@ -79,6 +79,23 @@ function artworkSvg({ url, workerId, next, hasThumbnail }) {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080"><style>text{font-family:DejaVu Sans,Arial,sans-serif}</style>${frame}${brand}${body}${next ? footer : ''}</svg>`);
 }
 
+async function createQrPreview({ baseUrl, workerId, accessCode, randomCodes = false, avatarUrl, signal }) {
+  const url = workerDashboardUrl(baseUrl, randomCodes ? accessCode : workerId);
+  if (!url) return null;
+  const qr = await QRCode.toBuffer(url, { type: 'png', width: 288, margin: 3,
+    errorCorrectionLevel: 'H', color: { dark: '#d9ff62', light: '#17232d' } });
+  const avatarImage = avatarUrl ? await fetchArtworkImage(avatarUrl, { width: 38, height: 38 }, signal) : null;
+  signal?.throwIfAborted();
+  const avatar = await circularAvatar(avatarImage, 38);
+  const composites = [{ input: qr, left: 112, top: 0 }];
+  if (avatar) {
+    const ring = Buffer.from('<svg width="46" height="46"><circle cx="23" cy="23" r="22" fill="#17232d" stroke="#d9ff62" stroke-width="2"/></svg>');
+    composites.push({ input: ring, left: 233, top: 121 }, { input: avatar, left: 237, top: 125 });
+  }
+  return sharp({ create: { width: 512, height: 288, channels: 3, background: '#000000' } })
+    .composite(composites).png().toBuffer();
+}
+
 async function createFillerArtwork({ baseUrl, workerId, accessCode, randomCodes = false, avatarUrl = null, next = null, width = 1920, height = 1080, signal }) {
   const url = workerDashboardUrl(baseUrl, randomCodes ? accessCode : workerId);
   if (!url) throw new Error('STREAM_DASHBOARD_BASE_URL must be an http(s) dashboard URL');
@@ -90,7 +107,7 @@ async function createFillerArtwork({ baseUrl, workerId, accessCode, randomCodes 
   const [qr, thumbnail, avatarImage] = await Promise.all([
     QRCode.toBuffer(url, { type: 'png', width: qrSize, margin: 3, errorCorrectionLevel: 'H',
       color: { dark: '#d9ff62', light: '#17232d' } }),
-    next?.thumbnail ? fetchArtworkImage(next.thumbnail, { width: 920, height: 518 }, signal) : null,
+    next?.thumbnail ? fetchArtworkImage(next.thumbnail, { width: 920, height: 518, fit: 'contain' }, signal) : null,
     avatarUrl ? fetchArtworkImage(avatarUrl, { width: avatarSize, height: avatarSize }, signal) : null
   ]);
   signal?.throwIfAborted();
@@ -133,4 +150,4 @@ function fillerCountdownFilter(durationSec, width = 1920, height = 1080) {
 }
 
 module.exports = { workerDashboardUrl, createFillerArtwork, fillerCountdownFilter,
-  fetchArtworkImage, circularAvatar };
+  fetchArtworkImage, circularAvatar, createQrPreview };
