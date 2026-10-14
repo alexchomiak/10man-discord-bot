@@ -113,11 +113,20 @@ function ChannelPicker({ workerId, channels, selected, onSelect, disabled, onRef
   const listId = useId();
   const unique = [...new Map(channels.map(channel => [channelKey(channel), channel])).values()];
   const chosen = unique.find(channel => channelKey(channel) === selected);
+  const occupied = [];
   const groups = new Map();
   unique.filter(channel => `${channel.guildName || channel.guildId} ${channel.name}`.toLowerCase().includes(query.trim().toLowerCase()))
     .sort((a, b) => (a.guildName || a.guildId).localeCompare(b.guildName || b.guildId) || a.guildId.localeCompare(b.guildId) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
-    .forEach(channel => { if (!groups.has(channel.guildId)) groups.set(channel.guildId, []); groups.get(channel.guildId).push(channel); });
-  const matches = [...groups.values()].flat();
+    .forEach(channel => {
+      if ((Array.isArray(channel.members) && channel.members.length) || Number(channel.memberCount) > 0) { occupied.push(channel); return; }
+      if (!groups.has(channel.guildId)) groups.set(channel.guildId, []);
+      groups.get(channel.guildId).push(channel);
+    });
+  const sections = [
+    ...(occupied.length ? [{ key: 'occupied', label: 'People in voice', channels: occupied, showServer: true }] : []),
+    ...[...groups].map(([guildId, group]) => ({ key: `guild-${guildId}`, label: group[0].guildName || guildId, channels: group }))
+  ];
+  const matches = sections.flatMap(section => section.channels);
   const activeIndex = Math.min(active, Math.max(0, matches.length - 1));
   useEffect(() => {
     if (!open) return;
@@ -159,11 +168,11 @@ function ChannelPicker({ workerId, channels, selected, onSelect, disabled, onRef
         {onRefresh && <button type="button" className="channel-picker-clear" aria-label="Refresh worker channels" disabled={refreshing} onClick={refreshChannels}><Icon name="refresh" /></button>}
       </div>
       <div ref={options} id={listId} className="channel-picker-options" role="listbox" aria-label="Voice channels" aria-busy={refreshing}>
-        {[...groups].map(([guildId, group]) => { const start = offset; offset += group.length; return <div key={guildId} role="group" aria-label={group[0].guildName || guildId}>
-          <div className="channel-picker-group">{group[0].guildName || guildId}</div>
-          {group.map((channel, index) => <button type="button" role="option" tabIndex={-1} id={`${listId}-${start + index}`} data-index={start + index}
+        {sections.map(section => { const start = offset; offset += section.channels.length; return <div key={section.key} role="group" aria-label={section.label}>
+          <div className="channel-picker-group">{section.label}</div>
+          {section.channels.map((channel, index) => <button type="button" role="option" tabIndex={-1} id={`${listId}-${start + index}`} data-index={start + index}
             aria-selected={selected === channelKey(channel)} key={channelKey(channel)} onClick={() => choose(channel)}
-            className={`channel-picker-option ${activeIndex === start + index ? 'keyboard-active' : ''}`}><span># {channel.name}</span><ChannelMembers channel={channel} /></button>)}
+            className={`channel-picker-option ${activeIndex === start + index ? 'keyboard-active' : ''}`}><span># {channel.name}</span>{section.showServer && <small>{channel.guildName || channel.guildId}</small>}<ChannelMembers channel={channel} /></button>)}
         </div>; })}
         {!matches.length && <div className="channel-picker-empty">{unique.length ? 'No matching channels' : 'No channels available. Refresh or use server / channel IDs.'}</div>}
       </div>
