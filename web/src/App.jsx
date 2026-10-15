@@ -688,7 +688,7 @@ function AdminApp() {
   const searchYoutube = async (workerId, query, page = 1) => api(answer, `/api/workers/${encodeURIComponent(workerId)}/search?q=${encodeURIComponent(query)}&page=${page}`);
   const scheduleRequest = async (route, options = {}, quiet = false) => {
     if (!route) { toast.error(options.error); return null; }
-    try { const result = await api(answer, route, options); if (options.method === 'POST' && !quiet) toast.success('Schedule created.'); if (options.method === 'PUT' && !quiet) toast.success('Schedule updated.'); if (options.method === 'DELETE') toast.success('Schedule cancelled.'); return result; }
+    try { const result = await api(answer, route, options); if (options.method === 'POST' && !quiet) toast.success('Schedule created.'); if (options.method === 'PUT' && !quiet) toast.success('Schedule updated.'); if (options.method === 'DELETE') toast.success(result.deleted ? 'Schedule deleted.' : 'Schedule cancelled.'); return result; }
     catch (failure) { if (!quiet) toast.error(failure.message); return null; }
   };
   if (!answer) return <div className="login-page"><Toaster position="top-right" theme="dark" richColors closeButton />

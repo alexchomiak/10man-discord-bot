@@ -140,3 +140,61 @@ test('schedule nickname truncates at a Unicode-safe word boundary and blank is o
  assert.ok(job.nickname.length <= 32); assert.ok(job.nickname.endsWith('...'));
  assert.equal((await store.update('one', job.id, { ...input(now), nickname: '  ' })).nickname, null);
 });
+
+test('terminal rows can be deleted while pending cancels and running remains protected', async () => {
+ const now = Date.now(); const store = new StreamSchedules({ now: () => now, broker: { getWorker: () => null } });
+ const pending = await store.add('one', input(now));
+ assert.equal((await store.remove('one', pending.id)).deleted, false);
+ assert.equal(store.jobs[0].status, 'cancelled'); assert.equal(Date.parse(store.jobs[0].finishedAt), now);
+ assert.equal((await store.remove('one', pending.id)).deleted, true); assert.equal(store.jobs.length, 0);
+ for (const status of ['failed', 'completed', 'cancelled']) {
+  store.jobs.push({ id: status, workerId: 'one', ...input(now), status });
+  assert.equal((await store.remove('one', status)).deleted, true);
+ }
+ store.jobs.push({ id: 'running', workerId: 'one', ...input(now), status: 'running' });
+ await assert.rejects(store.remove('one', 'running'), /Running/);
+ assert.equal(await store.remove('other', 'running'), null);
+ assert.equal(store.jobs[0].status, 'running');
+});
+
+test('terminal cleanup expires at one hour and never removes pending or running', async () => {
+ const { RETENTION_MS } = require('../src/streamSchedules');
+ let now = Date.now(); const completedAt = now;
+ const store = new StreamSchedules({ now: () => now, broker: { getWorker: () => null } });
+ store.jobs = ['failed', 'completed', 'cancelled', 'pending', 'running'].map(status => ({ id: status, workerId: 'one', ...input(now), status, finishedAt: new Date(completedAt).toISOString() }));
+ store.jobs.find(job => job.status === 'pending').startAt = new Date(now + RETENTION_MS * 2).toISOString();
+ now += RETENTION_MS - 1; await store.tick();
+ assert.equal(store.jobs.length, 5);
+ // Keep pending future so this test concerns retention, not missed-start handling.
+ store.jobs.find(job => job.status === 'pending').startAt = new Date(now + 60000).toISOString();
+ now++; await store.tick();
+ assert.deepEqual(store.jobs.map(job => job.status).sort(), ['pending', 'running']);
+});
+
+test('legacy terminal cleanup grace survives restart even with a future cancelled start', async () => {
+ const { RETENTION_MS } = require('../src/streamSchedules');
+ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'schedule-cleanup-')), filePath = path.join(dir, 'jobs.json');
+ let now = Date.now(); const broker = { getWorker: () => null };
+ const legacy = { id: 'legacy', workerId: 'one', ...input(now + RETENTION_MS * 10), status: 'cancelled' };
+ fs.writeFileSync(filePath, JSON.stringify([legacy]));
+ try {
+  const store = new StreamSchedules({ broker, filePath, now: () => now });
+  await store.tick(); const finishedAt = store.jobs[0].finishedAt;
+  assert.equal(Date.parse(finishedAt), now);
+  now += RETENTION_MS - 1;
+  const restarted = new StreamSchedules({ broker, filePath, now: () => now }); await restarted.tick();
+  assert.equal(restarted.jobs[0].finishedAt, finishedAt);
+  now++; await restarted.tick(); assert.deepEqual(restarted.jobs, []);
+  assert.deepEqual(JSON.parse(fs.readFileSync(filePath)), []);
+ } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('deletion and cleanup persistence failures restore all rows and timestamps', async () => {
+ let now = Date.now(); const store = new StreamSchedules({ now: () => now, broker: { getWorker: () => null } });
+ store.jobs = [{ id: 'terminal', workerId: 'one', ...input(now), status: 'failed' },
+  { id: 'unrelated', workerId: 'two', ...input(now), status: 'pending' }];
+ const before = JSON.stringify(store.jobs);
+ store._save = async () => { store.jobs = []; throw new Error('disk failure'); };
+ await assert.rejects(store.remove('one', 'terminal'), /disk failure/); assert.equal(JSON.stringify(store.jobs), before);
+ await assert.rejects(store.tick(), /disk failure/); assert.equal(JSON.stringify(store.jobs), before);
+});

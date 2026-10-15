@@ -205,7 +205,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           } catch (error) { return json(res, error.code === 'SCHEDULE_NOT_PENDING' ? 409 : 400, { error: error.message }); }
         }
         if (req.method === 'DELETE' && scheduleMatch[2]) {
-          try { const schedule = await schedules.cancel(workerId, scheduleMatch[2]); return json(res, schedule ? 200 : 404, schedule ? { schedule } : { error: 'Schedule not found.' }); }
+          try { const result = await schedules.remove(workerId, scheduleMatch[2]); return json(res, result ? 200 : 404, result || { error: 'Schedule not found.' }); }
           catch (error) { return json(res, 409, { error: error.message }); }
         }
         return json(res, 405, { error: 'Method not allowed.' });

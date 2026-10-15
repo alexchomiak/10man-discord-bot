@@ -309,10 +309,10 @@ class PersistentTrackFeeder {
         this.rtcBytesSent += frame.length;
         audioConnection.sendAudioFrame(frame, ms);
       };
-      // VOD tracks share one wall/media mapping. Rebasing only one track
+      // Both live and VOD tracks share one wall/media mapping. Rebasing only one track
       // after an asymmetric stall permanently offsets it from its partner.
       // A shared clock lets both recover without waiting on demux queues.
-      const timeline = syncVideoToAudio ? undefined : {};
+      const timeline = {};
       const video = new TimedTrack(sendVideo, 'video', { defaultDurationMs: 1000 / this.frameRate, diagnostics: this.diagnostics, timeline });
       const audio = new TimedTrack(sendAudio, 'audio', { diagnostics: this.diagnostics, timeline });
       // The demuxer reads one interleaved stream and stops when either output

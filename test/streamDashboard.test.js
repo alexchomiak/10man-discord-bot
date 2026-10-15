@@ -254,5 +254,17 @@ test('admin schedules configured offline workers; public and unauthenticated sch
     assert.equal((await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'PUT', headers, body: JSON.stringify({ ...editBody, nickname: {} }) })).status, 400);
     const cancelled = await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'DELETE', headers }); assert.equal(cancelled.status, 200); assert.equal((await cancelled.json()).schedule.status, 'cancelled');
     assert.equal((await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'PUT', headers, body: JSON.stringify(editBody) })).status, 409);
+    assert.equal((await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'DELETE' })).status, 401);
+    assert.equal((await fetch(`${base}/api/public/offline/schedules/${schedule.id}`, { method: 'DELETE' })).status, 401);
+    const removed = await fetch(`${base}/api/workers/offline/schedules/${schedule.id}`, { method: 'DELETE', headers });
+    assert.equal(removed.status, 200); assert.equal((await removed.json()).deleted, true);
+    assert.equal(dashboard.schedules.list('offline').length, 0);
+    const running = { ...schedule, id: require('node:crypto').randomUUID(), status: 'running' };
+    dashboard.schedules.jobs.push(running);
+    assert.equal((await fetch(`${base}/api/workers/offline/schedules/${running.id}`, { method: 'DELETE', headers })).status, 409);
+    const failed = { ...schedule, id: require('node:crypto').randomUUID(), status: 'failed' };
+    dashboard.schedules.jobs.push(failed);
+    assert.equal((await (await fetch(`${base}/api/workers/offline/schedules/${failed.id}`, { method: 'DELETE', headers })).json()).deleted, true);
+
   } finally { await dashboard.close(); }
 });
