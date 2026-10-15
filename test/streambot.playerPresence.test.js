@@ -87,15 +87,14 @@ test('coalesces rapid state changes into one bounded timer and closes observers'
 });
 
 const { snapshot } = require('../src/streambot/playerPresence');
-test('Unicode title/hover limits preserve complete hour-long paused timing', () => {
+test('Unicode title stays capped and paused position remains canonical', () => {
   const manager = { session: null, voiceLink: { paused: true,
     pausedPositionSec: 3661, pausedSession: { title: '😀'.repeat(200), totalDurationSec: 72000 } },
   positionOf: () => 99999 };
   const state = snapshot(manager);
   assert.equal(Array.from(state.title).length, 90);
   assert.ok(state.title.endsWith('…'));
-  assert.ok(Array.from(state.hover).length <= 128);
-  assert.ok(state.hover.endsWith(' - 1:01:01/20:00:00 - Paused'));
+  assert.equal(state.hover, undefined);
   assert.equal(state.position, 3661);
 });
 
@@ -106,13 +105,15 @@ test('chapter music and live derive canonical positions without invented totals'
     _currentChapter: () => ({ ...piece.chapters[1], index: 1 }) };
   let state = snapshot(manager, 1000000);
   assert.equal(state.title, 'Second');
-  assert.equal(state.hover, 'Second - 0:30/8:00 - Playing');
+  assert.equal(state.position, 30);
+  assert.equal(state.duration, 480);
   assert.equal(state.start, 970000);
   piece.isLive = true; piece.contentTitle = 'Live Show'; piece.musicMode = false;
   manager._currentChapter = () => null;
   state = snapshot(manager);
   assert.equal(state.duration, null);
-  assert.equal(state.hover, 'Live Show - 2:30 elapsed - Live - Playing');
+  assert.equal(state.title, 'Live Show');
+  assert.equal(state.position, 150);
 });
 
 test('real serialization freezes paused timestamps and updates seek/resume timing', t => {
@@ -137,7 +138,7 @@ test('real serialization freezes paused timestamps and updates seek/resume timin
   assert.ok(Math.abs(Date.now() - activity.timestamps.start - 300000) < 1000);
 });
 
-test('artwork resolves once, uses worker avatar badge, and serializes exact tooltip', async t => {
+test('artwork resolves once and keeps badge image without hover text', async t => {
   const { client, manager, presence, packets, sync } = fixture(t);
   client.user.displayAvatarURL = () => 'https://cdn.example/avatar.png';
   manager.session = { title: 'Now Playing', thumbnail: 'https://source.example/image.jpg', totalDurationSec: 600 };
@@ -152,7 +153,8 @@ test('artwork resolves once, uses worker avatar badge, and serializes exact tool
   const activity = packets.at(-1).d.activities[0];
   assert.equal(activity.assets.large_image, 'mp:external/art');
   assert.equal(activity.assets.small_image, 'mp:external/avatar');
-  assert.equal(activity.assets.small_text, 'Now Playing - 0:12/10:00 - Playing');
+  assert.equal(activity.assets.small_text, undefined);
+  assert.equal(activity.assets.large_text, 'Now Playing');
   assert.deepEqual(activity.buttons, ['Open Player']);
   sync(); assert.equal(calls, 2);
 });
@@ -226,8 +228,8 @@ test('Discord CDN avatar resolves through external assets before artwork', async
   assert.deepEqual(calls, [[avatar], ['https://image.example/art.jpg']]);
   assert.equal(activity.assets.large_image, 'mp:external/art');
   assert.equal(activity.assets.small_image, 'mp:external/avatar');
-  assert.equal(activity.assets.large_text, activity.assets.small_text);
-  assert.ok(activity.assets.small_text.endsWith(' - Playing'));
+  assert.equal(activity.assets.large_text, 'Video');
+  assert.equal(activity.assets.small_text, undefined);
   sync(); assert.equal(calls.length, 2);
 });
 
@@ -273,10 +275,84 @@ test('thumbnail failure never prevents resolved avatar badge or fallback, withou
   const activity = packets.at(-1).d.activities[0];
   assert.equal(activity.assets.large_image, 'mp:external/avatar');
   assert.equal(activity.assets.small_image, 'mp:external/avatar');
-  assert.equal(activity.assets.large_text, activity.assets.small_text);
-  assert.ok(activity.assets.small_text.endsWith(' - Playing'));
+  assert.equal(activity.assets.large_text, 'Video');
+  assert.equal(activity.assets.small_text, undefined);
   assert.deepEqual(calls, [avatar, 'https://image.example/broken.jpg']);
   presence.assetNextAt = 0;
   sync(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.length, 2);
+});
+
+test('steady playback at 15/30/60 seconds sends no tooltip-driven presence updates', t => {
+  const { manager, packets, sync } = fixture(t);
+  let now = 1000000;
+  let position = 0;
+  t.mock.method(Date, 'now', () => now);
+  manager.session = { title: 'Video', queueId: 'track', startedAt: now, startOffsetSec: 0, totalDurationSec: 600 };
+  manager.positionOf = () => position;
+  sync();
+  const initial = packets[0].d.activities[0];
+  assert.equal(initial.timestamps.start, 1000000);
+  assert.equal(initial.timestamps.end, 1600000);
+  for (const elapsed of [15, 30, 60]) {
+    now = 1000000 + elapsed * 1000; position = elapsed; sync();
+  }
+  assert.equal(packets.length, 1);
+});
+
+test('explicit seek reanchors timestamps while chapter and programme changes still publish', t => {
+  const { manager, packets, sync } = fixture(t);
+  let now = 1000000;
+  let position = 10;
+  t.mock.method(Date, 'now', () => now);
+  const piece = manager.session = { title: 'Mix', queueId: 'mix', startedAt: now,
+    musicMode: true, totalDurationSec: 600,
+    chapters: [{ title: 'Repeated chapter', startSec: 0 }, { title: 'Repeated chapter', startSec: 120 }] };
+  manager.positionOf = () => position;
+  manager._currentChapter = (_piece, at) => ({ ...piece.chapters[at < 120 ? 0 : 1], index: at < 120 ? 0 : 1 });
+  sync();
+  position = 60; now += 10000;
+  sync(true);
+  assert.equal(packets.length, 2);
+  assert.equal(packets.at(-1).d.activities[0].timestamps.start, now - 60000);
+  position = 130; now += 10000; sync();
+  assert.equal(packets.length, 3);
+  assert.equal(packets.at(-1).d.activities[0].timestamps.start, now - 10000);
+  piece.chapters = null; manager._currentChapter = () => null;
+  piece.musicMode = false; piece.contentTitle = 'New programme'; now += 15000; sync();
+  assert.equal(packets.length, 4);
+  assert.equal(packets.at(-1).d.activities[0].details, 'New programme');
+});
+
+test('manager seek explicitly requests a presence timestamp refresh', async () => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const calls = [];
+  const manager = { _reopenSession: (_link, session, { offsetSec }) => ({ ...session, startOffsetSec: offsetSec }),
+    _cancelPiece: () => {}, playerPresence: { sync: force => calls.push(force) } };
+  const link = { pipeline: { enqueue: [], writerTask: Promise.resolve() } };
+  await StreamManager.prototype._seekSession.call(manager, link, { queueId: 'track' }, 45);
+  assert.deepEqual(calls, [true]);
+  assert.equal(manager.session.startOffsetSec, 45);
+});
+
+test('Jellyfin and ShareTV artwork resolve only scoped public capabilities in real presence payloads', async t => {
+  const { client, manager, presence, packets, sync } = fixture(t);
+  const avatar = 'https://cdn.discordapp.com/avatars/111111111111111111/avatar.png';
+  client.user.displayAvatarURL = () => avatar;
+  const proxy = 'https://player.example/api/public/worker-two/artwork/' + 'a'.repeat(32) + '.jpg';
+  const calls = [];
+  manager.presenceArtwork = { sync() {}, url: () => proxy };
+  presence.resolveAssets = async (ignored, appId, url) => {
+    calls.push(url); return [{ url, external_asset_path: url === avatar ? 'mp:external/avatar' : 'mp:external/protected-art' }];
+  };
+  for (const sourceKind of ['jellyfin', 'sharetv']) {
+    manager.session = { sourceKind, title: 'Movie', thumbnail: 'http://private/art.jpg?api_key=secret&token=signed' };
+    presence.assetNextAt = 0; sync();
+    await presence.assetFlight; sync();
+    assert.equal(packets.at(-1).d.activities[0].assets.large_image, 'mp:external/protected-art');
+  }
+  assert.ok(calls.includes(proxy));
+  assert.ok(calls.every(url => !url.includes('secret') && !url.includes('private') && !url.includes('signed')));
+  manager.presenceArtwork.url = () => null; sync();
+  assert.equal(packets.at(-1).d.activities[0].assets.large_image, 'mp:external/avatar');
 });

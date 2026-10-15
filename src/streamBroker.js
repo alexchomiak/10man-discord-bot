@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { MAX_ARTWORK_BYTES, CAPABILITY, artworkScope } = require('./presenceArtwork');
 const { sanitizeAvailableChannels, BROKER_MAX_PAYLOAD } = require('./workerChannels');
 const { WebSocketServer, WebSocket } = require('ws');
 
@@ -115,8 +116,26 @@ class StreamBroker {
       }
       if (!socket.workerId) return;
       const worker = this.workers.get(socket.workerId);
+      if (message.type === 'presence-artwork' && worker?.socket === socket) {
+        const scope = artworkScope(worker.status);
+        const encoded = message.jpeg;
+        if (scope && scope === message.scope && CAPABILITY.test(message.capability || '') &&
+            typeof encoded === 'string' && encoded.length <= Math.ceil(MAX_ARTWORK_BYTES / 3) * 4 &&
+            /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+          const bytes = Buffer.from(encoded, 'base64');
+          if (bytes.length > 3 && bytes.length <= MAX_ARTWORK_BYTES && bytes[0] === 255 && bytes[1] === 216 &&
+              bytes[bytes.length - 2] === 255 && bytes[bytes.length - 1] === 217) {
+            worker.presenceArtwork = { scope, capability: message.capability, bytes };
+            // One image per worker and no more than 32 images across the broker.
+            const cached = [...this.workers.values()].filter(item => item.presenceArtwork);
+            while (cached.length > 32) delete cached.shift().presenceArtwork;
+          }
+        }
+        return;
+      }
       if (message.type === 'status' && worker) {
         worker.status = message.status || null;
+        if (worker.presenceArtwork?.scope !== artworkScope(worker.status)) delete worker.presenceArtwork;
         worker.musicMode = message.musicMode === true;
         worker.contentAwareImagePreview = message.contentAwareImagePreview === true;
         worker.contentSnapshotPreview = message.contentSnapshotPreview === true && !worker.contentAwareImagePreview;
@@ -137,6 +156,7 @@ class StreamBroker {
           this.pending.delete(message.requestId);
           if (worker && message.result && Object.hasOwn(message.result, 'status')) {
             worker.status = message.result.status;
+            if (worker.presenceArtwork?.scope !== artworkScope(worker.status)) delete worker.presenceArtwork;
             worker.musicMode = message.result.musicMode === true;
             worker.contentAwareImagePreview = message.result.contentAwareImagePreview === true;
             worker.contentSnapshotPreview = message.result.contentSnapshotPreview === true && !worker.contentAwareImagePreview;
@@ -168,6 +188,15 @@ class StreamBroker {
 
   listWorkers() {
     return [...this.workers.values()].map(({ id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt }) => ({ id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt }));
+  }
+
+  getPresenceArtwork(workerId, capability) {
+    const worker = this.workers.get(workerId);
+    const artifact = worker?.presenceArtwork;
+    if (worker?.socket.readyState !== WebSocket.OPEN || !artifact ||
+        !CAPABILITY.test(capability || '') || artifact.capability !== capability ||
+        artifact.scope !== artworkScope(worker.status)) return null;
+    return artifact.bytes;
   }
 
   getWorker(requested) {

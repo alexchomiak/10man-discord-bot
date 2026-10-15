@@ -8,12 +8,6 @@ const clip = (text, limit) => {
   const chars = Array.from(String(text || '').replace(/\s+/g, ' ').trim());
   return chars.length <= limit ? chars.join('') : chars.slice(0, Math.max(0, limit - 1)).join('') + '…';
 };
-function clock(seconds) {
-  const value = Math.floor(Math.max(0, Number(seconds) || 0));
-  const sec = String(value % 60).padStart(2, '0');
-  const minutes = Math.floor(value / 60);
-  return minutes >= 60 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}:${sec}` : `${minutes}:${sec}`;
-}
 function snapshot(manager, now = Date.now()) {
   const link = manager.voiceLink;
   const piece = link?.paused ? link.pausedSession : manager.session;
@@ -28,10 +22,8 @@ function snapshot(manager, now = Date.now()) {
     position = Math.max(0, position - chapter.startSec);
   }
   const title = clip(safeTitle(chapter?.title || piece?.contentTitle || piece?.title || 'Stream Player'), 90);
-  const timing = piece?.isLive ? `${clock(position)} elapsed - Live` : duration ? `${clock(position)}/${clock(duration)}` : clock(position);
-  const suffix = ` - ${timing}${link?.paused ? ' - Paused' : ' - Playing'}`;
-  const hover = clip(title, Math.min(90, 128 - Array.from(suffix).length)) + suffix;
-  return { title, hover, paused: Boolean(link?.paused), music: Boolean(piece?.musicMode || manager.musicMode),
+  return { title, paused: Boolean(link?.paused), music: Boolean(piece?.musicMode || manager.musicMode),
+    playbackKey: [piece?.queueId || null, piece?.startedAt || null, piece?.startOffsetSec || 0, chapter?.startSec ?? null],
     position, duration: piece?.isLive ? null : duration, hasPiece: Boolean(piece && !piece.isFiller),
     thumbnail: piece?.thumbnail || null, start: now - Math.max(0, position) * 1000 };
 }
@@ -61,6 +53,7 @@ class PlayerPresence {
     this.owned = false;
     this.lastSentAt = 0;
     this.timer = null;
+    this.pendingForce = false;
     this.closed = false;
     this.poll = setInterval(() => this.sync(), intervalMs);
     this.poll.unref?.();
@@ -75,20 +68,29 @@ class PlayerPresence {
       const url = link && !link.closing && !link.disconnectFailed && /^\d{17,20}$/.test(appId)
         ? workerDashboardUrl(config.dashboardBaseUrl, config.dashboardRandomCodes
           ? config.dashboardAccessCode : config.workerId || config.defaultWorkerId || 'primary') : null;
+      this.manager.presenceArtwork?.sync();
       const state = snapshot(this.manager);
       const avatar = imageUrl(this.client.user?.displayAvatarURL?.({ format: 'png', size: 256 }));
-      const large = imageUrl(state.thumbnail) || avatar;
+      const piece = link?.paused ? link.pausedSession : this.manager.session;
+      const protectedArtwork = ['jellyfin', 'sharetv'].includes(piece?.sourceKind);
+      const large = imageUrl(protectedArtwork ? this.manager.presenceArtwork?.url() : state.thumbnail) || avatar;
       const context = url ? JSON.stringify([appId, url, link.guildId, link.channelId, large, avatar]) : '';
       if (context !== this.assetContext) { this.assetContext = context; this.generation++; }
       const images = url ? this.images(appId, [large, avatar].filter(Boolean)) : [];
-      const key = url ? JSON.stringify([context, state.title, state.hover, state.paused, state.music,
-        state.hasPiece, state.duration, images]) : '';
+      const key = url ? JSON.stringify([context, state.title, state.paused, state.music,
+        state.hasPiece, state.duration, state.playbackKey, images]) : '';
       if (!force && key === this.lastKey) return;
       if (!this.client.user) return;
       const remaining = 5000 - (Date.now() - this.lastSentAt);
       if (remaining > 0) {
+        this.pendingForce ||= force;
         if (!this.timer) {
-          this.timer = setTimeout(() => { this.timer = null; this.sync(force); }, remaining);
+          this.timer = setTimeout(() => {
+            this.timer = null;
+            const pendingForce = this.pendingForce;
+            this.pendingForce = false;
+            this.sync(pendingForce);
+          }, remaining);
           this.timer.unref?.();
         }
         return;
@@ -109,8 +111,8 @@ class PlayerPresence {
           activity.setStartTimestamp(state.start);
           if (state.duration) activity.setEndTimestamp(state.start + state.duration * 1000);
         }
-        if (images[0] || images[1]) activity.setAssetsLargeImage(images[0] || images[1]).setAssetsLargeText(state.hover);
-        if (images[1]) activity.setAssetsSmallImage(images[1]).setAssetsSmallText(state.hover);
+        if (images[0] || images[1]) activity.setAssetsLargeImage(images[0] || images[1]).setAssetsLargeText(state.title);
+        if (images[1]) activity.setAssetsSmallImage(images[1]);
         activities.push(activity);
       }
       const result = this.client.user.setPresence({ activities });
@@ -177,4 +179,4 @@ class PlayerPresence {
   }
 }
 
-module.exports = { PlayerPresence, snapshot, clip, clock };
+module.exports = { PlayerPresence, snapshot, clip };

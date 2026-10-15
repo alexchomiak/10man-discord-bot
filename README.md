@@ -369,10 +369,12 @@ a real application ID to confirm button visibility and behavior.
 
 The activity also shows the current content/chapter title, native VOD timing
 (or live elapsed time), available thumbnail artwork, and a worker-avatar badge
-with a title/time/status tooltip on both the large image and badge. Paused activities omit advancing timestamps.
-Titles are capped at 90 characters and hover text at 128, retaining the complete
-time/status suffix. Hover text refreshes at most every fifteen seconds; native
-Discord timestamps advance between updates. Discord controls progress-bar rendering.
+with a static title tooltip on the large image. The badge has no hover text.
+Paused activities omit advancing timestamps. Titles are capped at 90 characters.
+A fifteen-second observer checks configuration and content changes, but steady
+playback does not send periodic presence updates. Native Discord timestamps
+advance between track, chapter, pause, resume, and seek updates. Discord controls
+progress-bar rendering.
 ShareTV programme titles and artwork metadata continue refreshing for enabled
 Rich Presence even when nickname and content-aware preview switches are off.
 

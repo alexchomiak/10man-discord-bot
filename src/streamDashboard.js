@@ -154,6 +154,16 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
   async function handle(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     if (url.pathname.startsWith('/api/')) {
+      const artworkMatch = /^\/api\/public\/([A-Za-z0-9_-]{1,32})\/artwork\/([a-f0-9]{32})\.jpg$/.exec(url.pathname);
+      if (artworkMatch) {
+        const worker = publicWorkerFor(artworkMatch[1]);
+        const bytes = worker && !url.search && broker.getPresenceArtwork?.(worker.id, artworkMatch[2]);
+        if (!bytes) return invalidCodeResponse(req, res);
+        if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'Method not allowed.' });
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': bytes.length,
+          'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
+        return res.end(req.method === 'HEAD' ? undefined : bytes);
+      }
       const scopedMatch = /^\/api\/public\/([A-Za-z0-9_-]{1,32})\/(state|actions|search)$/.exec(url.pathname);
       let scopedWorker = null;
       if (scopedMatch) {

@@ -2,6 +2,7 @@
 
 const { WebSocket } = require('ws');
 const { BROKER_MAX_PAYLOAD } = require('../workerChannels');
+const { PresenceArtwork } = require('./presenceArtwork');
 
 const CAPABILITIES = ['play', 'scheduled-play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name', 'resolve-channel', 'list-channels', 'set-content-nickname', 'set-content-preview'];
 
@@ -32,6 +33,12 @@ class StreamBrokerClient {
     this.reconnectTimer = null;
     this.statusTimer = null;
     this.results = new Map();
+    this.artwork = new PresenceArtwork(streamManager, artifact => {
+      this._publishStatus();
+      return this._send({ type: 'presence-artwork', ...artifact });
+    }, { isAvailable: () => !this.closed && this.socket?.readyState === WebSocket.OPEN,
+      onScopeChange: () => this._publishStatus() });
+    if (streamManager) streamManager.presenceArtwork = this.artwork;
     this.occupantTimer = null;
     this.onVoiceStateUpdate = () => {
       if (this.closed || !this.socket || this.occupantTimer) return;
@@ -73,18 +80,20 @@ class StreamBrokerClient {
       deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true,
         musicMode: this.streamManager.musicMode === true
       });
+      this.artwork.reconnect();
       void this._publishAvailableChannels(socket);
-      this.statusTimer = setInterval(() => this._send({ type: 'status', status: this.streamManager.status(),
-        profile: ownProfile(this.streamManager?.client?.user, this.streamManager),
-        contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
-        contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
-      deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true,
-        musicMode: this.streamManager.musicMode === true }), 5000);
+      this.statusTimer = setInterval(() => {
+        this._publishStatus();
+        this.artwork.sync();
+      }, 5000);
       this.statusTimer.unref?.();
     });
     socket.on('message', raw => void this._message(raw));
     socket.on('error', error => this.log(`[streambot:${this.workerId}] broker error: ${error.message}`));
     socket.on('close', () => {
+      this.artwork.flight?.controller.abort();
+      this.artwork.artifact = null;
+      this.artwork.scope = null;
       if (this.socket === socket) this.socket = null;
       clearTimeout(this.occupantTimer); this.occupantTimer = null;
       clearInterval(this.statusTimer);
@@ -150,7 +159,12 @@ class StreamBrokerClient {
       this.results.set(message.requestId, response);
       if (this.results.size > 100) this.results.delete(this.results.keys().next().value);
     }
-    this._send({ type: 'status', status: this.streamManager.status(),
+    this._publishStatus();
+    this.artwork.sync();
+  }
+
+  _publishStatus() {
+    return this._send({ type: 'status', status: this.streamManager.status(),
       profile: ownProfile(this.streamManager?.client?.user, this.streamManager),
       contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
         contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
@@ -160,6 +174,7 @@ class StreamBrokerClient {
 
   close() {
     this.closed = true;
+    this.artwork.close();
     clearTimeout(this.occupantTimer);
     this.occupantTimer = null;
     this.streamManager?.client?.off?.('voiceStateUpdate', this.onVoiceStateUpdate);

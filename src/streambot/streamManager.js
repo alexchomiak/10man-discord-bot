@@ -2442,7 +2442,7 @@ class StreamManager {
     const piece = this._reopenSession(link, session, { offsetSec: positionSec });
     this._cancelPiece(session);
     this.session = piece;
-    this.playerPresence?.sync();
+    this.playerPresence?.sync(true);
     const p = link.pipeline;
     // Seeking replaces the current source ahead of other queued sources.
     for (let i = p.enqueue.length - 1; i >= 0; i--) {
