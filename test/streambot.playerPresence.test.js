@@ -13,7 +13,7 @@ function fixture(t) {
   const manager = { config: { playerPresenceApplicationId: '123456789012345678',
     dashboardBaseUrl: 'https://player.example/watch/?discard=1#qr', workerId: 'worker-two' },
   voiceLink: { guildId: 'guild', channelId: 'voice' } };
-  const presence = new PlayerPresence(client, manager);
+  const presence = new PlayerPresence(client, manager, { assetIntervalMs: 0 });
   t.after(() => presence.close());
   const sync = force => { presence.lastSentAt = 0; presence.sync(force); };
   return { client, manager, presence, packets, sync };
@@ -130,7 +130,8 @@ test('real serialization freezes paused timestamps and updates seek/resume timin
   manager.voiceLink.pausedPositionSec = 180;
   sync();
   activity = packets.at(-1).d.activities[0];
-  assert.equal(activity.state, 'Paused');
+  assert.equal(activity.details, 'Paused');
+  assert.equal(activity.state, 'Other');
   assert.equal(activity.timestamps?.start, undefined);
   assert.equal(activity.timestamps?.end, undefined);
   manager.voiceLink.paused = false; pos = 300; sync();
@@ -176,7 +177,7 @@ test('stale artwork is ignored and lookups/cache stay bounded across signed URLs
   presence.resolveAssets = async () => { calls++; throw new Error('optional failure'); };
   for (let i = 0; i < 50; i++) {
     manager.session.thumbnail = `https://source.example/a?signature=${i}`;
-    presence.assetNextAt = 0; sync();
+    sync();
     await new Promise(resolve => setImmediate(resolve));
   }
   assert.ok(presence.assetCache.size <= 32);
@@ -195,7 +196,7 @@ test('credential-bearing thumbnails and URL titles never reach Discord', async t
     thumbnail: 'https://jellyfin.example/Images/Primary?ApiKey=private' };
   sync(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(sentUrls, ['https://cdn.example/avatar.png']);
-  assert.equal(packets.at(-1).d.activities[0].details, 'Stream');
+  assert.equal(packets.at(-1).d.activities[0].name, 'Stream');
   assert.ok(!JSON.stringify(packets).includes('private'));
 });
 
@@ -245,13 +246,12 @@ test('stale avatar resolution releases reservations and retries for new context'
   manager.voiceLink.channelId = 'new-channel';
   manager.session = { title: 'New', thumbnail: 'https://image.example/shared.jpg' };
   sync();
-  settle([{ external_asset_path: 'mp:external/stale' }]);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(presence.assetCache.has(`${manager.config.playerPresenceApplicationId}:${avatar}`), false);
-  assert.ok(![...presence.assetCache.values()].includes('mp:external/stale'));
   presence.resolveAssets = async (_client, _app, url) => {
     calls++; return [{ url, external_asset_path: url === avatar ? 'mp:external/avatar' : 'mp:external/art' }];
   };
+  settle([{ external_asset_path: 'mp:external/stale' }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(![...presence.assetCache.values()].includes('mp:external/stale'));
   presence.assetNextAt = 0;
   sync(); await new Promise(resolve => setImmediate(resolve)); sync();
   assert.equal(calls, 3);
@@ -321,7 +321,7 @@ test('explicit seek reanchors timestamps while chapter and programme changes sti
   piece.chapters = null; manager._currentChapter = () => null;
   piece.musicMode = false; piece.contentTitle = 'New programme'; now += 15000; sync();
   assert.equal(packets.length, 4);
-  assert.equal(packets.at(-1).d.activities[0].details, 'New programme');
+  assert.equal(packets.at(-1).d.activities[0].name, 'New programme');
 });
 
 test('manager seek explicitly requests a presence timestamp refresh', async () => {
@@ -347,7 +347,7 @@ test('Jellyfin and ShareTV artwork resolve only scoped public capabilities in re
   };
   for (const sourceKind of ['jellyfin', 'sharetv']) {
     manager.session = { sourceKind, title: 'Movie', thumbnail: 'http://private/art.jpg?api_key=secret&token=signed' };
-    presence.assetNextAt = 0; sync();
+    sync();
     await presence.assetFlight; sync();
     assert.equal(packets.at(-1).d.activities[0].assets.large_image, 'mp:external/protected-art');
   }
@@ -355,4 +355,98 @@ test('Jellyfin and ShareTV artwork resolve only scoped public capabilities in re
   assert.ok(calls.every(url => !url.includes('secret') && !url.includes('private') && !url.includes('signed')));
   manager.presenceArtwork.url = () => null; sync();
   assert.equal(packets.at(-1).d.activities[0].assets.large_image, 'mp:external/avatar');
+});
+
+test('dynamic activity title/status/source replace only the previously owned activity', t => {
+  const { client, manager, packets, sync } = fixture(t);
+  client.presence.set({ activities: [{ name: 'Custom Status', state: 'hello', type: 4 },
+    { name: 'Other activity', applicationId: manager.config.playerPresenceApplicationId, type: 0 }] });
+  manager.session = { title: 'The Batman', sourceKind: 'jellyfin', totalDurationSec: 600 };
+  manager.positionOf = () => 12;
+  sync();
+  let activities = packets.at(-1).d.activities;
+  let activity = activities.at(-1);
+  assert.equal(activity.name, 'The Batman');
+  assert.equal(activity.details, 'Now Playing');
+  assert.equal(activity.state, 'Jellyfin');
+  assert.deepEqual(activity.buttons, ['Open Player']);
+  assert.equal(activity.timestamps.end - activity.timestamps.start, 600000);
+  manager.session = { title: 'Next Video', sourceKind: 'youtube', totalDurationSec: 300 };
+  sync();
+  activities = packets.at(-1).d.activities;
+  assert.equal(activities.length, 3);
+  assert.equal(activities.at(-1).name, 'Next Video');
+  assert.equal(activities.at(-1).state, 'YouTube');
+  assert.ok(!activities.some(item => item.name === 'The Batman'));
+  assert.ok(activities.some(item => item.name === 'Other activity'));
+  manager.session.sourceKind = 'sharetv'; sync();
+  assert.equal(packets.at(-1).d.activities.at(-1).state, 'ShareTV');
+  manager.session.sourceKind = 'direct'; sync();
+  assert.equal(packets.at(-1).d.activities.at(-1).state, 'Other');
+  manager.voiceLink.paused = true; manager.voiceLink.pausedSession = manager.session; sync();
+  assert.equal(packets.at(-1).d.activities.at(-1).details, 'Paused');
+  manager.voiceLink = null; sync();
+  assert.equal(packets.at(-1).d.activities.length, 2);
+});
+
+test('new protected artwork resolves promptly after avatar and drains latest work after an old flight', async t => {
+  const { client, manager, presence, sync } = fixture(t);
+  const avatar = 'https://cdn.discordapp.com/embed/avatars/0.png';
+  client.user.displayAvatarURL = () => avatar;
+  let proxy = null;
+  manager.presenceArtwork = { sync() {}, url: () => proxy };
+  manager.session = { title: 'Movie', sourceKind: 'jellyfin' };
+  const calls = [];
+  presence.resolveAssets = async (_client, _app, url) => {
+    calls.push(url); return [{ url, external_asset_path: 'mp:external/resolved' }];
+  };
+  sync(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [avatar]);
+  proxy = 'https://player.example/artwork/new.jpg';
+  sync(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [avatar, proxy]);
+  let settle;
+  presence.resolveAssets = (_client, _app, url) => {
+    calls.push(url);
+    if (url.endsWith('old.jpg')) return new Promise(resolve => { settle = resolve; });
+    return Promise.resolve([{ url, external_asset_path: 'mp:external/latest' }]);
+  };
+  proxy = 'https://player.example/artwork/old.jpg'; sync(); await Promise.resolve();
+  proxy = 'https://player.example/artwork/latest.jpg'; sync();
+  assert.equal(calls.at(-1), 'https://player.example/artwork/old.jpg');
+  settle([{ external_asset_path: 'mp:external/stale' }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.at(-1), proxy);
+  assert.equal(presence.assetCache.get(`${manager.config.playerPresenceApplicationId}:${proxy}`), 'mp:external/latest');
+});
+
+test('one-second asset budget schedules a dedicated wake without waiting for observer polling', async t => {
+  const { manager, presence, sync } = fixture(t);
+  let now = 1000000;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  presence.assetIntervalMs = 1000;
+  const calls = [];
+  presence.resolveAssets = async (_client, _app, url) => { calls.push(url); return [{ url, external_asset_path: 'mp:external/image' }]; };
+  manager.session = { thumbnail: 'https://image.example/first.jpg' };
+  sync(); await new Promise(resolve => setImmediate(resolve));
+  manager.session.thumbnail = 'https://image.example/latest.jpg'; sync();
+  assert.equal(calls.length, 1);
+  assert.ok(presence.assetTimer);
+  manager.session.thumbnail = 'https://image.example/actual-latest.jpg'; sync();
+  now += 1000; t.mock.timers.tick(1000);
+  await Promise.resolve(); await presence.assetFlight;
+  assert.deepEqual(calls, ['https://image.example/first.jpg', 'https://image.example/actual-latest.jpg']);
+});
+
+test('filler activities show a human title instead of internal placeholder/buffer labels', t => {
+  const { manager, packets, sync } = fixture(t);
+  for (const title of ['placeholder', 'buffer']) {
+    manager.session = { title, isFiller: true };
+    sync();
+    const activity = packets.at(-1).d.activities[0];
+    assert.equal(activity.name, 'Ready to play');
+    assert.equal(activity.details, 'Ready');
+    assert.equal(activity.timestamps?.start, undefined);
+  }
 });

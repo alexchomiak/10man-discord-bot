@@ -367,7 +367,10 @@ placement on a Go Live card is not guaranteed. This trial has local payload and
 lifecycle coverage and still requires testing from another Discord account with
 a real application ID to confirm button visibility and behavior.
 
-The activity also shows the current content/chapter title, native VOD timing
+The activity name uses the current content/chapter title, with playback status
+as its details and the source (Jellyfin, YouTube, ShareTV, or Other) as its state.
+Discord controls the final layout and font styling. The activity also shows
+native VOD timing
 (or live elapsed time), available thumbnail artwork, and a worker-avatar badge
 with a static title tooltip on the large image. The badge has no hover text.
 Paused activities omit advancing timestamps. Titles are capped at 90 characters.
@@ -379,11 +382,13 @@ ShareTV programme titles and artwork metadata continue refreshing for enabled
 Rich Presence even when nickname and content-aware preview switches are off.
 
 Safe thumbnails and the account avatar use the installed library's Discord
-external-assets endpoint; no source image is downloaded by this feature. The
+external-assets endpoint; the presence serializer sends only public image URLs. The
 avatar resolves first, followed by artwork in separate requests so a failed
 thumbnail cannot prevent the avatar badge. There is at most one request in
-flight, up to two requests per lookup cycle, and a thirty-second cycle cooldown,
-with a 32-entry cache including failures. Stale results are ignored on worker URL,
+flight and up to two requests per lookup cycle, with at least one second between
+cycles. Newly available artwork schedules a dedicated wake after that short
+interval instead of waiting for the fifteen-second observer. A 32-entry cache
+includes failures. Stale results are ignored on worker URL,
 channel, artwork, or lifecycle changes. The library exposes no request cancellation
 for this helper: a stalled request blocks further optional artwork lookups until
 it settles, without blocking playback or text/button updates.
