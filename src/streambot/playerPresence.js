@@ -109,7 +109,7 @@ class PlayerPresence {
           activity.setStartTimestamp(state.start);
           if (state.duration) activity.setEndTimestamp(state.start + state.duration * 1000);
         }
-        if (images[0] || images[1]) activity.setAssetsLargeImage(images[0] || images[1]).setAssetsLargeText(state.title);
+        if (images[0] || images[1]) activity.setAssetsLargeImage(images[0] || images[1]).setAssetsLargeText(state.hover);
         if (images[1]) activity.setAssetsSmallImage(images[1]).setAssetsSmallText(state.hover);
         activities.push(activity);
       }
@@ -123,29 +123,34 @@ class PlayerPresence {
 
   images(appId, urls) {
     const keys = urls.map(url => `${appId}:${url}`);
-    const direct = url => /^https?:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\//i.test(url);
-    const missing = urls.filter((url, index) => !direct(url) && !this.assetCache.has(keys[index]));
+    const missing = urls.filter((url, index) => !this.assetCache.has(keys[index]));
     if (missing.length && !this.assetFlight && Date.now() >= this.assetNextAt) {
       const generation = this.generation;
-      const unique = [...new Set(missing)].slice(0, 2);
+      // The avatar is the final URL; resolve it first, independently of artwork.
+      const unique = [...new Set(missing)].reverse().slice(0, 2);
       // Reserve failures too: no recurring retries for an unavailable image.
       for (const url of unique) {
         this.assetCache.set(`${appId}:${url}`, null);
         while (this.assetCache.size > 32) this.assetCache.delete(this.assetCache.keys().next().value);
       }
       this.assetNextAt = Date.now() + 30000;
-      const flight = Promise.resolve().then(() => this.closed || generation !== this.generation
-        ? [] : this.resolveAssets(this.client, appId, ...unique));
-      this.assetFlight = flight;
-      flight.then(results => {
-        if (this.closed || generation !== this.generation) return;
-        for (let index = 0; index < unique.length; index++) {
-          const asset = results?.find(item => item.url === unique[index]) || results?.[index];
-          const value = asset?.external_asset_path;
-          if (typeof value === 'string' && value) this.assetCache.set(`${appId}:${unique[index]}`, value);
+      const flight = Promise.resolve().then(async () => {
+        for (const url of unique) {
+          if (this.closed || generation !== this.generation) return;
+          try {
+            // Resolve each image separately: a rejected thumbnail must never
+            // poison the avatar. Even CDN avatar paths need a real proxy asset.
+            const results = await this.resolveAssets(this.client, appId, url);
+            if (this.closed || generation !== this.generation) return;
+            const asset = results?.find(item => item.url === url) || results?.[0];
+            const value = asset?.external_asset_path;
+            if (typeof value === 'string' && value) this.assetCache.set(`${appId}:${url}`, value);
+          } catch { /* cache this image failure without logging its URL */ }
+          if (!this.closed && generation === this.generation) this.sync();
         }
-        this.sync();
-      }).catch(() => { /* optional artwork failure; no URLs in logs */ })
+      });
+      this.assetFlight = flight;
+      flight.catch(() => { /* optional artwork failure; no URLs in logs */ })
         .finally(() => {
           if (!this.closed && generation !== this.generation) {
             // A stale request is not an image failure. Release its reservations
@@ -158,7 +163,7 @@ class PlayerPresence {
           if (this.assetFlight === flight) this.assetFlight = null;
         });
     }
-    return keys.map((key, index) => direct(urls[index]) ? urls[index] : this.assetCache.get(key) || null);
+    return keys.map(key => this.assetCache.get(key) || null);
   }
 
   warn() { try { this.log('Player presence update failed; playback continues.'); } catch {} }

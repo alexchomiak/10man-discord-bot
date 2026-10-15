@@ -144,17 +144,17 @@ test('artwork resolves once, uses worker avatar badge, and serializes exact tool
   manager.positionOf = () => 12;
   let calls = 0;
   presence.resolveAssets = async (_client, _app, ...urls) => {
-    calls++; return urls.map((url, i) => ({ url, external_asset_path: `mp:external/${i}` }));
+    calls++; return urls.map(url => ({ url, external_asset_path: url.includes('avatar') ? 'mp:external/avatar' : 'mp:external/art' }));
   };
   sync();
   await new Promise(resolve => setImmediate(resolve));
   sync();
   const activity = packets.at(-1).d.activities[0];
-  assert.equal(activity.assets.large_image, 'mp:external/0');
-  assert.equal(activity.assets.small_image, 'mp:external/1');
+  assert.equal(activity.assets.large_image, 'mp:external/art');
+  assert.equal(activity.assets.small_image, 'mp:external/avatar');
   assert.equal(activity.assets.small_text, 'Now Playing - 0:12/10:00 - Playing');
   assert.deepEqual(activity.buttons, ['Open Player']);
-  sync(); assert.equal(calls, 1);
+  sync(); assert.equal(calls, 2);
 });
 
 test('stale artwork is ignored and lookups/cache stay bounded across signed URLs', async t => {
@@ -211,54 +211,72 @@ test('closing invalidates pending artwork without publishing its result', async 
   assert.equal(presence.assetCache.size, 0);
 });
 
-test('Discord CDN artwork and avatar need no external request', async t => {
+test('Discord CDN avatar resolves through external assets before artwork', async t => {
   const { client, manager, presence, sync, packets } = fixture(t);
-  client.user.displayAvatarURL = () => 'https://cdn.discordapp.com/avatars/worker/avatar.png';
-  manager.session = { title: 'Video', thumbnail: 'https://media.discordapp.net/attachments/art.png' };
-  let calls = 0;
-  presence.resolveAssets = async () => { calls++; return []; };
-  sync(); await new Promise(resolve => setImmediate(resolve));
+  const avatar = 'https://cdn.discordapp.com/embed/avatars/0.png';
+  client.user.displayAvatarURL = () => avatar;
+  manager.session = { title: 'Video', thumbnail: 'https://image.example/art.jpg' };
+  const calls = [];
+  presence.resolveAssets = async (_client, _app, ...urls) => {
+    calls.push(urls);
+    return [{ url: urls[0], external_asset_path: urls[0] === avatar ? 'mp:external/avatar' : 'mp:external/art' }];
+  };
+  sync(); await new Promise(resolve => setImmediate(resolve)); sync();
   const activity = packets.at(-1).d.activities[0];
-  assert.equal(activity.assets.large_image, 'mp:attachments/art.png');
-  assert.equal(activity.assets.small_image, 'mp:avatars/worker/avatar.png');
-  assert.equal(calls, 0);
+  assert.deepEqual(calls, [[avatar], ['https://image.example/art.jpg']]);
+  assert.equal(activity.assets.large_image, 'mp:external/art');
+  assert.equal(activity.assets.small_image, 'mp:external/avatar');
+  assert.equal(activity.assets.large_text, activity.assets.small_text);
+  assert.ok(activity.assets.small_text.endsWith(' - Playing'));
+  sync(); assert.equal(calls.length, 2);
 });
 
-test('stale first artwork request keeps direct avatar badge and releases reservations', async t => {
+test('stale avatar resolution releases reservations and retries for new context', async t => {
   const { client, manager, presence, sync, packets } = fixture(t);
-  client.user.displayAvatarURL = () => 'https://cdn.discordapp.com/avatars/worker/avatar.png';
+  const avatar = 'https://cdn.discordapp.com/embed/avatars/0.png';
+  client.user.displayAvatarURL = () => avatar;
   manager.session = { title: 'Old', thumbnail: 'https://image.example/shared.jpg' };
   let settle;
   let calls = 0;
-  presence.resolveAssets = async () => { calls++; return new Promise(resolve => { settle = resolve; }); };
+  presence.resolveAssets = () => { calls++; return new Promise(resolve => { settle = resolve; }); };
   sync(); await Promise.resolve();
   manager.voiceLink.channelId = 'new-channel';
   manager.session = { title: 'New', thumbnail: 'https://image.example/shared.jpg' };
   sync();
-  assert.equal(packets.at(-1).d.activities[0].assets.small_image, 'mp:avatars/worker/avatar.png');
-  assert.equal(packets.at(-1).d.activities[0].assets.large_image, 'mp:avatars/worker/avatar.png');
   settle([{ external_asset_path: 'mp:external/stale' }]);
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(presence.assetCache.has(`${manager.config.playerPresenceApplicationId}:https://image.example/shared.jpg`), false);
+  assert.equal(presence.assetCache.has(`${manager.config.playerPresenceApplicationId}:${avatar}`), false);
+  assert.ok(![...presence.assetCache.values()].includes('mp:external/stale'));
+  presence.resolveAssets = async (_client, _app, url) => {
+    calls++; return [{ url, external_asset_path: url === avatar ? 'mp:external/avatar' : 'mp:external/art' }];
+  };
   presence.assetNextAt = 0;
-  sync(); await Promise.resolve();
-  assert.equal(calls, 2);
-  settle([{ external_asset_path: 'mp:external/current' }]);
-  await new Promise(resolve => setImmediate(resolve)); sync();
-  assert.equal(packets.at(-1).d.activities[0].assets.large_image, 'mp:external/current');
+  sync(); await new Promise(resolve => setImmediate(resolve)); sync();
+  assert.equal(calls, 3);
+  const activity = packets.at(-1).d.activities[0];
+  assert.equal(activity.assets.small_image, 'mp:external/avatar');
+  assert.equal(activity.assets.large_image, 'mp:external/art');
 });
 
-test('genuine external artwork failure keeps large avatar fallback without retries', async t => {
+test('thumbnail failure never prevents resolved avatar badge or fallback, without retries', async t => {
   const { client, manager, presence, sync, packets } = fixture(t);
-  client.user.displayAvatarURL = () => 'https://cdn.discordapp.com/avatars/worker/avatar.png';
+  const avatar = 'https://cdn.discordapp.com/embed/avatars/0.png';
+  client.user.displayAvatarURL = () => avatar;
   manager.session = { title: 'Video', thumbnail: 'https://image.example/broken.jpg' };
-  let calls = 0;
-  presence.resolveAssets = async () => { calls++; throw new Error('not available'); };
-  sync(); await new Promise(resolve => setImmediate(resolve));
-  presence.assetNextAt = 0; sync();
+  const calls = [];
+  presence.resolveAssets = async (_client, _app, url) => {
+    calls.push(url);
+    if (url !== avatar) throw new Error('not available');
+    return [{ url, external_asset_path: 'mp:external/avatar' }];
+  };
+  sync(); await new Promise(resolve => setImmediate(resolve)); sync();
   const activity = packets.at(-1).d.activities[0];
-  assert.equal(activity.assets.large_image, 'mp:avatars/worker/avatar.png');
-  assert.equal(activity.assets.small_image, 'mp:avatars/worker/avatar.png');
+  assert.equal(activity.assets.large_image, 'mp:external/avatar');
+  assert.equal(activity.assets.small_image, 'mp:external/avatar');
+  assert.equal(activity.assets.large_text, activity.assets.small_text);
   assert.ok(activity.assets.small_text.endsWith(' - Playing'));
-  assert.equal(calls, 1);
+  assert.deepEqual(calls, [avatar, 'https://image.example/broken.jpg']);
+  presence.assetNextAt = 0;
+  sync(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 2);
 });

@@ -319,10 +319,11 @@ test('content aware preview defaults off and toggles without changing playback',
   assert.equal(piece.previewFallbackWanted, false);
 });
 
-test('default off uploads QR without fetching content image or enabling snapshots', async () => {
+test('explicitly disabling both modes uploads QR without fetching content image or enabling snapshots', async () => {
   const { StreamManager } = require('../src/streambot/streamManager');
   const original = global.fetch;
   const manager = new StreamManager({}, null, { dashboardBaseUrl: 'https://dashboard.example', workerId: 'test' });
+  manager.setContentPreview(false, false);
   const f = await fixture();
   f.piece.thumbnail = 'https://example.com/content';
   f.piece.previewPipeline = f.pipeline;
@@ -337,13 +338,13 @@ test('default off uploads QR without fetching content image or enabling snapshot
   } finally { global.fetch = original; }
 });
 
-test('snapshot-only mode skips artwork and keeps preview modes mutually exclusive', async () => {
+test('snapshot-only mode defaults on, skips artwork and keeps preview modes mutually exclusive', async () => {
   const { StreamManager } = require('../src/streambot/streamManager');
   const manager = new StreamManager({}, null, {});
   const f = await fixture();
   f.piece.thumbnail = 'https://example.com/artwork'; f.piece.previewPipeline = f.pipeline; f.piece.previewCurrent = () => true;
   manager.session = f.piece;
-  assert.equal(manager.contentSnapshotPreview, false);
+  assert.equal(manager.contentSnapshotPreview, true);
   manager.setContentPreview(false, true);
   await manager._updateStillPreview(f.piece);
   assert.equal(manager.contentAwareImagePreview, false);
@@ -361,7 +362,7 @@ test('same-show consecutive programmes upload distinct images; failed artwork re
   const f = await fixture(), image = f.piece.musicArtwork.file;
   f.piece.musicArtwork = null; f.piece.previewPipeline = f.pipeline; f.piece.previewCurrent = () => true;
   const manager = new StreamManager({}, null, { shareTvBase: 'https://tv.example' });
-  manager.contentAwareImagePreview = true;
+  manager.setContentPreview(true);
   let fail = false; const requests = [], diagnostics = [];
   manager._verbose = reason => diagnostics.push(reason);
   t.mock.method(global, 'fetch', async url => { requests.push(url); return fail ? new Response('', { status: 502 }) : new Response(image, { headers: { 'content-type': 'image/png' } }); });
@@ -396,4 +397,25 @@ test('snapshot-only retains one decoder and a minimum one-minute interval', asyn
     finish(Buffer.from('obsolete')); await new Promise(resolve => setImmediate(resolve));
     assert.equal(f.uploads.length, 1);
   } finally { Date.now = originalNow; }
+});
+
+
+test('presence keeps channel metadata current under default snapshots without fetching preview artwork', async t => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const manager = new StreamManager({}, null, { shareTvBase: 'https://tv.example', shareTvApiKey: 'fixture', playerPresenceApplicationId: '123456789012345678' });
+  const link = { guildId: 'guild', channelId: 'channel' };
+  const piece = { control: new AbortController(), voiceLink: link, sourceKind: 'sharetv', shareTvChannel: true, contentTitle: 'Old', thumbnail: 'https://tv.example/old' };
+  manager.session = piece; manager.voiceLink = link;
+  let updates = 0;
+  manager.playerPresence = { sync: () => updates++ };
+  manager._updateStillPreview = () => { throw new Error('Preview artwork must not be fetched'); };
+  t.mock.method(global, 'fetch', () => { throw new Error('No image request'); });
+  assert.equal(manager.contentSnapshotPreview, true);
+  assert.equal(manager.shareTvNicknameRefresh.isCurrent(piece), true);
+  assert.equal(await manager.shareTvNicknameRefresh.onProgramme(piece, 'New programme', { icon_url: '/new-image' }), true);
+  assert.equal(piece.contentTitle, 'New programme');
+  assert.equal(piece.thumbnail, 'https://tv.example/new-image');
+  assert.equal(updates, 1);
+  manager.config.playerPresenceApplicationId = '';
+  assert.equal(manager.shareTvNicknameRefresh.isCurrent(piece), false);
 });

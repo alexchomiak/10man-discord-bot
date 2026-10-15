@@ -120,21 +120,22 @@ class StreamManager {
     this.musicMode = false;
     this.deriveNicknameFromContent = false;
     this.contentAwareImagePreview = false;
-    this.contentSnapshotPreview = false;
+    this.contentSnapshotPreview = true;
     this.previewModeController = new AbortController();
     this.contentNickname = new ContentNickname(this.client, error => log('warn', `content nickname: ${this._sanitize(error?.message || String(error))}`));
     this.contentNickname.isCurrent = piece => this.session === piece && this.voiceLink === piece.voiceLink && !piece.voiceLink?.closing && !piece.voiceLink?.paused;
     this.shareTvNicknameRefresh = new ShareTvNicknameRefresh({
       fetchPreview: (input, signal) => require('./sources').getShareTvPreview(input, this.config, signal),
       isCurrent: piece => Boolean(this.config.shareTvBase && this.config.shareTvApiKey) &&
-        (this.contentAwareImagePreview || this.deriveNicknameFromContent) && this.contentNickname.isCurrent(piece),
+        (this.contentAwareImagePreview || this.deriveNicknameFromContent || /^\d{17,20}$/.test(this.config.playerPresenceApplicationId || '')) && this.contentNickname.isCurrent(piece),
       onProgramme: async (piece, title, programme) => {
         piece.contentTitle = title;
         this.contentNickname.update(piece);
-        if (!this.contentAwareImagePreview) return true;
         const image = programmeImage(programme, this.config.shareTvBase);
-        const key = programmePreviewKey(programme, image);
         piece.thumbnail = image;
+        this.playerPresence?.sync();
+        if (!this.contentAwareImagePreview) return true;
+        const key = programmePreviewKey(programme, image);
         if (!image) this._verbose('EPG preview artwork missing; using fallback snapshots');
         if (!piece.previewPipeline) return false;
         if (piece.previewProgrammeKey === key && !piece.previewImageFailed) return true;
