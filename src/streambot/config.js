@@ -119,6 +119,7 @@ function loadConfig() {
     defaultWorkerId,
     dashboardServerIds: parseDashboardServerIds(process.env.STREAM_DASHBOARD_SERVER_IDS),
     externalChannels: parseExternalChannels(process.env.STREAM_DASHBOARD_EXTERNAL_CHANNELS),
+    playerPresenceApplicationId: (process.env.STREAMBOT_PRESENCE_APPLICATION_ID || process.env.DISCORD_CLIENT_ID || '').trim(),
     dashboardBaseUrl: (process.env.STREAM_DASHBOARD_BASE_URL || '').trim(),
     musicVisualizer: parseBoolean(process.env.STREAMBOT_MUSIC_VISUALIZER, true),
     browserFallback: parseBoolean(process.env.STREAMBOT_BROWSER_FALLBACK, true),

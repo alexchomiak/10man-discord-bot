@@ -1066,6 +1066,7 @@ class StreamManager {
       this._verbose(`voice: joinVoice resolved guild=${guildId} channel=${channelId}`);
       const link = { guildId, channelId, streamer, webRtc, joinedAt: Date.now(), graceTimer: null, pipeline: null };
       this.voiceLink = link;
+      this.playerPresence?.sync();
       return { ok: true, voiceLink: link, reused: false };
     } catch (error) {
       const isTimeout = /timed out after/.test(String((error && error.message) || ''));
@@ -1269,6 +1270,7 @@ class StreamManager {
         piece.startedAt = Date.now();
         p.activeWriter = piece;
         this.session = piece; // compatibility: status/volume target active content
+        this.playerPresence?.sync();
         let appendTask;
         let clean = false;
         let recoverLive = false;
@@ -1664,6 +1666,7 @@ class StreamManager {
       return left;
     })();
     link.closing = closing;
+    this.playerPresence?.sync();
     try { return await closing; }
     catch (error) {
       log('error', `voice: teardown failed phase=${this.voiceTeardownPhase} guild=${link.guildId} channel=${link.channelId}: ${this._sanitize(error?.message || String(error))}`);
@@ -2438,6 +2441,7 @@ class StreamManager {
     const piece = this._reopenSession(link, session, { offsetSec: positionSec });
     this._cancelPiece(session);
     this.session = piece;
+    this.playerPresence?.sync();
     const p = link.pipeline;
     // Seeking replaces the current source ahead of other queued sources.
     for (let i = p.enqueue.length - 1; i >= 0; i--) {
@@ -2468,6 +2472,7 @@ class StreamManager {
       link.pausedAt = Date.now();
       link.pausedSession = session;
       link.pausedPositionSec = this.positionOf(session);
+      this.playerPresence?.sync();
       this._cancelPiece(session); // stops feeding; the .finally holds (no advance)
       return { ok: true, paused: true, heldSec: 0 };
     });

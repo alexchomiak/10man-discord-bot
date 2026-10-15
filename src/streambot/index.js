@@ -11,10 +11,12 @@ const { resolveSource } = require('./sources');
 const { createWebhookServer } = require('./webhookServer');
 const { StreamControl } = require('./control');
 const { StreamBrokerClient } = require('./brokerClient');
+const { PlayerPresence } = require('./playerPresence');
 
 const config = loadConfig();
 const client = new Client({});
 const streamManager = new StreamManager(client, config.streamChannelId, config);
+streamManager.playerPresence = new PlayerPresence(client, streamManager, { log });
 const commands = new CommandRegistry({ client, streamManager });
 const control = new StreamControl({ streamManager, config, client });
 const brokerClient = new StreamBrokerClient({
@@ -134,6 +136,7 @@ function onReady() {
   const name = user && user.username ? user.username : 'self';
   const id = user && user.id ? user.id : 'unknown';
   log(`Logged in as ${name} (${id})`);
+  streamManager.playerPresence.sync(true);
   if (brokerClient.enabled) brokerClient.start();
   else log(`[streambot:${config.workerId}] broker disabled: STREAM_BROKER_SECRET or STREAM_BROKER_URL is missing`);
 }
@@ -191,6 +194,7 @@ client.on('shardReconnecting', shardId => {
   log(`Discord gateway reconnecting (shard ${shardId})`);
 });
 client.on('shardResume', (shardId, replayedEvents) => {
+  streamManager.playerPresence.sync(true);
   log(`Discord gateway resumed (shard ${shardId}, replayed ${replayedEvents} events)`);
 });
 client.on('invalidated', () => {
@@ -220,6 +224,7 @@ async function shutdown(reason, exitCode = 0) {
     await streamManager.stop();
   } catch (e) { logError(`shutdown stop failed phase=${streamManager.voiceTeardownPhase}:`, safeFailure(e)); }
   try {
+    streamManager.playerPresence.close();
     await client.destroy();
   } catch (e) {}
   process.exit(exitCode);

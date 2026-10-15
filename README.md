@@ -348,3 +348,41 @@ docker run ... --device /dev/dri/renderD128 ...
 - If new/updated commands do not appear, set `DISCORD_GUILD_ID` and restart bot; global command updates can take up to ~1 hour to propagate.
 - If commands appear twice, you likely have both global and guild registrations. Keep `DISCORD_GUILD_ID` set and leave `KEEP_GLOBAL_COMMANDS` unset/`false` so startup clears globals.
 - If logs show the voice WebSocket receives Opcode 8 Hello and then falls back to `signalling`, make sure you rebuilt with `@discordjs/voice` 0.19+ and `@noble/ciphers`; Discord's modern voice gateway/DAVE flow can reject older voice clients before audio reaches `Ready`. If voice tests join the channel but logs say the connection did not report `Ready`, the bot now keeps the voice session alive and queues audio instead of disconnecting. If audio still never plays, run `/audio-status`; if the connection is not `ready`, verify the bot has the **GuildVoiceStates** gateway intent in code, **Speak** permission in the channel, and that the host/container can make outbound UDP connections to Discord voice servers. Admin permissions do not replace required gateway events or network connectivity. The bot no longer joins self-deafened by default; set `VOICE_SELF_DEAF=true` only if you want that music-bot behavior. With `AUDIO_DEBUG=true`, the bot also logs raw `VOICE_STATE_UPDATE` for itself and `VOICE_SERVER_UPDATE`; both are required before `@discordjs/voice` can leave `signalling`. Set `AUDIO_DEBUG=true` to log each TTS step (request received, Google TTS HTTP response, MP3 byte count, ffmpeg decode byte count, PCM queue length, voice connection status, and audio player status). TTS speech is now held in the queue until Discord voice reaches `Ready`; if it stays `signalling`/`connecting`, the queue will remain non-zero and the issue is the voice transport rather than Google TTS or ffmpeg.
+
+### Optional Discord player presence
+
+Set `STREAMBOT_PRESENCE_APPLICATION_ID` to the Application ID of your registered
+Discord application (or supply the existing `DISCORD_CLIENT_ID`) and set
+`STREAM_DASHBOARD_BASE_URL` to the public dashboard URL. Missing or malformed
+application IDs disable this feature; a syntactically valid ID must still belong
+to a real application. Workers publish an **Open Player** Rich Presence button
+while joined to voice, using the same worker URL or random access code as their
+QR artwork. Other activities and custom status are preserved. Leaving voice
+removes this activity. Rapid updates are coalesced to five seconds; public URL or
+code changes are detected within fifteen seconds. Gateway ready/resume refreshes
+the activity. Failed updates are best effort and do not interrupt playback.
+
+Discord controls where Rich Presence appears, usually on the activity/profile;
+placement on a Go Live card is not guaranteed. This trial has local payload and
+lifecycle coverage and still requires testing from another Discord account with
+a real application ID to confirm button visibility and behavior.
+
+The activity also shows the current content/chapter title, native VOD timing
+(or live elapsed time), available thumbnail artwork, and a worker-avatar badge
+with a title/time/paused tooltip. Paused activities omit advancing timestamps.
+Titles are capped at 90 characters and hover text at 128, retaining the complete
+time/status suffix. Hover text refreshes at most every fifteen seconds; native
+Discord timestamps advance between updates. Discord controls progress-bar rendering.
+
+Discord CDN thumbnails and the account avatar are used directly without an
+artwork request. Other safe thumbnails use the installed library's Discord
+external-assets endpoint; no source image is downloaded by this feature. There
+is at most one artwork lookup in flight and a thirty-second lookup cooldown,
+with a 32-entry cache including failures. Stale results are ignored on worker URL,
+channel, artwork, or lifecycle changes. The library exposes no request cancellation
+for this helper: a stalled request blocks further optional artwork lookups until
+it settles, without blocking playback or text/button updates.
+
+Credential-bearing image URLs (including Jellyfin API-key images) are excluded
+from Discord requests; those sources use the safe worker avatar when available.
+Unavailable external artwork also uses that avatar as its large-image fallback.
