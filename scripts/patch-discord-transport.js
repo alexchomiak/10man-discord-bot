@@ -143,6 +143,38 @@ const recoveryReplacements = [
                     return;
                 }`],
     ['        reconnect();\n        return new Promise((resolve) => {', '        this._nativeReconnect = reconnect;\n        reconnect();\n        return new Promise((resolve) => {'],
+    // Node 22's global WebSocket can emit error without close when its opening
+    // handshake fails. The pinned ws client always completes that lifecycle.
+    ['import Davey from "@snazzah/davey";', 'import WebSocket from "ws";\nimport Davey from "@snazzah/davey";'],
+    ['    _transportFatal = false;', `    _transportFatal = false;
+    _protocolNegotiating = false;
+    _socketRetryTimer = null;
+    _socketRetryAttempt = 0;`],
+    ['    stop() {\n        this._closed = true;', '    stop() {\n        this._closed = true;\n        clearTimeout(this._socketRetryTimer);\n        this._socketRetryTimer = null;'],
+    ['    start() {\n        if (this._closed) return;', `    _createWebSocket(url) { return new WebSocket(url, { handshakeTimeout: 15000, maxPayload: 4 * 1024 * 1024 }); }
+    start() {
+        if (this._closed || this._socketRetryTimer) return;`],
+    ['            this.ws = new WebSocket(`wss://${this.server}/?v=8`);', '            this.ws = this._createWebSocket(`wss://${this.server}/?v=8`);'],
+    ['            const socket = this.ws;', '            const socket = this.ws;\n            let opened = false;'],
+    ['                if (socket !== this.ws || this._closed) return;\n                if (this.status.resuming)', '                if (socket !== this.ws || this._closed) return;\n                opened = true;\n                this._socketRetryAttempt = 0;\n                if (this.status.resuming)'],
+    ['                    this.status.resuming = true;\n                    this.start();', `                    this.status.resuming = true;
+                    if (this._protocolNegotiating && this._webRtcWrapper.webRtcConn?.state() !== "connected") {
+                        // The offer was sent on the lost control socket, but no
+                        // answer arrived. RESUMED alone cannot complete it.
+                        this._nativeReconnectPending = true;
+                        this._nativeRepairUsed = false;
+                    }
+                    if (opened) this.start();
+                    else {
+                        const delay = Math.min(250 * 2 ** Math.min(this._socketRetryAttempt++, 4), 4000);
+                        this._socketRetryTimer = setTimeout(() => {
+                            this._socketRetryTimer = null;
+                            this.start();
+                        }, delay);
+                        this._socketRetryTimer.unref?.();
+                    }`],
+    ['        this.emit("select_protocol_ack");', '        this._protocolNegotiating = false;\n        this.emit("select_protocol_ack");'],
+    ['                const rtc_connection_id = randomUUID();', '                this._protocolNegotiating = true;\n                const rtc_connection_id = randomUUID();'],
 ];
 function replaceChecked(source, edits) {
     let result = source;

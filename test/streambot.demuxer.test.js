@@ -688,6 +688,10 @@ test('transport install patch upgrades old installs, patches fresh installs, and
     fs.writeFileSync(mediaTarget, undo(patchedMedia, recoveryReplacements));
     assert.equal(patchDiscordTransport(fixture), true, 'upgrade the previously deployed READY repair');
     assert.equal(fs.readFileSync(mediaTarget, 'utf8'), patchedMedia);
+    const socketUpgradeIndex = recoveryReplacements.findIndex(([before]) => before === 'import Davey from "@snazzah/davey";');
+    fs.writeFileSync(mediaTarget, undo(patchedMedia, recoveryReplacements.slice(socketUpgradeIndex)));
+    assert.equal(patchDiscordTransport(fixture), true, 'upgrade the deployed native recovery without reinstalling the dependency');
+    assert.equal(fs.readFileSync(mediaTarget, 'utf8'), patchedMedia);
     fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"7.0.0"}');
     assert.throws(() => patchDiscordTransport(fixture), /requires discord-video-stream 6.0.0/);
     fs.writeFileSync(path.join(fixture, 'package.json'), '{"version":"6.0.0"}');
@@ -908,8 +912,9 @@ async function mediaRecoveryFixture() {
     close() { this.readyState = 3; void this.fire('close', { code: 1000 }); }
   }
   const previousWebSocket = globalThis.WebSocket;
-  globalThis.WebSocket = FixtureSocket;
+  // Inject only the socket factory; exercise installed media lifecycle handlers.
   const media = new BaseMediaConnection({}, 'guild', 'bot', 'channel', () => {});
+  media._createWebSocket = () => new FixtureSocket();
   Object.defineProperty(media, 'serverId', { value: 'fixture' });
   Object.assign(media, { server: 'fixture.invalid', token: 'fixture', session_id: 'fixture' });
   media.status.hasSession = media.status.hasToken = true;
@@ -999,6 +1004,30 @@ test('real media socket resume renegotiates a closed native peer only after RESU
   } finally { await f.cleanup(); }
 });
 
+test('RESUMED replaces a connecting peer whose SELECT_PROTOCOL was interrupted by socket loss', async () => {
+  const f = await mediaRecoveryFixture();
+  try {
+    f.peers[0].change('closed');
+    const connecting = f.peers[1];
+    connecting.change('connecting');
+    const socket = f.sockets[0];
+    assert.equal(socket.sent.filter(packet => packet.op === 1).length, 2);
+    socket.readyState = 3;
+    await socket.fire('close', { code: 1006 });
+    const resumed = f.sockets[1];
+    resumed.readyState = 1;
+    await resumed.fire('open');
+    assert.equal(f.peers.length, 2, 'wait for Discord to confirm the resumed socket');
+    await f.gateway(resumed, 9);
+    assert.equal(f.peers.length, 3, 'a lost protocol negotiation must not leave the peer connecting forever');
+    assert.equal(resumed.sent.filter(packet => packet.op === 1).length, 1);
+    await f.ack(resumed);
+    assert.equal(f.wrapper.ready, true);
+    assert.equal(f.media.listenerCount('select_protocol_ack'), 0);
+    assert.equal(f.events.filter(event => event.type === 'protocol-failure').length, 0);
+  } finally { await f.cleanup(); }
+});
+
 test('native repair is bounded until connected and never loops after terminal failure', async () => {
   const f = await mediaRecoveryFixture();
   try {
@@ -1062,4 +1091,126 @@ test('nonresumable media close surfaces a terminal failure without creating anot
     assert.equal(failure.code, 4006);
     assert.equal(JSON.stringify(f.events).includes('private close reason'), false);
   } finally { await f.cleanup(); }
+});
+
+test('installed media WebSocket completes error with close on an actual failed HTTP upgrade', { timeout: 5000 }, async () => {
+  const http = require('node:http');
+  const { once } = require('node:events');
+  const { pathToFileURL } = require('node:url');
+  const root = path.dirname(require.resolve('@dank074/discord-video-stream'));
+  const { BaseMediaConnection } = await import(pathToFileURL(path.join(root, 'client/voice/BaseMediaConnection.js')));
+  const server = http.createServer((_request, response) => { response.writeHead(503); response.end(); });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  let socket;
+  try {
+    const media = new BaseMediaConnection({}, 'guild', 'bot', 'channel', () => {});
+    socket = media._createWebSocket(`ws://127.0.0.1:${server.address().port}`);
+    assert.equal(socket._req.timeout, 15000, 'a blackholed opening handshake has a deadline');
+    const events = [];
+    socket.addEventListener('error', () => events.push('error'));
+    socket.addEventListener('close', () => events.push('close'));
+    await new Promise(resolve => socket.addEventListener('close', resolve, { once: true }));
+    assert.deepEqual(events, ['error', 'close']);
+    assert.equal(socket.readyState, 3);
+  } finally {
+    socket?.terminate?.();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('failed opening attempts back off and intentional stop cancels their only retry timer', async t => {
+  const f = await mediaRecoveryFixture();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const original = f.sockets[0];
+    original.readyState = 3;
+    await original.fire('close', { code: 1006 });
+    const failed = f.sockets[1];
+    failed.readyState = 3;
+    await failed.fire('error');
+    await failed.fire('close', { code: 1006 });
+    assert.equal(f.sockets.length, 2);
+    assert.ok(f.media._socketRetryTimer);
+    t.mock.timers.tick(249);
+    assert.equal(f.sockets.length, 2);
+    t.mock.timers.tick(1);
+    assert.equal(f.sockets.length, 3);
+    const failedAgain = f.sockets[2];
+    failedAgain.readyState = 3;
+    await failedAgain.fire('close', { code: 1006 });
+    t.mock.timers.tick(499);
+    assert.equal(f.sockets.length, 3);
+    f.media.stop();
+    assert.equal(f.media._socketRetryTimer, null);
+    t.mock.timers.tick(10000);
+    assert.equal(f.sockets.length, 3, 'stop cannot revive a failed opening attempt');
+    assert.equal(f.peers.length, 1, 'failed control handshakes preserve the existing native peer');
+  } finally { await f.cleanup(); }
+});
+
+test('a healthy native peer survives a control socket resume without media renegotiation', async () => {
+  const f = await mediaRecoveryFixture();
+  try {
+    f.sockets[0].readyState = 3;
+    await f.sockets[0].fire('close', { code: 1006 });
+    const resumed = f.sockets[1];
+    resumed.readyState = 1;
+    await resumed.fire('open');
+    await f.gateway(resumed, 9);
+    assert.equal(f.peers.length, 1);
+    assert.equal(f.wrapper.ready, true);
+    assert.equal(resumed.sent.filter(packet => packet.op === 1).length, 0);
+    assert.equal(f.media._socketRetryAttempt, 0);
+  } finally { await f.cleanup(); }
+});
+
+test('real failed reconnect upgrade backs off then resumes the same healthy media peer', { timeout: 5000 }, async () => {
+  const http = require('node:http');
+  const { once } = require('node:events');
+  const { WebSocketServer } = require('ws');
+  const f = await mediaRecoveryFixture();
+  const server = http.createServer();
+  const upgrades = new WebSocketServer({ noServer: true });
+  let attempts = 0;
+  server.on('upgrade', (request, socket, head) => {
+    if (++attempts === 1) {
+      socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
+    upgrades.handleUpgrade(request, socket, head, client => {
+      client.on('message', buffer => {
+        const packet = JSON.parse(buffer.toString());
+        if (packet.op === 7) client.send(JSON.stringify({ op: 9, d: {} }));
+      });
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  try {
+    await once(server, 'listening');
+    const factory = Object.getPrototypeOf(f.media)._createWebSocket;
+    f.media._createWebSocket = () => factory.call(f.media, `ws://127.0.0.1:${server.address().port}`);
+    const resumed = new Promise(resolve => f.media.on('transport_event', event => {
+      if (event.type === 'resumed') resolve();
+    }));
+    f.sockets[0].readyState = 3;
+    await f.sockets[0].fire('close', { code: 1006 });
+    await resumed;
+    assert.equal(attempts, 2);
+    assert.equal(f.media.ws._receiver._maxPayload, 4 * 1024 * 1024, 'bound incoming media-control messages');
+    assert.equal(f.media._socketRetryTimer, null);
+    assert.equal(f.media._socketRetryAttempt, 0);
+    assert.equal(f.media.status.started, true);
+    assert.equal(f.wrapper.ready, true);
+    assert.equal(f.peers.length, 1);
+    assert.ok(f.events.some(event => event.type === 'websocket-error'));
+    assert.ok(f.events.some(event => event.type === 'websocket-close' && event.code === 1006));
+  } finally {
+    await f.cleanup();
+    for (const client of upgrades.clients) client.terminate();
+    await new Promise(resolve => upgrades.close(resolve));
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
 });
