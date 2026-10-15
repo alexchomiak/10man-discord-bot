@@ -1,5 +1,7 @@
 'use strict';
 
+const { ytdlpPresence, jellyfinPresence } = require('./presenceMetadata');
+
 const { spawn } = require('child_process');
 const { M } = require('./messages');
 const { TAG } = require('./config');
@@ -308,7 +310,8 @@ async function resolveShareTv(raw, cfg) {
 
   const programme = shareProgramme(share);
   const publicImage = thumbnailUrl(programme?.icon_url, base);
-  const preview = publicImage && programme?.title ? null : await fetchSharePreview(base, slug, cfg);
+  const preview = await fetchSharePreview(base, slug, cfg);
+  const programmeDescription = typeof preview?.programme?.description === 'string' ? preview.programme.description : null;
   const contentTitle = preview?.programme?.title || programme?.title || null;
   const title = typeof share.title === 'string' ? share.title :
     (typeof preview?.programme?.title === 'string' ? preview.programme.title : programme?.title || null);
@@ -331,6 +334,7 @@ async function resolveShareTv(raw, cfg) {
         kind: 'sharetv',
         title,
         contentTitle: ytdlp.title || contentTitle || title,
+        programmeDescription,
         thumbnail: ytdlp.thumbnail || thumbnail || null,
         channel,
         available: true,
@@ -366,6 +370,7 @@ async function resolveShareTv(raw, cfg) {
     streamUrl,
     title,
     contentTitle: contentTitle || ((share.kind !== 'static' && (share.mode === 'range' || (share.mode !== 'programs' && !!share.channel_id))) ? null : title),
+    programmeDescription,
     shareTvChannel: share.kind !== 'static' && (share.mode === 'range' || (share.mode !== 'programs' && !!share.channel_id)),
     thumbnail,
     channel,
@@ -912,7 +917,7 @@ async function resolveYtdlp(raw, cfg) {
       kind: 'ytdlp',
       streamType: 'single',
       streamUrl,
-      title: data.title || null,
+      title: data.title || null, ...ytdlpPresence(data),
       thumbnail,
       available: true,
       startOffsetSec,
@@ -945,7 +950,7 @@ async function resolveYtdlp(raw, cfg) {
       verboseLog(config, `YouTube VOD: segmented HLS ${video.height}p video + audio (progressive)`);
       return {
         kind: 'ytdlp', streamType: 'dash', videoUrl: video.url, audioUrl: audio.url,
-        title: data.title || null, available: true, startOffsetSec, isLive,
+        title: data.title || null, ...ytdlpPresence(data), available: true, startOffsetSec, isLive,
         thumbnail,
         totalDurationSec: vodDuration,
         chapters,
@@ -959,7 +964,7 @@ async function resolveYtdlp(raw, cfg) {
       kind: 'ytdlp',
       streamType: 'single',
       streamUrl: bestDirect.url,
-      title: data.title || null,
+      title: data.title || null, ...ytdlpPresence(data),
       thumbnail,
       available: true,
       startOffsetSec,
@@ -1020,7 +1025,7 @@ async function resolveYtdlp(raw, cfg) {
       streamType: 'dash',
       videoUrl: bestVideo.url,
       audioUrl: bestAudio.url,
-      title: data.title || null,
+      title: data.title || null, ...ytdlpPresence(data),
       thumbnail,
       available: true,
       startOffsetSec,
@@ -1042,7 +1047,7 @@ async function resolveYtdlp(raw, cfg) {
       verboseLog(config, `YouTube Live: separate HLS ${video.height || '?'}p video + audio`);
       return {
         kind: 'ytdlp', streamType: 'dash', videoUrl: video.url, audioUrl: audio.url,
-        title: data.title || null, thumbnail, available: true, startOffsetSec,
+        title: data.title || null, ...ytdlpPresence(data), thumbnail, available: true, startOffsetSec,
         isLive: true, totalDurationSec: null, chapters: null,
         note: 'separate live HLS A+V merged in-memory (progressive, zero-disk)'
       };
@@ -1104,7 +1109,7 @@ async function resolveJellyfinMetadata(raw, fetchImpl = fetch) {
       if (source.token) imageUrl.searchParams.set(source.key, source.token);
       thumbnail = imageUrl.toString();
     }
-    return { title, totalDurationSec, thumbnail };
+    return { title, totalDurationSec, thumbnail, ...jellyfinPresence(item) };
   } catch { return null; }
 }
 
@@ -1143,10 +1148,10 @@ async function resolveSource(input, config) {
     ]);
     clearTimeout(graceTimer);
     return playback.available && metadata
-      ? { ...playback, sourceKind: 'jellyfin', contentTitle: metadata.title || playback.title, title: metadata.title || playback.title,
+      ? { ...playback, presenceTitle: metadata.presenceTitle, presenceDetails: metadata.presenceDetails, sourceKind: 'jellyfin', contentTitle: metadata.title || playback.title, title: metadata.title || playback.title,
         thumbnail: metadata.thumbnail || playback.thumbnail,
         totalDurationSec: metadata.totalDurationSec ?? playback.totalDurationSec }
-      : { ...playback, sourceKind: 'jellyfin', contentTitle: playback.title };
+      : { ...playback, presenceTitle: null, presenceDetails: null, sourceKind: 'jellyfin', contentTitle: playback.title };
   }
   if (isHttp || isPrefixed) {
     const resolved = await resolveYtdlp(raw, cfg);

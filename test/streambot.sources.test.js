@@ -102,7 +102,7 @@ const SCENARIOS = {
   },
   hls: {
     duration: 3661,
-    title: 'HLS VOD',
+    title: 'HLS VOD', description: '<p>A video about science.</p>', channel: 'Science Channel',
     thumbnail: 'https://i.ytimg.com/vi/HLSVOD/hqdefault.jpg',
     formats: [
       { format_id: 'hls1', vcodec: 'h264', acodec: 'mp4a', height: 1080, tbr: 1000, manifest_url: 'https://manifest.example/hls/master.m3u8' },
@@ -135,7 +135,7 @@ const SCENARIOS = {
   },
   single: {
     duration: null,
-    title: 'Live',
+    title: 'Live', description: 'Links: https://example.com/a-very-long-tracking-link', uploader: 'Stream creator',
     formats: [
       { format_id: 'live1', vcodec: 'h264', acodec: 'mp4a', url: 'https://cdn.example/fake/combined.mp4' }
     ]
@@ -759,6 +759,7 @@ test('hls: manifest_url present -> streamType single, stream the manifest URL (n
   assert.strictEqual(res.streamType, 'single');
   assert.strictEqual(res.streamUrl, 'https://manifest.example/hls/master.m3u8');
   assert.strictEqual(res.thumbnail, 'https://i.ytimg.com/vi/HLSVOD/hqdefault.jpg');
+  assert.equal(res.presenceDetails, 'A video about science.');
   assert.strictEqual(res.localFile, undefined, 'no local-file fields anymore (zero-disk)');
   assert.strictEqual(res.localDir, undefined);
   assert.strictEqual(res.startOffsetSec, null, 'no &t= on the URL -> no offset');
@@ -793,6 +794,7 @@ test('Jellyfin Download URL keeps yt-dlp playback and adds item title, runtime, 
     if (metadataAvailable && req.url.startsWith(`/Items/${id}?`)) {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ Id: id, Name: 'Episode 3', SeriesName: 'The Series',
+        Type: 'Episode', ParentIndexNumber: 3, IndexNumber: 3, Overview: 'Episode overview',
         RunTimeTicks: 3600 * 10000000, ImageTags: { Primary: 'image-tag' } }));
     } else { res.writeHead(404).end(); }
   });
@@ -803,6 +805,8 @@ test('Jellyfin Download URL keeps yt-dlp playback and adds item title, runtime, 
   const result = await resolveSource(url, CfgPlain);
   assert.equal(result.streamUrl, 'https://manifest.example/hls/master.m3u8');
   assert.equal(result.title, 'The Series — Episode 3');
+  assert.equal(result.presenceTitle, 'The Series');
+  assert.equal(result.presenceDetails, 'Episode 3 - S3E3');
   assert.equal(result.totalDurationSec, 3600);
   assert.match(result.thumbnail, new RegExp(`/Items/${id}/Images/Primary`));
   assert.equal(paths.length, 1, 'metadata lookup must not download media');
@@ -811,6 +815,8 @@ test('Jellyfin Download URL keeps yt-dlp playback and adds item title, runtime, 
   const fallback = await resolveSource(url, CfgPlain);
   assert.equal(fallback.available, true);
   assert.equal(fallback.title, 'HLS VOD', 'metadata failure must not block yt-dlp playback');
+  assert.equal(fallback.presenceTitle, null);
+  assert.equal(fallback.presenceDetails, null, 'missing fresh item metadata must clear old episode details');
 });
 
 test('single: combined direct url -> streamType single, stream the direct URL (no download)', async () => {
@@ -821,6 +827,7 @@ test('single: combined direct url -> streamType single, stream the direct URL (n
   assert.strictEqual(res.available, true);
   assert.strictEqual(res.streamType, 'single');
   assert.strictEqual(res.streamUrl, 'https://cdn.example/fake/combined.mp4');
+  assert.equal(res.presenceDetails, 'Stream creator');
   assert.strictEqual(res.localFile, undefined, 'single stream must be a direct remote URL');
   assert.strictEqual(res.localDir, undefined);
 
@@ -1649,4 +1656,24 @@ test('missing channel cache -> no send, but no crash and VOD still falls back to
   assert.strictEqual(t.alerts.filter((a) => a.event === 'stream-ended').length, 1, 'the end alert still fires without a cached channel');
   assert.strictEqual(t.mgr.session?.isFiller, true, 'filler must follow the ended VOD');
   t.restore();
+});
+
+
+test('Jellyfin existing item response carries movie synopsis and missing episode fields without guessed indices', async () => {
+  const { resolveJellyfinMetadata } = require('../src/streambot/sources');
+  const id = 'f3d6bd13a3738a4240d6d6a493728e5b';
+  for (const [fields, title, details] of [
+    [{ Type: 'Movie', Name: 'Movie', ProductionYear: 2022, Overview: '<p>A synopsis &amp; story.</p>' }, 'Movie (2022)', 'A synopsis & story.'],
+    [{ Type: 'Episode', Name: 'Episode', SeriesName: 'Series', ParentIndexNumber: 0 }, 'Series', 'Episode - S0'],
+    [{ Type: 'Episode', Name: 'Episode' }, 'Episode', 'Episode']
+  ]) {
+    let calls = 0;
+    const metadata = await resolveJellyfinMetadata(`https://jellyfin.example/Items/${id}/Download?ApiKey=private`, async () => {
+      calls++;
+      return { ok: true, headers: new Headers(), body: [Buffer.from(JSON.stringify({ Id: id, ...fields }))] };
+    });
+    assert.equal(calls, 1);
+    assert.equal(metadata.presenceTitle, title);
+    assert.equal(metadata.presenceDetails, details);
+  }
 });

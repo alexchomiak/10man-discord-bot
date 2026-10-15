@@ -130,6 +130,7 @@ class StreamManager {
         (this.contentAwareImagePreview || this.deriveNicknameFromContent || /^\d{17,20}$/.test(this.config.playerPresenceApplicationId || '')) && this.contentNickname.isCurrent(piece),
       onProgramme: async (piece, title, programme) => {
         piece.contentTitle = title;
+        piece.programmeDescription = typeof programme?.description === 'string' ? programme.description : null;
         this.contentNickname.update(piece);
         const image = programmeImage(programme, this.config.shareTvBase);
         piece.thumbnail = image;
@@ -1302,6 +1303,9 @@ class StreamManager {
             piece.isLive = resolved.isLive === true;
             piece.totalDurationSec = resolved.totalDurationSec ?? piece.totalDurationSec;
             piece.chapters = piece.musicMode ? resolved.chapters || null : null;
+            piece.presenceTitle = resolved.presenceTitle ?? null;
+            piece.presenceDetails = resolved.presenceDetails ?? null;
+            piece.programmeDescription = resolved.programmeDescription ?? null;
             piece.shareTvChannel = resolved.shareTvChannel === true;
             piece.sourceKind = resolved.sourceKind || resolved.kind;
             piece.contentTitle = piece.shareTvChannel ? resolved.contentTitle || piece.contentTitle : resolved.contentTitle || resolved.title || piece.contentTitle;
@@ -1378,6 +1382,9 @@ class StreamManager {
               piece.videoUrl = resolved.videoUrl || null;
               piece.audioUrl = resolved.audioUrl || null;
               piece.isDash = !!(piece.videoUrl && piece.audioUrl);
+              piece.presenceTitle = resolved.presenceTitle ?? null;
+              piece.presenceDetails = resolved.presenceDetails ?? null;
+              piece.programmeDescription = resolved.programmeDescription ?? null;
               piece.shareTvChannel = resolved.shareTvChannel === true;
               piece.sourceKind = resolved.sourceKind || resolved.kind;
               piece.contentTitle = piece.shareTvChannel ? resolved.contentTitle || piece.contentTitle : resolved.contentTitle || resolved.title || piece.contentTitle;
@@ -1846,6 +1853,12 @@ class StreamManager {
     const link = this.voiceLink;
     if (!link) return null;
     const piece = link.paused ? link.pausedSession : this.session;
+    const current = piece ? this._queueItem(piece) : null;
+    // Channel EPG refreshes replace contentTitle while the live session keeps
+    // its original queue label. Publish the current programme to every player.
+    if (current && piece.shareTvChannel && !piece.isFiller && piece.contentTitle) {
+      current.title = piece.contentTitle;
+    }
     const rtcBytesSent = link.pipeline?.feeder?.rtcBytesSent || 0;
     const now = Date.now();
     const previous = this._statusRateSample;
@@ -1858,7 +1871,8 @@ class StreamManager {
       this._statusRateSample = { link, at: now, bytes: rtcBytesSent };
     }
     return { guildId: link.guildId, channelId: link.channelId,
-      streamUrl: piece?.videoUrl || piece?.streamUrl || null, title: piece?.title || null,
+      streamUrl: piece?.videoUrl || piece?.streamUrl || null,
+      title: piece?.shareTvChannel && !piece.isFiller && piece.contentTitle ? piece.contentTitle : piece?.title || null,
       startedAt: piece?.startedAt || link.joinedAt,
       elapsedMs: Date.now() - (piece?.startedAt || link.joinedAt),
       alive: !link.closing && !link.disconnectFailed, inChannel: true, isFiller: !!piece?.isFiller,
@@ -1870,7 +1884,7 @@ class StreamManager {
       contentSnapshotPreview: this.contentSnapshotPreview,
       positionSec: piece ? Math.round(link.paused && Number.isFinite(link.pausedPositionSec)
         ? link.pausedPositionSec : this.positionOf(piece)) : null,
-      current: piece ? this._queueItem(piece) : null,
+      current,
       musicChapters: this.musicMode && !piece?.isFiller ? piece?.chapters || null : null,
       currentChapter: this.musicMode && !piece?.isFiller
         ? this._currentChapter(piece, link.paused && Number.isFinite(link.pausedPositionSec)
@@ -2129,6 +2143,8 @@ class StreamManager {
       const pieces = entries.map((entry, index) => this._piece(link, {
         sourceInput: entry.sourceInput,
         sourceKind: index === 0 ? firstResolved.sourceKind || firstResolved.kind : 'youtube',
+        presenceTitle: index === 0 ? firstResolved.presenceTitle ?? null : null,
+        presenceDetails: index === 0 ? firstResolved.presenceDetails ?? null : null,
         contentTitle: index === 0 ? firstResolved.contentTitle || firstResolved.title : entry.title,
         streamUrl: index === 0 ? firstResolved.streamUrl || null : null,
         videoUrl: index === 0 ? firstResolved.videoUrl || null : null,
@@ -2260,6 +2276,9 @@ class StreamManager {
       title: piece.title,
       sourceKind: piece.sourceKind,
       contentTitle: piece.contentTitle,
+      programmeDescription: piece.programmeDescription ?? null,
+      presenceTitle: piece.presenceTitle ?? null,
+      presenceDetails: piece.presenceDetails ?? null,
       shareTvChannel: piece.shareTvChannel,
       scheduledNickname: piece.scheduledNickname,
       scheduleId: piece.scheduleId,

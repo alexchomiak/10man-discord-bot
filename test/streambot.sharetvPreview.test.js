@@ -20,11 +20,11 @@ async function resolve(payload, previewResponse, key) {
   } finally { global.fetch = original; }
 }
 
-test('ShareTV current public programme artwork wins over generic channel artwork without integration request', async () => {
+test('ShareTV public programme artwork wins while optional preview supplies descriptions', async () => {
   const { result, calls } = await resolve({ ...share, active_program_id: 7,
     programs: [{ id: 7, start_at: 90, end_at: 110, title: 'Public programme', icon_url: '/programme.jpg' }] }, null, 'secret');
   assert.equal(result.thumbnail, `${base}/programme.jpg`);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.equal(result.streamUrl, `${base}/api/public/stream/test`);
   assert.equal(result.isLive, true);
 });
@@ -77,4 +77,16 @@ test('ShareTV preserves actual programme independently of share title', async ()
   }) }, 'secret');
   assert.equal(result.title, 'Shared channel');
   assert.equal(result.contentTitle, 'Actual programme');
+});
+
+
+test('ShareTV initial descriptions come from preview across channel, programme and static shares', async () => {
+  for (const shape of [{ channel_id: 1 }, { mode: 'programs' }, { kind: 'static' }]) {
+    for (const description of [' Full stored description. ', null, undefined]) {
+      const { result } = await resolve({ ...share, ...shape }, { ok: true, json: async () => ({
+        preview: { programme: { title: 'Programme', description } }
+      }) }, 'secret');
+      assert.equal(result.programmeDescription, description ?? null);
+    }
+  }
 });

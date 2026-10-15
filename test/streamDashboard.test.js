@@ -268,3 +268,52 @@ test('admin schedules configured offline workers; public and unauthenticated sch
 
   } finally { await dashboard.close(); }
 });
+
+test('live ShareTV programme refresh reaches public and admin status without restarting playback', async t => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const manager = new StreamManager({}, null, { shareTvBase: 'https://tv.example' });
+  const piece = { queueId: 'live', sourceKind: 'sharetv', shareTvChannel: true,
+    title: 'The Big Pro Football Show', contentTitle: 'The Big Pro Football Show',
+    isLive: true, videoUrl: 'https://private.example/stream?ApiKey=secret' };
+  const queued = { queueId: 'next', sourceKind: 'youtube', title: 'Queued video', contentTitle: 'Other metadata' };
+  const pipeline = { enqueue: [piece, queued] };
+  manager.voiceLink = { guildId, channelId, pipeline, joinedAt: Date.now() };
+  manager.session = piece;
+  manager.positionOf = () => 42;
+  const worker = { id: 'one', connectedAt: 1, get status() { return manager.status(); } };
+  const broker = { defaultWorkerId: 'one', listWorkers: () => [worker], getWorker: () => worker };
+  const dashboard = createStreamDashboard({ broker, client: {}, password: 'password',
+    host: '127.0.0.1', port: 0, log: () => {} });
+  dashboard.listen(); await once(dashboard.server, 'listening');
+  t.after(() => dashboard.close());
+  const base = `http://127.0.0.1:${dashboard.server.address().port}`;
+  const publicState = async () => (await (await fetch(`${base}/api/public/one/state`)).json()).worker.status;
+  assert.equal((await publicState()).current.title, 'The Big Pro Football Show');
+  await manager.shareTvNicknameRefresh.onProgramme(piece, 'NBA Basketball', { title: 'NBA Basketball' });
+  // The existing metadata hook updates the same session and transport.
+  assert.equal(manager.session, piece);
+  assert.equal(manager.voiceLink.pipeline, pipeline);
+  assert.equal(piece.title, 'The Big Pro Football Show');
+  const status = await publicState();
+  assert.equal(status.current.title, 'NBA Basketball');
+  assert.equal(status.title, 'NBA Basketball');
+  assert.equal(status.queue[0].title, 'Queued video');
+  assert.equal(status.positionSec, 42);
+  assert(!JSON.stringify(status).includes('private.example'));
+  assert(!JSON.stringify(status).includes('ApiKey'));
+  const admin = await (await fetch(`${base}/api/state`, { headers: { Authorization: 'Bearer password' } })).json();
+  assert.equal(admin.workers[0].status.current.title, 'NBA Basketball');
+  assert.equal(admin.workers[0].status.title, 'NBA Basketball');
+  manager.voiceLink.paused = true;
+  manager.voiceLink.pausedSession = piece;
+  manager.session = null;
+  assert.equal((await publicState()).current.title, 'NBA Basketball');
+  piece.contentTitle = null;
+  assert.equal(manager.status().current.title, 'The Big Pro Football Show');
+  piece.contentTitle = '';
+  assert.equal(manager.status().title, 'The Big Pro Football Show');
+  piece.contentTitle = 'Unrelated metadata'; piece.shareTvChannel = false;
+  assert.equal(manager.status().current.title, 'The Big Pro Football Show');
+  piece.shareTvChannel = true; piece.isFiller = true;
+  assert.equal(manager.status().current.title, 'The Big Pro Football Show');
+});

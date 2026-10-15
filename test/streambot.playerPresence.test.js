@@ -130,8 +130,8 @@ test('real serialization freezes paused timestamps and updates seek/resume timin
   manager.voiceLink.pausedPositionSec = 180;
   sync();
   activity = packets.at(-1).d.activities[0];
-  assert.equal(activity.details, 'Paused');
-  assert.equal(activity.state, 'Other');
+  assert.equal(activity.details, undefined);
+  assert.equal(activity.state, 'Other - Paused');
   assert.equal(activity.timestamps?.start, undefined);
   assert.equal(activity.timestamps?.end, undefined);
   manager.voiceLink.paused = false; pos = 300; sync();
@@ -367,8 +367,8 @@ test('dynamic activity title/status/source replace only the previously owned act
   let activities = packets.at(-1).d.activities;
   let activity = activities.at(-1);
   assert.equal(activity.name, 'The Batman');
-  assert.equal(activity.details, 'Now Playing');
-  assert.equal(activity.state, 'Jellyfin');
+  assert.equal(activity.details, undefined);
+  assert.equal(activity.state, 'Jellyfin - Now Playing');
   assert.deepEqual(activity.buttons, ['Open Player']);
   assert.equal(activity.timestamps.end - activity.timestamps.start, 600000);
   manager.session = { title: 'Next Video', sourceKind: 'youtube', totalDurationSec: 300 };
@@ -376,15 +376,15 @@ test('dynamic activity title/status/source replace only the previously owned act
   activities = packets.at(-1).d.activities;
   assert.equal(activities.length, 3);
   assert.equal(activities.at(-1).name, 'Next Video');
-  assert.equal(activities.at(-1).state, 'YouTube');
+  assert.equal(activities.at(-1).state, 'YouTube - Now Playing');
   assert.ok(!activities.some(item => item.name === 'The Batman'));
   assert.ok(activities.some(item => item.name === 'Other activity'));
   manager.session.sourceKind = 'sharetv'; sync();
-  assert.equal(packets.at(-1).d.activities.at(-1).state, 'ShareTV');
+  assert.equal(packets.at(-1).d.activities.at(-1).state, 'ShareTV - Now Playing');
   manager.session.sourceKind = 'direct'; sync();
-  assert.equal(packets.at(-1).d.activities.at(-1).state, 'Other');
+  assert.equal(packets.at(-1).d.activities.at(-1).state, 'Other - Now Playing');
   manager.voiceLink.paused = true; manager.voiceLink.pausedSession = manager.session; sync();
-  assert.equal(packets.at(-1).d.activities.at(-1).details, 'Paused');
+  assert.equal(packets.at(-1).d.activities.at(-1).state, 'Other - Paused');
   manager.voiceLink = null; sync();
   assert.equal(packets.at(-1).d.activities.length, 2);
 });
@@ -446,7 +446,134 @@ test('filler activities show a human title instead of internal placeholder/buffe
     sync();
     const activity = packets.at(-1).d.activities[0];
     assert.equal(activity.name, 'Ready to play');
-    assert.equal(activity.details, 'Ready');
+    assert.equal(activity.details, undefined);
+    assert.equal(activity.state, 'Other - Ready');
     assert.equal(activity.timestamps?.start, undefined);
   }
+});
+
+
+test('ShareTV EPG description serializes in middle, clips Unicode, and clears on same queue programme changes', t => {
+  const { manager, packets, sync } = fixture(t);
+  manager.session = { queueId: 'same', sourceKind: 'sharetv', contentTitle: 'Programme', programmeDescription: '  A\n description\twith  spaces.  ' };
+  sync();
+  assert.equal(packets.at(-1).d.activities[0].details, 'A description with spaces.');
+  assert.equal(packets.at(-1).d.activities[0].state, 'ShareTV - Now Playing');
+  for (const description of ['x'.repeat(300), '😀'.repeat(300)]) {
+    manager.session.programmeDescription = description; sync();
+    const details = packets.at(-1).d.activities[0].details;
+    assert.equal(Array.from(details).length, 128);
+    assert.ok(details.endsWith('…'));
+    assert.ok(!details.includes('\ufffd'));
+  }
+  for (const description of ['', null, undefined, 'x']) {
+    manager.session.programmeDescription = description; sync();
+    assert.equal(packets.at(-1).d.activities[0].details, undefined);
+  }
+  manager.session.programmeDescription = 'Watch https://private.example/api?token=secret now\u0000'; sync();
+  assert.equal(packets.at(-1).d.activities[0].details, 'Watch Stream now');
+  manager.voiceLink.paused = true; manager.voiceLink.pausedSession = manager.session; sync();
+  assert.equal(packets.at(-1).d.activities[0].details, 'Watch Stream now');
+  assert.equal(packets.at(-1).d.activities[0].state, 'ShareTV - Paused');
+});
+
+test('manager EPG hook updates same queued activity and clears absent descriptions; reopen and move preserve metadata', async t => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const { client, manager: view, packets, sync } = fixture(t);
+  const manager = new StreamManager(client);
+  manager.contentNickname.update = () => {};
+  manager.playerPresence = { sync };
+  const link = view.voiceLink;
+  const piece = view.session = manager._piece(link, { queueId: 'channel', sourceKind: 'sharetv', shareTvChannel: true,
+    contentTitle: 'Old programme', programmeDescription: 'Old description', streamUrl: 'https://stream.example' });
+  sync();
+  await manager.shareTvNicknameRefresh.onProgramme(piece, 'Next programme', { description: 'Next description' });
+  assert.equal(packets.at(-1).d.activities[0].name, 'Next programme');
+  assert.equal(packets.at(-1).d.activities[0].details, 'Next description');
+  for (const copy of [manager._reopenSession(link, piece, { offsetSec: 42 }), manager._copyQueuedPiece({ ...link, channelId: 'moved' }, piece)]) {
+    assert.equal(copy.programmeDescription, 'Next description');
+    assert.equal(copy.queueId, 'channel');
+  }
+  for (const programme of [{ description: null }, {}]) {
+    piece.programmeDescription = 'Stale description';
+    await manager.shareTvNicknameRefresh.onProgramme(piece, 'Another programme', programme);
+    assert.equal(piece.programmeDescription, null);
+    assert.equal(packets.at(-1).d.activities[0].details, undefined);
+  }
+});
+
+test('provider metadata uses distinct presence title/details without changing queue titles or chapter names', t => {
+  const { jellyfinPresence, ytdlpPresence, presenceText } = require('../src/streambot/presenceMetadata');
+  assert.equal(presenceText('&lt;b&gt;Text&lt;/b&gt; data:text/plain,private ftp://secret.example/file'), 'Text');
+  const { manager, packets, sync } = fixture(t);
+  const examples = [
+    [{ Type: 'Movie', Name: 'The Movie', Overview: '<p>A brave &amp; curious hero.</p>' }, 'The Movie', 'A brave & curious hero.'],
+    [{ Type: 'Movie', Name: 'The Batman', ProductionYear: 2022, Overview: 'Synopsis.' }, 'The Batman (2022)', 'Synopsis.'],
+    [{ Type: 'Movie', Name: 'The Batman (2022)', ProductionYear: 2022 }, 'The Batman (2022)', undefined],
+    [{ Type: 'Episode', Name: 'The Fly', SeriesName: 'Breaking Bad', ProductionYear: 2008, ParentIndexNumber: 3, IndexNumber: 3 }, 'Breaking Bad', 'The Fly - S3E3'],
+    [{ Type: 'Episode', Name: 'Special', SeriesName: 'Series', ParentIndexNumber: 0, IndexNumber: 2 }, 'Series', 'Special - S0E2'],
+    [{ Type: 'Episode', Name: 'Unnamed season', SeriesName: 'Series', IndexNumber: 3 }, 'Series', 'Unnamed season - E3'],
+    [{ Type: 'Episode', Name: 'No indices', SeriesName: 'Series' }, 'Series', 'No indices'],
+    [{ Type: 'Episode', SeriesName: 'Series', ParentIndexNumber: 3 }, 'Series', 'S3'],
+    [{ Name: 'Music album', ProductionYear: 2022, Overview: 'An album.' }, 'Music album', 'An album.']
+  ];
+  for (const [item, title, details] of examples) {
+    manager.session = { title: 'Original queue label', sourceKind: 'jellyfin', ...jellyfinPresence(item) };
+    sync();
+    const activity = packets.at(-1).d.activities[0];
+    assert.equal(activity.name, title);
+    assert.equal(activity.details, details);
+    assert.equal(activity.state, 'Jellyfin - Now Playing');
+    assert.equal(manager.session.title, 'Original queue label');
+  }
+  for (const [data, expected] of [
+    [{ description: '<p>A useful synopsis.</p>', channel: 'Creator' }, 'A useful synopsis.'],
+    [{ description: 'https://private.example/api?token=secret', channel: 'Creator' }, 'Creator'],
+    [{ description: 'Links https://example.com/very-long-promotion-and-tracking', uploader: 'Uploader' }, 'Uploader'],
+    [{ channel: 'Only channel' }, 'Only channel'], [{}, undefined]
+  ]) {
+    manager.session = { title: 'Video', sourceKind: 'youtube', ...ytdlpPresence(data) }; sync();
+    assert.equal(packets.at(-1).d.activities[0].details, expected);
+  }
+  manager.session = { title: 'Direct', sourceKind: 'direct', presenceDetails: 'Stale metadata' }; sync();
+  assert.equal(packets.at(-1).d.activities[0].details, undefined);
+  manager.session = { title: 'Mix', sourceKind: 'youtube', musicMode: true, presenceTitle: 'Album', presenceDetails: 'Creator' };
+  manager._currentChapter = () => ({ title: 'Track title', index: 0, startSec: 0 });
+  sync();
+  assert.equal(packets.at(-1).d.activities[0].name, 'Track title');
+});
+
+test('presence metadata survives pause/reopen/move and sanitizes URLs, markup, controls and long text', t => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const { manager, packets, sync } = fixture(t);
+  const copier = { _piece: (_link, args) => args, _reopenSession: StreamManager.prototype._reopenSession };
+  const piece = { queueId: 'episode', title: 'Queue title', presenceTitle: 'Series', presenceDetails: '<b>Synopsis</b>\u0000 ' + '😀'.repeat(150) + ' https://secret.example?api_key=secret', sourceKind: 'jellyfin' };
+  for (const copy of [piece, copier._reopenSession(manager.voiceLink, piece), StreamManager.prototype._copyQueuedPiece.call(copier, manager.voiceLink, piece)]) {
+    manager.session = copy; sync();
+    assert.equal(copy.presenceTitle, 'Series');
+    assert.equal(copy.presenceDetails, piece.presenceDetails);
+    const activity = packets.at(-1).d.activities[0];
+    assert.equal(activity.name, 'Series');
+    assert.equal(Array.from(activity.details).length, 128);
+    assert.ok(!/secret|<b>|\u0000/.test(activity.details));
+  }
+  manager.voiceLink.paused = true; manager.voiceLink.pausedSession = piece; sync();
+  assert.equal(packets.at(-1).d.activities[0].state, 'Jellyfin - Paused');
+  assert.equal(packets.at(-1).d.activities[0].name, 'Series');
+});
+
+
+test('Jellyfin movie year accepts release years only and retains the existing title cap', t => {
+  const { jellyfinPresence } = require('../src/streambot/presenceMetadata');
+  const { manager, packets, sync } = fixture(t);
+  for (const year of [undefined, null, '2022', 2022.5, NaN, 0, 999, 1800, 10000, 2101]) {
+    const metadata = jellyfinPresence({ Type: 'Movie', Name: 'The Batman', ProductionYear: year });
+    assert.equal(metadata.presenceTitle, 'The Batman');
+  }
+  manager.session = { title: 'Original movie queue label', sourceKind: 'jellyfin',
+    ...jellyfinPresence({ Type: 'Movie', Name: '😀'.repeat(100), ProductionYear: 2022 }) };
+  sync();
+  assert.equal(Array.from(packets.at(-1).d.activities[0].name).length, 90);
+  assert.ok(packets.at(-1).d.activities[0].name.endsWith('…'));
+  assert.equal(manager.session.title, 'Original movie queue label');
 });

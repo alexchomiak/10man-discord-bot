@@ -2,8 +2,9 @@
 
 const { RichPresence } = require('discord.js-selfbot-v13');
 const { workerDashboardUrl } = require('./fillerArtwork');
+const { presenceText } = require('./presenceMetadata');
 const NAME = 'Stream Player';
-const safeTitle = value => String(value || '').replace(/https?:\/\/\S+/gi, 'Stream');
+const safeTitle = value => String(value || '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/https?:\/\/\S+/gi, 'Stream');
 const clip = (text, limit) => {
   const chars = Array.from(String(text || '').replace(/\s+/g, ' ').trim());
   return chars.length <= limit ? chars.join('') : chars.slice(0, Math.max(0, limit - 1)).join('') + '…';
@@ -22,8 +23,11 @@ function snapshot(manager, now = Date.now()) {
     position = Math.max(0, position - chapter.startSec);
   }
   const title = piece?.isFiller ? 'Ready to play'
-    : clip(safeTitle(chapter?.title || piece?.contentTitle || piece?.title || NAME), 90) || NAME;
-  return { title, source: ({ jellyfin: 'Jellyfin', youtube: 'YouTube', sharetv: 'ShareTV' })[piece?.sourceKind] || 'Other', paused: Boolean(link?.paused), music: Boolean(piece?.musicMode || manager.musicMode),
+    : clip(presenceText(safeTitle(chapter?.title || piece?.presenceTitle || piece?.contentTitle || piece?.title || NAME)), 90) || NAME;
+  const description = piece?.sourceKind === 'sharetv'
+    ? clip(presenceText(safeTitle(piece.programmeDescription)), 128)
+    : piece?.sourceKind === 'direct' ? '' : clip(presenceText(piece?.presenceDetails), 128);
+  return { title, description: description.length >= 2 ? description : null, source: ({ jellyfin: 'Jellyfin', youtube: 'YouTube', sharetv: 'ShareTV' })[piece?.sourceKind] || 'Other', paused: Boolean(link?.paused), music: Boolean(piece?.musicMode || manager.musicMode),
     playbackKey: [piece?.queueId || null, piece?.startedAt || null, piece?.startOffsetSec || 0, chapter?.startSec ?? null],
     position, duration: piece?.isLive ? null : duration, hasPiece: Boolean(piece && !piece.isFiller),
     thumbnail: piece?.thumbnail || null, start: now - Math.max(0, position) * 1000 };
@@ -80,7 +84,7 @@ class PlayerPresence {
       const context = url ? JSON.stringify([appId, url, link.guildId, link.channelId, large, avatar]) : '';
       if (context !== this.assetContext) { this.assetContext = context; this.generation++; }
       const images = url ? this.images(appId, [large, avatar].filter(Boolean)) : [];
-      const key = url ? JSON.stringify([context, state.title, state.source, state.paused, state.music,
+      const key = url ? JSON.stringify([context, state.title, state.description, state.source, state.paused, state.music,
         state.hasPiece, state.duration, state.playbackKey, images]) : '';
       if (!force && key === this.lastKey) return;
       if (!this.client.user) return;
@@ -108,9 +112,9 @@ class PlayerPresence {
       if (url) {
         const activity = new RichPresence(this.client).setApplicationId(appId)
           .setName(state.title).setType(state.music ? 'LISTENING' : 'WATCHING')
-          .setDetails(state.paused ? 'Paused' : state.hasPiece ? 'Now Playing' : 'Ready')
-          .setState(state.source)
+          .setState(`${state.source} - ${state.paused ? 'Paused' : state.hasPiece ? 'Now Playing' : 'Ready'}`)
           .addButton('Open Player', url);
+        if (state.description) activity.setDetails(state.description);
         if (state.hasPiece && !state.paused) {
           activity.setStartTimestamp(state.start);
           if (state.duration) activity.setEndTimestamp(state.start + state.duration * 1000);
