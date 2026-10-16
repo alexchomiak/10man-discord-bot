@@ -1,6 +1,6 @@
 'use strict';
 
-const { ytdlpPresence, jellyfinPresence } = require('./presenceMetadata');
+const { ytdlpPresence, jellyfinPresence, isTwitchUrl } = require('./presenceMetadata');
 
 const { spawn } = require('child_process');
 const { M } = require('./messages');
@@ -893,9 +893,10 @@ async function resolveYtdlp(raw, cfg) {
   let bestDirect = null;
   for (const format of selectableFormats) {
     if (!isCombined(format)) continue;
+    const hasHlsUrl = typeof format.url === 'string' && format.url.length > 0 && (/^m3u8(?:_native)?$/i.test(format.protocol || '') || /\.m3u8(?:[?#]|$)/i.test(format.url));
     const hasManifest = typeof format.manifest_url === 'string' && format.manifest_url.length > 0;
     const hasDirect = typeof format.url === 'string' && format.url.length > 0;
-    if (hasManifest) {
+    if (hasManifest || hasHlsUrl) {
       if (!bestManifest || compareAVFormats(format, bestManifest, preferredLangs) < 0) bestManifest = format;
     } else if (hasDirect && looksProgressive(format)) {
       if (!bestDirect || compareAVFormats(format, bestDirect, preferredLangs) < 0) bestDirect = format;
@@ -907,17 +908,15 @@ async function resolveYtdlp(raw, cfg) {
   const chapters = config.musicMode === true && !isLive ? musicChapters(data.chapters, vodDuration) : null;
 
   if (bestManifest) {
-    // YouTube gives every HLS rendition the same master manifest_url. Its
-    // format.url is the rendition-specific playlist; use that so FFmpeg gets
-    // the resolution selected above rather than adapting from the master.
-    const streamUrl = isYoutubeHlsUrl(bestManifest.url)
-      ? bestManifest.url
-      : bestManifest.manifest_url;
+    // Preserve the selected HLS rendition rather than reopening its adaptive
+    // master. Some extractors expose only the rendition URL.
+    const streamUrl = bestManifest.url && (/^m3u8(?:_native)?$/i.test(bestManifest.protocol || '') || /\.m3u8(?:[?#]|$)/i.test(bestManifest.url) || isYoutubeHlsUrl(bestManifest.url))
+      ? bestManifest.url : bestManifest.manifest_url;
     return {
       kind: 'ytdlp',
       streamType: 'single',
       streamUrl,
-      title: data.title || null, ...ytdlpPresence(data),
+      title: data.title || null, ...ytdlpPresence(data, raw),
       thumbnail,
       available: true,
       startOffsetSec,
@@ -950,7 +949,7 @@ async function resolveYtdlp(raw, cfg) {
       verboseLog(config, `YouTube VOD: segmented HLS ${video.height}p video + audio (progressive)`);
       return {
         kind: 'ytdlp', streamType: 'dash', videoUrl: video.url, audioUrl: audio.url,
-        title: data.title || null, ...ytdlpPresence(data), available: true, startOffsetSec, isLive,
+        title: data.title || null, ...ytdlpPresence(data, raw), available: true, startOffsetSec, isLive,
         thumbnail,
         totalDurationSec: vodDuration,
         chapters,
@@ -964,7 +963,7 @@ async function resolveYtdlp(raw, cfg) {
       kind: 'ytdlp',
       streamType: 'single',
       streamUrl: bestDirect.url,
-      title: data.title || null, ...ytdlpPresence(data),
+      title: data.title || null, ...ytdlpPresence(data, raw),
       thumbnail,
       available: true,
       startOffsetSec,
@@ -1025,7 +1024,7 @@ async function resolveYtdlp(raw, cfg) {
       streamType: 'dash',
       videoUrl: bestVideo.url,
       audioUrl: bestAudio.url,
-      title: data.title || null, ...ytdlpPresence(data),
+      title: data.title || null, ...ytdlpPresence(data, raw),
       thumbnail,
       available: true,
       startOffsetSec,
@@ -1047,7 +1046,7 @@ async function resolveYtdlp(raw, cfg) {
       verboseLog(config, `YouTube Live: separate HLS ${video.height || '?'}p video + audio`);
       return {
         kind: 'ytdlp', streamType: 'dash', videoUrl: video.url, audioUrl: audio.url,
-        title: data.title || null, ...ytdlpPresence(data), thumbnail, available: true, startOffsetSec,
+        title: data.title || null, ...ytdlpPresence(data, raw), thumbnail, available: true, startOffsetSec,
         isLive: true, totalDurationSec: null, chapters: null,
         note: 'separate live HLS A+V merged in-memory (progressive, zero-disk)'
       };
@@ -1155,11 +1154,36 @@ async function resolveSource(input, config) {
   }
   if (isHttp || isPrefixed) {
     const resolved = await resolveYtdlp(raw, cfg);
-    if (resolved.available || !isHttp) return { ...resolved, sourceKind: /^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)(?:[/:]|$)/i.test(raw) || /^(?:ytsearch|youtube):/i.test(raw) ? 'youtube' : resolved.kind };
-    if (cfg.browserFallback === false) return resolved;
+    if (resolved.available || !isHttp) return { ...resolved, sourceKind: /^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)(?:[/:]|$)/i.test(raw) || /^(?:ytsearch|youtube):/i.test(raw) ? 'youtube' : resolved.sourceKind || resolved.kind };
+    if (isTwitchUrl(raw)) {
+      const note = String(resolved.note || '');
+      const failureKind = /no_cdm_specified|DRM|protected content/i.test(note) ? 'protected-playback'
+        : /not (?:currently )?live|offline/i.test(note) ? 'offline'
+          : /subscriber.only|subscription|unauthorized_entitlements|geo.?restrict|not available in your/i.test(note) ? 'restricted'
+            : /does not exist|not found/i.test(note) ? 'unavailable'
+              : /not installed/i.test(note) ? 'extractor-unavailable'
+                : /timed? ?out/i.test(note) ? 'timeout' : 'unsupported';
+      const notes = {
+        'protected-playback': 'Twitch requires protected playback (no_cdm_specified: a content decryption module); this stream cannot be played by the bot.',
+        offline: 'This Twitch channel is offline.',
+        restricted: 'This Twitch stream requires access that is unavailable to the bot (subscription, account entitlement, or region).',
+        unavailable: 'This Twitch channel does not exist or is unavailable.',
+        'extractor-unavailable': 'yt-dlp is not installed; check YTDLP_PATH for native Twitch playback.',
+        timeout: 'Twitch resolution timed out in yt-dlp. Try again or check network access.',
+        unsupported: 'yt-dlp could not resolve this Twitch stream. The bot supports native Twitch playback only.'
+      };
+      return { kind: 'ytdlp', sourceKind: 'twitch', available: false, failureKind, note: notes[failureKind] };
+    }
+    if (cfg.browserFallback === false) {
+      console.log('[streambot]', 'Chromium fallback skipped: disabled');
+      return { ...resolved, failureKind: 'browser-disabled',
+        note: 'yt-dlp could not resolve this page. Chromium fallback is disabled; enable STREAMBOT_BROWSER_FALLBACK to try HTML5 video capture.' };
+    }
     verboseLog(cfg, 'yt-dlp could not resolve page; probing Chromium');
     const browser = await require('./browserStream').probeBrowser(raw, cfg);
-    return browser || resolved;
+    if (browser) return browser;
+    return { kind: 'browser', available: false, failureKind: 'browser-error',
+      note: 'yt-dlp could not resolve this page; Chromium fallback did not find a playable video. Check that the page plays in a browser.' };
   }
 
   return { kind: 'unknown', available: false, note: M.SOURCE_UNRECOGNIZED };

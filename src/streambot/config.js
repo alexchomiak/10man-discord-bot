@@ -14,6 +14,14 @@ function redactToken(str, token) {
   return str;
 }
 
+function parseBrowserUserAgent(value) {
+  if (value == null) return '';
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f-\u009f]/.test(value) || value.length > 1024) {
+    throw new Error(`${TAG} STREAMBOT_BROWSER_USER_AGENT must be a single-line browser identifier of at most 1024 characters.`);
+  }
+  return value.trim();
+}
+
 function parsePositiveInt(value, fallback) {
   const n = Number.parseInt(value, 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -124,6 +132,7 @@ function loadConfig() {
     musicVisualizer: parseBoolean(process.env.STREAMBOT_MUSIC_VISUALIZER, true),
     browserFallback: parseBoolean(process.env.STREAMBOT_BROWSER_FALLBACK, true),
     browserPath: (process.env.STREAMBOT_BROWSER_PATH || '').trim(),
+    browserUserAgent: parseBrowserUserAgent(process.env.STREAMBOT_BROWSER_USER_AGENT),
     browserTimeoutMs: parsePositiveInt(process.env.STREAMBOT_BROWSER_TIMEOUT_MS, 20000),
     dashboardRandomCodes: parseBoolean(process.env.STREAM_DASHBOARD_RANDOM_CODES),
     dashboardAccessCode: Array.from({ length: 6 }, () => String.fromCharCode(97 + crypto.randomInt(26))).join(''),
@@ -275,4 +284,4 @@ function loadConfig() {
   };
 }
 
-module.exports = { loadConfig, redactToken, TAG };
+module.exports = { loadConfig, redactToken, TAG, parseBrowserUserAgent };

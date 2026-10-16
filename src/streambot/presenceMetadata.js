@@ -19,7 +19,20 @@ function presenceText(value) {
     .replace(/\s+/g, ' ').trim();
 }
 
-function ytdlpPresence(data) {
+function isTwitchUrl(raw) {
+  try { return /^(?:[a-z0-9-]+\.)?twitch\.tv$/i.test(new URL(raw).hostname); }
+  catch { return false; }
+}
+
+function ytdlpPresence(data, input) {
+  if (/^twitch/i.test(data.extractor || data.extractor_key || '') || isTwitchUrl(input)) {
+    const streamer = presenceText(data.channel || data.uploader || data.uploader_id);
+    const categories = Array.isArray(data.categories) ? data.categories.map(presenceText).filter(Boolean) : [];
+    const category = categories[0] || presenceText(data.game);
+    const stream = /twitch(?::stream|stream)/i.test(data.extractor || data.extractor_key || '') || data.is_live === true;
+    return { sourceKind: 'twitch', presenceTitle: stream ? presenceText(data.description) || null : null,
+      presenceDetails: [...new Set([streamer, category].filter(Boolean))].join(' - ') || presenceText(data.description) || null };
+  }
   const raw = typeof data.description === 'string' ? data.description : '';
   const links = raw.match(/(?:https?:\/\/|www\.)\S+/gi) || [];
   const linkLength = links.reduce((length, link) => length + link.length, 0);
@@ -45,4 +58,4 @@ function jellyfinPresence(item) {
     presenceDetails: [name, numbering].filter(Boolean).join(' - ') || null };
 }
 
-module.exports = { presenceText, ytdlpPresence, jellyfinPresence };
+module.exports = { presenceText, ytdlpPresence, jellyfinPresence, isTwitchUrl };

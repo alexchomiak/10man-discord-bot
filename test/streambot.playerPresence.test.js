@@ -577,3 +577,33 @@ test('Jellyfin movie year accepts release years only and retains the existing ti
   assert.ok(packets.at(-1).d.activities[0].name.endsWith('…'));
   assert.equal(manager.session.title, 'Original movie queue label');
 });
+
+
+test('Twitch presence publishes broadcast title, streamer/category, safe artwork and provider transitions', async t => {
+  const { ytdlpPresence } = require('../src/streambot/presenceMetadata');
+  const { client, manager, presence, packets, sync } = fixture(t);
+  client.user.displayAvatarURL = () => 'https://cdn.example/avatar.png';
+  presence.resolveAssets = async (_client, _app, url) => [{ url, external_asset_path: url.includes('jtvnw') ? 'mp:external/twitch' : 'mp:external/avatar' }];
+  manager.session = { title: 'Previous', sourceKind: 'youtube', presenceDetails: 'Previous creator' }; sync();
+  manager.session = { queueId: 'twitch', title: 'Streamer (live)', isLive: true,
+    thumbnail: 'https://static-cdn.jtvnw.net/preview.jpg',
+    ...ytdlpPresence({ extractor: 'twitch:stream', description: 'Live title', uploader: 'Streamer', categories: ['Sports'], is_live: true }) };
+  sync(); await new Promise(resolve => setImmediate(resolve)); sync();
+  let activity = packets.at(-1).d.activities[0];
+  assert.equal(activity.name, 'Live title');
+  assert.equal(activity.details, 'Streamer - Sports');
+  assert.equal(activity.state, 'Twitch - Now Playing');
+  assert.equal(activity.assets.large_image, 'mp:external/twitch');
+  assert.equal(activity.timestamps?.end, undefined);
+  assert.equal(manager.session.title, 'Streamer (live)');
+  manager.voiceLink.paused = true; manager.voiceLink.pausedSession = manager.session; sync();
+  assert.equal(packets.at(-1).d.activities[0].state, 'Twitch - Paused');
+  assert.equal(packets.at(-1).d.activities[0].timestamps?.start, undefined);
+  manager.voiceLink.paused = false;
+  manager.session = { title: 'Next movie', sourceKind: 'jellyfin', presenceDetails: 'Synopsis' }; sync();
+  activity = packets.at(-1).d.activities[0];
+  assert.equal(activity.state, 'Jellyfin - Now Playing');
+  assert.equal(activity.details, 'Synopsis');
+  assert.equal(packets.at(-1).d.activities.length, 1);
+  assert.equal(ytdlpPresence({ extractor: 'twitch:stream', uploader: 'Streamer' }).presenceDetails, 'Streamer');
+});

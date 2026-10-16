@@ -27,7 +27,7 @@ function snapshot(manager, now = Date.now()) {
   const description = piece?.sourceKind === 'sharetv'
     ? clip(presenceText(safeTitle(piece.programmeDescription)), 128)
     : piece?.sourceKind === 'direct' ? '' : clip(presenceText(piece?.presenceDetails), 128);
-  return { title, description: description.length >= 2 ? description : null, source: ({ jellyfin: 'Jellyfin', youtube: 'YouTube', sharetv: 'ShareTV' })[piece?.sourceKind] || 'Other', paused: Boolean(link?.paused), music: Boolean(piece?.musicMode || manager.musicMode),
+  return { title, description: description.length >= 2 ? description : null, source: ({ jellyfin: 'Jellyfin', youtube: 'YouTube', sharetv: 'ShareTV', twitch: 'Twitch' })[piece?.sourceKind] || 'Other', paused: Boolean(link?.paused), music: Boolean(piece?.musicMode || manager.musicMode),
     playbackKey: [piece?.queueId || null, piece?.startedAt || null, piece?.startOffsetSec || 0, chapter?.startSec ?? null],
     position, duration: piece?.isLive ? null : duration, hasPiece: Boolean(piece && !piece.isFiller),
     thumbnail: piece?.thumbnail || null, start: now - Math.max(0, position) * 1000 };

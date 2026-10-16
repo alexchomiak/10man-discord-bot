@@ -3,6 +3,7 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { chromium } = require('playwright-core');
+const { parseBrowserUserAgent } = require('./config');
 
 const DEFAULT_TIMEOUT_MS = 20000;
 const MAX_CHUNK_BYTES = 8 * 1024 * 1024;
@@ -26,10 +27,34 @@ function validPageUrl(value) {
 
 function probeFailureKind(error) {
   const message = String(error?.message || '');
+  if (message.includes('Browser page access denied')) return 'access-denied';
+  if (message.includes('Browser page returned HTTP error')) return 'page-unavailable';
+  if (/Executable doesn't exist|executable doesn't exist|browserType.launch|Failed to launch|Missing dependencies/i.test(message)) return 'browser-unavailable';
+  if (/net::ERR_|Navigation failed/i.test(message)) return 'navigation-error';
   if (message.includes('No visible HTML5 video player')) return 'no-visible-video';
   if (message.includes('did not start video playback')) return 'video-not-playing';
-  if (error?.name === 'TimeoutError' || /timeout/i.test(message)) return 'timeout';
+  if (error?.name === 'TimeoutError' || /tim(?:e|ed)[ -]?out/i.test(message)) return 'timeout';
   return 'browser-error';
+}
+
+const PROBE_FAILURE_NOTES = Object.freeze({
+  'access-denied': 'The page denied Chromium access. Check whether the page requires sign-in or presents an access challenge.',
+  'page-unavailable': 'The page returned an HTTP error. Check that the event page is still available.',
+  'browser-unavailable': 'Chromium could not start. Check STREAMBOT_BROWSER_PATH and the browser installation.',
+  'navigation-error': 'Chromium could not load the page. Check network access and the page certificate.',
+  'no-visible-video': 'No visible HTML5 video player appeared. The page may require interaction or block headless browsers.',
+  'video-not-playing': 'The HTML5 player did not start playback. Check that the event is live and playable.',
+  'video-not-capturable': 'The player exposes no capturable video track. Browser capture cannot use this player.',
+  timeout: 'Chromium timed out loading or starting the player. Check the page and STREAMBOT_BROWSER_TIMEOUT_MS.',
+  'browser-error': 'Chromium could not inspect the player. Check the page in a browser and the worker browser installation.'
+});
+
+function browserFailure(kind) {
+  const failureKind = Object.hasOwn(PROBE_FAILURE_NOTES, kind) ? kind : 'browser-error';
+  // One bounded diagnostic per attempt; never include page URLs or browser errors.
+  console.log('[streambot]', `Chromium probe failed: ${failureKind}`);
+  return { kind: 'browser', available: false, failureKind,
+    note: `yt-dlp could not resolve this page; Chromium fallback failed. ${PROBE_FAILURE_NOTES[failureKind]}` };
 }
 
 async function findVideo(page, timeoutMs) {
@@ -81,16 +106,26 @@ async function playVideo({ frame, video }, timeoutMs) {
 async function openPlayer(pageUrl, config = {}) {
   if (!validPageUrl(pageUrl)) throw new Error('Browser fallback requires an HTTP(S) page URL.');
   const timeoutMs = Number(config.browserTimeoutMs) || DEFAULT_TIMEOUT_MS;
+  const userAgent = parseBrowserUserAgent(config.browserUserAgent);
   const browser = await chromium.launch(browserOptions(config));
   try {
-    const context = await browser.newContext({ viewport: {
+    const context = await browser.newContext({ ...(userAgent ? { userAgent } : {}), viewport: {
       width: Number(config.streamWidth) || 1920,
       height: Number(config.streamHeight) || 1080
     } });
     const page = await context.newPage();
     page.on('popup', popup => { void popup.close().catch(() => {}); });
-    await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-    const player = await findVideo(page, timeoutMs);
+    const response = await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    let player;
+    try { player = await findVideo(page, timeoutMs); }
+    catch (error) {
+      // Some sites return an error status with a usable embedded player. Let
+      // discovery succeed before treating the document response as a failure.
+      if (probeFailureKind(error) !== 'no-visible-video') throw error;
+      if ([401, 403, 429].includes(response?.status())) throw new Error('Browser page access denied.');
+      if (response?.status() >= 400) throw new Error('Browser page returned HTTP error.');
+      throw error;
+    }
     const state = await playVideo(player, timeoutMs);
     return { browser, page, player, state };
   } catch (error) {
@@ -112,15 +147,13 @@ async function probeBrowser(pageUrl, config = {}) {
       return kinds;
     });
     if (!tracks?.includes('video')) {
-      if (config.verbose === true) console.log('[streambot]', 'Chromium probe failed: video-not-capturable');
-      return null;
+      return browserFailure('video-not-capturable');
     }
     return { kind: 'browser', available: true, browserPageUrl: pageUrl,
       streamUrl: pageUrl, title: 'Live Stream', isLive: true,
       totalDurationSec: null, note: 'HTML5 video captured in a headless browser' };
   } catch (error) {
-    if (config.verbose === true) console.log('[streambot]', `Chromium probe failed: ${probeFailureKind(error)}`);
-    return null;
+    return browserFailure(probeFailureKind(error));
   }
   finally { await opened?.browser.close().catch(() => {}); }
 }
@@ -246,4 +279,4 @@ async function startBrowserStream(pageUrl, config = {}, signal) {
   }
 }
 
-module.exports = { probeBrowser, startBrowserStream, validPageUrl, browserOptions };
+module.exports = { probeBrowser, startBrowserStream, validPageUrl, browserOptions, probeFailureKind };

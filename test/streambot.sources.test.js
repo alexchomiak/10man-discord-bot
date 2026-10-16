@@ -89,6 +89,16 @@ try { fs.appendFileSync(LOG, JSON.stringify({ argv }) + '\\n'); } catch {}
 let scenario = 'hls';
 try { scenario = (fs.readFileSync(SC, 'utf8').trim() || 'hls'); } catch {}
 const SCENARIOS = {
+  twitch: {
+    extractor: 'twitch:stream', extractor_key: 'TwitchStream', title: 'PrimeVideo (live)',
+    description: 'Live baseball stream', uploader: 'PrimeVideo', categories: ['Sports'], is_live: true,
+    thumbnail: 'https://static-cdn.jtvnw.net/previews/live_user_primevideo-640x360.jpg',
+    formats: [
+      { format_id: 'audio_only', protocol: 'm3u8_native', vcodec: 'none', acodec: 'aac', url: 'https://video.example/audio.m3u8' },
+      { format_id: '720p', protocol: 'm3u8_native', vcodec: 'avc1', acodec: 'mp4a', height: 720, tbr: 3000, url: 'https://video.example/720.m3u8?token=private' },
+      { format_id: '1080p', protocol: 'm3u8_native', vcodec: 'avc1', acodec: 'mp4a', height: 1080, tbr: 6000, manifest_url: 'https://usher.example/master.m3u8?token=private', url: 'https://video.example/1080.m3u8?token=private' }
+    ]
+  },
   youtubeHls: {
     duration: 8551,
     formats: [
@@ -243,6 +253,10 @@ if (argv.includes('--dump-single-json')) {
   process.exit(0);
 }
 if (argv.includes('--dump-json')) {
+  if (scenario === 'twitchProtected' || scenario === 'twitchOffline') {
+    process.stderr.write(scenario === 'twitchProtected' ? 'ERROR: no_cdm_specified: no_cdm_specified\\n' : 'ERROR: This channel is not currently live\\n');
+    process.exit(1);
+  }
   if (scenario === 'unsupported') {
     process.stderr.write('ERROR: Unsupported URL\\n');
     process.exit(1);
@@ -1676,4 +1690,84 @@ test('Jellyfin existing item response carries movie synopsis and missing episode
     assert.equal(metadata.presenceTitle, title);
     assert.equal(metadata.presenceDetails, details);
   }
+});
+
+
+test('failed Chromium fallback surfaces its reason instead of the original yt-dlp-only error', async () => {
+  setScenario('unsupported');
+  const browserStream = require('../src/streambot/browserStream');
+  const original = browserStream.probeBrowser;
+  try {
+    browserStream.probeBrowser = async () => ({ kind: 'browser', available: false,
+      failureKind: 'access-denied', note: 'yt-dlp failed; Chromium access denied.' });
+    const result = await resolveSource('https://example.com/event', { ...CfgPlain, browserFallback: true });
+    assert.equal(result.failureKind, 'access-denied');
+    assert.equal(result.note, 'yt-dlp failed; Chromium access denied.');
+    browserStream.probeBrowser = async () => null;
+    const fallback = await resolveSource('https://example.com/event', { ...CfgPlain, browserFallback: true });
+    assert.match(fallback.note, /Chromium fallback did not find a playable video/);
+  } finally { browserStream.probeBrowser = original; }
+});
+
+
+test('disabled Chromium fallback says it was skipped without exposing raw extractor diagnostics', async () => {
+  setScenario('unsupported');
+  const result = await resolveSource('https://example.com/event?token=private', { ...CfgPlain, browserFallback: false });
+  assert.equal(result.failureKind, 'browser-disabled');
+  assert.match(result.note, /Chromium fallback is disabled.*STREAMBOT_BROWSER_FALLBACK/);
+  assert.ok(!result.note.includes('private'));
+});
+
+
+test('Twitch combined HLS selects capped rendition URL with native stream metadata and no browser fallback', async () => {
+  setScenario('twitch');
+  const browserStream = require('../src/streambot/browserStream');
+  const original = browserStream.probeBrowser;
+  let browserCalls = 0;
+  browserStream.probeBrowser = async () => { browserCalls++; return null; };
+  try {
+    const live = await resolveSource('https://www.twitch.tv/primevideo', { ...CfgPlain, browserFallback: true, sourceMaxHeight: 720 });
+    assert.equal(live.available, true);
+    assert.equal(live.sourceKind, 'twitch');
+    assert.equal(live.streamType, 'single');
+    assert.equal(live.streamUrl, 'https://video.example/720.m3u8?token=private');
+    assert.equal(live.presenceTitle, 'Live baseball stream');
+    assert.equal(live.presenceDetails, 'PrimeVideo - Sports');
+    assert.equal(live.isLive, true);
+    assert.equal(live.totalDurationSec, null);
+    assert.equal(browserCalls, 0);
+    const full = await resolveYtdlp('https://www.twitch.tv/primevideo', { ...CfgPlain, sourceMaxHeight: 1080 });
+    assert.equal(full.streamUrl, 'https://video.example/1080.m3u8?token=private');
+    assert.match(full.thumbnail, /static-cdn\.jtvnw\.net/);
+  } finally { browserStream.probeBrowser = original; }
+});
+
+test('protected and offline Twitch responses explain provider failure without pointless browser capture', async () => {
+  for (const [scenario, expected] of [['twitchProtected', 'protected-playback'], ['twitchOffline', 'offline']]) {
+    setScenario(scenario);
+    const result = await resolveSource('https://www.twitch.tv/primevideo', { ...CfgPlain, browserFallback: true });
+    assert.equal(result.available, false);
+    assert.equal(result.sourceKind, 'twitch');
+    assert.equal(result.failureKind, expected);
+    assert.match(result.note, expected === 'offline' ? /offline/ : /content decryption module/);
+  }
+});
+
+
+test('Twitch failures stay native-only even when generic browser fallback is enabled', async () => {
+  const browserStream = require('../src/streambot/browserStream');
+  const original = browserStream.probeBrowser;
+  let calls = 0;
+  browserStream.probeBrowser = async () => { calls++; throw new Error('Twitch must not use Chromium'); };
+  try {
+    for (const scenario of ['unsupported', 'twitchProtected', 'twitchOffline']) {
+      setScenario(scenario);
+      const result = await resolveSource('https://www.twitch.tv/primevideo?token=private', { ...CfgPlain, browserFallback: true });
+      assert.equal(result.available, false);
+      assert.equal(result.sourceKind, 'twitch');
+      assert.equal(result.failureKind, scenario === 'unsupported' ? 'unsupported' : scenario === 'twitchOffline' ? 'offline' : 'protected-playback');
+      assert.ok(!result.note.includes('private'));
+    }
+    assert.equal(calls, 0);
+  } finally { browserStream.probeBrowser = original; }
 });
