@@ -1,4 +1,5 @@
 'use strict';
+const { presenceText } = require('./presenceMetadata');
 
 const { ContentNickname } = require('./contentNickname');
 const { ShareTvNicknameRefresh } = require('./shareTvNicknameRefresh');
@@ -85,6 +86,8 @@ class StreamManager {
     this.client = client;
     this.defaultChannelId = defaultChannelId;
     this.config = config || {};
+    this.queueLimit = this.config.streamQueueLimit || 100;
+    this.queueGapSeconds = this.config.streamBufferSec ?? 15;
     this.metricSink = this.config.metricSink || null;
     if (!this.metricSink && this.config.otelMetrics) {
       if (this.config.otelSampleInvalid) {
@@ -1307,6 +1310,7 @@ class StreamManager {
             piece.presenceDetails = resolved.presenceDetails ?? null;
             piece.programmeDescription = resolved.programmeDescription ?? null;
             piece.shareTvChannel = resolved.shareTvChannel === true;
+            piece.shareTvMetadata = resolved.shareTvMetadata === true;
             piece.sourceKind = resolved.sourceKind || resolved.kind;
             piece.contentTitle = piece.shareTvChannel ? resolved.contentTitle || piece.contentTitle : resolved.contentTitle || resolved.title || piece.contentTitle;
             piece.title ||= resolved.title;
@@ -1386,6 +1390,7 @@ class StreamManager {
               piece.presenceDetails = resolved.presenceDetails ?? null;
               piece.programmeDescription = resolved.programmeDescription ?? null;
               piece.shareTvChannel = resolved.shareTvChannel === true;
+              piece.shareTvMetadata = resolved.shareTvMetadata === true;
               piece.sourceKind = resolved.sourceKind || resolved.kind;
               piece.contentTitle = piece.shareTvChannel ? resolved.contentTitle || piece.contentTitle : resolved.contentTitle || resolved.title || piece.contentTitle;
               this.contentNickname.update(piece);
@@ -1727,11 +1732,11 @@ class StreamManager {
   // loader defaults to 15; tests that want a deterministic "no buffer" state
   // pass streamBufferSec: 0.)
   _gapFillerEnabled() {
-    return this.config.streamBufferSec !== 0;
+    return this.queueGapSeconds !== 0;
   }
 
   _gapFillerDurationSec() {
-    return this.config.streamBufferSec > 0 ? this.config.streamBufferSec : 15;
+    return this.queueGapSeconds;
   }
 
   _gapFiller(link, nextPiece = null) {
@@ -1849,14 +1854,54 @@ class StreamManager {
     return { ok: true, enabled };
   }
 
+  async setQueueGap(seconds) {
+    if (!Number.isInteger(seconds) || seconds < 0 || seconds > 300) {
+      return { ok: false, message: 'Between-video interval must be an integer from 0 to 300 seconds.' };
+    }
+    return this._serialize(async () => {
+      this.queueGapSeconds = seconds;
+      const link = this.voiceLink;
+      const pipeline = link?.pipeline;
+      if (pipeline) {
+        const current = link.paused ? link.pausedSession : pipeline.activeWriter;
+        let realAhead = !!current && !current.isFiller;
+        // Rebuild pending countdowns only; the active source keeps playing.
+        const pending = pipeline.enqueue.filter(piece => !(piece.isFiller && piece.title === 'buffer'));
+        const rebuilt = [];
+        for (const piece of pending) {
+          const upcoming = !piece.isFiller && piece.queueId !== current?.queueId;
+          if (upcoming && realAhead && seconds > 0 && !this.musicMode) rebuilt.push(this._gapFiller(link, piece));
+          rebuilt.push(piece);
+          if (!piece.isFiller) realAhead = true;
+        }
+        pipeline.enqueue.splice(0, pipeline.enqueue.length, ...rebuilt);
+      }
+      return { ok: true, seconds };
+    });
+  }
+
+  setQueueLimit(limit) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+      return { ok: false, message: 'Queue limit must be an integer from 1 to 1000.' };
+    }
+    this.queueLimit = limit;
+    return { ok: true, limit };
+  }
+
+  // Internal buffers and the current/paused item do not occupy waiting slots.
+  _queuedMediaCount(link = this.voiceLink, queue = link?.pipeline?.enqueue || []) {
+    const currentId = (link?.paused ? link.pausedSession : link?.pipeline?.activeWriter)?.queueId;
+    return queue.filter(piece => !piece.isFiller && (!currentId || piece.queueId !== currentId)).length;
+  }
+
   status() {
     const link = this.voiceLink;
     if (!link) return null;
     const piece = link.paused ? link.pausedSession : this.session;
     const current = piece ? this._queueItem(piece) : null;
-    // Channel EPG refreshes replace contentTitle while the live session keeps
+    // ShareTV EPG refreshes replace contentTitle while the live session keeps
     // its original queue label. Publish the current programme to every player.
-    if (current && piece.shareTvChannel && !piece.isFiller && piece.contentTitle) {
+    if (current && (piece.shareTvChannel || piece.shareTvMetadata) && !piece.isFiller && piece.contentTitle) {
       current.title = piece.contentTitle;
     }
     const rtcBytesSent = link.pipeline?.feeder?.rtcBytesSent || 0;
@@ -1872,7 +1917,7 @@ class StreamManager {
     }
     return { guildId: link.guildId, channelId: link.channelId,
       streamUrl: piece?.videoUrl || piece?.streamUrl || null,
-      title: piece?.shareTvChannel && !piece.isFiller && piece.contentTitle ? piece.contentTitle : piece?.title || null,
+      title: (piece?.shareTvChannel || piece?.shareTvMetadata) && !piece.isFiller && piece.contentTitle ? piece.contentTitle : piece?.title || null,
       startedAt: piece?.startedAt || link.joinedAt,
       elapsedMs: Date.now() - (piece?.startedAt || link.joinedAt),
       alive: !link.closing && !link.disconnectFailed, inChannel: true, isFiller: !!piece?.isFiller,
@@ -1885,6 +1930,7 @@ class StreamManager {
       positionSec: piece ? Math.round(link.paused && Number.isFinite(link.pausedPositionSec)
         ? link.pausedPositionSec : this.positionOf(piece)) : null,
       current,
+      transition: piece?.isFiller && piece.upNext ? { kind: 'up-next' } : null,
       musicChapters: this.musicMode && !piece?.isFiller ? piece?.chapters || null : null,
       currentChapter: this.musicMode && !piece?.isFiller
         ? this._currentChapter(piece, link.paused && Number.isFinite(link.pausedPositionSec)
@@ -1904,6 +1950,9 @@ class StreamManager {
   _queueItem(piece) {
     return { id: piece.queueId, sourceKind: piece.sourceKind || null, contentTitle: piece.contentTitle || null, title: piece.title || (piece.isFiller ? 'Filler' : 'Untitled video'),
       thumbnail: piece.thumbnail || null,
+      presenceTitle: presenceText(String(piece.presenceTitle || '').slice(0, 16000)).slice(0, 500) || null,
+      presenceDetails: presenceText(String(piece.presenceDetails || '').slice(0, 16000)).slice(0, 1000) || null,
+      programmeDescription: presenceText(String(piece.programmeDescription || '').slice(0, 16000)).slice(0, 1000) || null,
       isFiller: !!piece.isFiller, isLive: !!piece.isLive,
       durationSec: Number.isFinite(piece.totalDurationSec) ? piece.totalDurationSec : null };
   }
@@ -1924,9 +1973,11 @@ class StreamManager {
     catch (error) { this._verbose(`music queue artwork update skipped: ${error.message}`); }
   }
 
-  async toggleMusicMode() {
+  async toggleMusicMode(desiredEnabled) {
     return this._serialize(async () => {
-      const enabled = !this.musicMode;
+      if (desiredEnabled !== undefined && typeof desiredEnabled !== 'boolean') return { ok: false, message: 'Enabled must be a boolean.' };
+      const enabled = desiredEnabled === undefined ? !this.musicMode : desiredEnabled;
+      if (enabled === this.musicMode) return { ok: true, enabled, restarted: false };
       if (enabled && !workerDashboardUrl(this.config.dashboardBaseUrl,
         this.config.dashboardRandomCodes ? this.config.dashboardAccessCode : this.config.workerId || this.config.defaultWorkerId || 'primary')) {
         return { ok: false, message: 'Set STREAM_DASHBOARD_BASE_URL to the public dashboard URL before enabling Music Mode.' };
@@ -2050,7 +2101,7 @@ class StreamManager {
       if (!r.ok) return r;
       const link = r.voiceLink;
       const p = this._ensurePipeline(link, videoModule);
-      if (p.enqueue.length >= (this.config.streamQueueLimit || 100)) {
+      if (this._queuedMediaCount(link) >= this.queueLimit) {
         return { ok: false, message: 'The stream queue is full. Wait for a video to finish or use $stop.' };
       }
       const piece = this._piece(link, args);
@@ -2089,7 +2140,7 @@ class StreamManager {
       const oldLink = this.voiceLink;
       const activeId = oldLink?.pausedSession?.queueId || oldLink?.pipeline?.activeWriter?.queueId;
       const preserved = (oldLink?.pipeline?.enqueue || []).filter(piece => piece.queueId !== activeId);
-      if (preserved.length + entries.length > (this.config.streamQueueLimit || 100)) return { ok: false, message: 'Scheduled content and existing queue exceed the stream queue limit.' };
+      if (this._queuedMediaCount(oldLink, preserved) + entries.length > this.queueLimit) return { ok: false, message: 'Scheduled content and existing queue exceed the stream queue limit.' };
       const moved = oldLink && (oldLink.guildId !== guildId || oldLink.channelId !== channelId);
       const r = await this._ensureVoiceLink(guildId, channelId, videoModule);
       if (!r.ok) return r;
@@ -2129,11 +2180,10 @@ class StreamManager {
         existing?.enqueue?.some(piece => !piece.isFiller);
       const gaps = !this.musicMode && this._gapFillerEnabled()
         ? entries.length - 1 + (realAhead ? 1 : 0) : 0;
-      const limit = this.config.streamQueueLimit || 100;
-      const needed = entries.length + gaps;
-      const available = limit - (existing?.enqueue?.length || 0);
+      const needed = entries.length;
+      const available = Math.max(0, this.queueLimit - this._queuedMediaCount(existing ? this.voiceLink : null));
       if (needed > available) return { ok: false,
-        message: `Playlist needs ${needed} queue slots, but only ${available} are free. Increase STREAM_QUEUE_LIMIT or clear the queue.` };
+        message: `Playlist needs ${needed} queue slots, but only ${available} are free. Increase the queue limit in admin settings or clear the queue.` };
       const videoModule = await this.preparePlayback(await this._video());
       const r = await this._ensureVoiceLink(guildId, channelId, videoModule);
       if (!r.ok) return r;
@@ -2280,6 +2330,7 @@ class StreamManager {
       presenceTitle: piece.presenceTitle ?? null,
       presenceDetails: piece.presenceDetails ?? null,
       shareTvChannel: piece.shareTvChannel,
+      shareTvMetadata: piece.shareTvMetadata,
       scheduledNickname: piece.scheduledNickname,
       scheduleId: piece.scheduleId,
       thumbnail: piece.thumbnail,

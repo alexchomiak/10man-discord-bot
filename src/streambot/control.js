@@ -15,6 +15,7 @@ class StreamControl {
 
   _result(ok, message, extra = {}) {
     return { ok, message, status: this.streamManager.status(),
+      queueLimit: this.streamManager.queueLimit, queueGapSeconds: this.streamManager.queueGapSeconds,
       progressOverlay: this.streamManager.progressOverlay === true,
       musicMode: this.streamManager.musicMode === true,
       contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
@@ -60,6 +61,14 @@ class StreamControl {
         return { ok: true, guildId: targetGuildId, guildName: guild.name,
           channelId: targetChannelId, channelName: channel.name, channelType: channel.type };
       }
+      case 'set-queue-gap': {
+        const r = await this.streamManager.setQueueGap(payload.seconds);
+        return this._result(r.ok, r.message || `Between-video interval set to ${r.seconds} seconds.`, { detail: this._detail(r, ['seconds']) });
+      }
+      case 'set-queue-limit': {
+        const r = this.streamManager.setQueueLimit(payload.limit);
+        return this._result(r.ok, r.message || `Queue limit set to ${r.limit}.`, { detail: this._detail(r, ['limit']) });
+      }
       case 'set-content-preview': {
         if (typeof payload.enabled !== 'boolean') return this._result(false, 'Enabled must be a boolean.');
         if (payload.snapshotEnabled !== undefined && typeof payload.snapshotEnabled !== 'boolean') return this._result(false, 'Snapshot enabled must be a boolean.');
@@ -73,7 +82,8 @@ class StreamControl {
         return this._result(true, `Derive nickname from content ${r.enabled ? 'on' : 'off'}.`, { detail: { enabled: r.enabled } });
       }
       case 'toggle-music-mode': {
-        const r = await this.streamManager.toggleMusicMode();
+        if (payload.enabled !== undefined && typeof payload.enabled !== 'boolean') return this._result(false, 'Enabled must be a boolean.');
+        const r = await this.streamManager.toggleMusicMode(payload.enabled);
         return this._result(r.ok === true, r.message || `Music Mode ${r.enabled ? 'on' : 'off'}.`, {
           detail: this._detail(r, ['enabled', 'restarted'])
         });
@@ -90,11 +100,12 @@ class StreamControl {
       case 'status': {
         const status = this.streamManager.status();
         return { ok: true, message: status ? M.STREAM_STATUS(status) : M.STREAM_NOTHING, status,
+          queueLimit: this.streamManager.queueLimit, queueGapSeconds: this.streamManager.queueGapSeconds,
           progressOverlay: this.streamManager.progressOverlay === true,
           musicMode: this.streamManager.musicMode === true,
           contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
-      contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
-      deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true };
+          contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
+          deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true };
       }
       case 'reorder': {
         const r = await this.streamManager.reorderQueue(payload.ids);
@@ -234,6 +245,7 @@ class StreamControl {
           presenceTitle: resolved.presenceTitle ?? null,
           presenceDetails: resolved.presenceDetails ?? null,
           shareTvChannel: resolved.shareTvChannel === true,
+          shareTvMetadata: resolved.shareTvMetadata === true,
           thumbnail: resolved.thumbnail || null,
           chapters: resolved.chapters || null,
           startOffsetSec: resolved.startOffsetSec || null,

@@ -4,7 +4,7 @@ const { WebSocket } = require('ws');
 const { BROKER_MAX_PAYLOAD } = require('../workerChannels');
 const { PresenceArtwork } = require('./presenceArtwork');
 
-const CAPABILITIES = ['play', 'scheduled-play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name', 'resolve-channel', 'list-channels', 'set-content-nickname', 'set-content-preview'];
+const CAPABILITIES = ['play', 'scheduled-play', 'join', 'move', 'stop', 'status', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'set-global-name', 'resolve-channel', 'list-channels', 'set-content-nickname', 'set-content-preview', 'set-queue-limit', 'set-queue-gap'];
 
 function ownProfile(user, manager) {
   const guildId = manager?.voiceLink?.guildId;
@@ -75,7 +75,8 @@ class StreamBrokerClient {
         userId: this.streamManager?.client?.user?.id || null,
         profile: ownProfile(this.streamManager?.client?.user, this.streamManager),
         capabilities: CAPABILITIES,
-        status: this.streamManager.status(), contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
+        status: this.streamManager.status(), queueLimit: this.streamManager.queueLimit, queueGapSeconds: this.streamManager.queueGapSeconds,
+      contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
         contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
       deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true,
         musicMode: this.streamManager.musicMode === true
@@ -166,6 +167,7 @@ class StreamBrokerClient {
   _publishStatus() {
     return this._send({ type: 'status', status: this.streamManager.status(),
       profile: ownProfile(this.streamManager?.client?.user, this.streamManager),
+      queueLimit: this.streamManager.queueLimit, queueGapSeconds: this.streamManager.queueGapSeconds,
       contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
         contentSnapshotPreview: this.streamManager.contentSnapshotPreview === true,
       deriveNicknameFromContent: this.streamManager.deriveNicknameFromContent === true,

@@ -119,9 +119,16 @@ test('range channel classification stays separate from programme/static playback
     mode, kind, channel_id: 4, stream_url: '/api/public/stream/channel', title: 'Channel'
   } }) }));
   const cfg = { shareTvBase: 'https://tv.example' };
-  assert.equal((await resolveShareTv('channel', cfg)).shareTvChannel, true);
+  const channel = await resolveShareTv('channel', cfg);
+  assert.equal(channel.shareTvChannel, true);
+  assert.equal(channel.shareTvMetadata, true);
   mode = 'programs'; kind = 'static';
-  assert.notEqual((await resolveShareTv('channel', cfg)).shareTvChannel, true);
+  for (const values of [['programs', 'temporary'], ['programs', 'static']]) {
+    [mode, kind] = values;
+    const events = await resolveShareTv('channel', cfg);
+    assert.notEqual(events.shareTvChannel, true);
+    assert.equal(events.shareTvMetadata, true);
+  }
 });
 
 test('clearly ended programme cannot overwrite a good title', async () => {
@@ -160,4 +167,75 @@ test('failed programme image retries metadata after one minute even before EPG e
   h.poller.onProgramme = () => true;
   await h.advance(60000);
   assert.equal([...h.timers.values()][0].at, 5060000);
+});
+
+test('multi-event shares refresh nickname, presence, descriptions and artwork without playback changes', async () => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const nicknames = [], presence = [];
+  const member = { nickname: null, setNickname: async name => { nicknames.push(name); member.nickname = name; } };
+  const manager = new StreamManager({ guilds: { cache: new Map([['g', { members: { me: member } }]]) } }, null,
+    { shareTvBase: 'https://tv.example', shareTvApiKey: 'key', playerPresenceApplicationId: '12345678901234567' });
+  manager.contentAwareImagePreview = false;
+  manager.contentNickname.setEnabled(true);
+  let calls = 0;
+  const events = [
+    { id: 1, title: 'First event', description: 'First description', icon_url: '/first', end_at: 1100 },
+    { id: 2, title: 'Second event', description: 'Second description', icon_url: '/second', end_at: 1300 },
+    { id: 3, title: 'Second event', description: 'Different event', icon_url: '/third', end_at: 1500 }
+  ];
+  const h = harness(async () => ({ programme: events[Math.min(calls++, 2)] }));
+  const link = manager.voiceLink = { guildId: 'g', paused: false, closing: false };
+  const piece = manager.session = manager._piece(link, { guildId: 'g', sourceKind: 'sharetv', sourceInput: 'events',
+    shareTvChannel: false, shareTvMetadata: true, title: 'Share label', streamUrl: 'https://tv.example/stream', isLive: true });
+  manager.playerPresence = { sync: () => presence.push([piece.contentTitle, piece.programmeDescription, piece.thumbnail]) };
+  h.poller.isCurrent = manager.shareTvNicknameRefresh.isCurrent;
+  h.poller.onProgramme = manager.shareTvNicknameRefresh.onProgramme;
+  manager.shareTvNicknameRefresh = h.poller;
+  const control = piece.control, streamUrl = piece.streamUrl;
+  manager._reopenSession = () => { throw new Error('metadata must not reopen playback'); };
+  h.activate(piece);
+  await flush(); await manager.contentNickname.pending;
+  assert.deepEqual(nicknames, ['First event']);
+  await h.advance(160000); await manager.contentNickname.pending;
+  assert.deepEqual(nicknames, ['First event', 'Second event']);
+  assert.equal(manager.status().title, 'Second event');
+  assert.equal(manager.status().current.title, 'Second event');
+  // Presence alone keeps polling when nickname automation is disabled.
+  manager.setContentNickname(false);
+  assert.equal(h.timers.size, 1);
+  await h.advance(200000); await manager.contentNickname.pending;
+  assert.deepEqual(presence.at(-1), ['Second event', 'Different event', 'https://tv.example/third']);
+  assert.deepEqual(nicknames, ['First event', 'Second event']);
+  assert.equal(piece.control, control);
+  assert.equal(piece.streamUrl, streamUrl);
+  assert.equal(calls, 3);
+  assert.equal(h.timers.size, 1);
+  piece.control.abort();
+  assert.equal(h.timers.size, 0);
+});
+
+test('restarting metadata during an artwork upload cannot install a duplicate timer', async () => {
+  const h = harness(async () => ({ programme: { title: 'Event', end_at: 1300 } }));
+  let release, calls = 0;
+  h.poller.onProgramme = () => ++calls === 1 ? new Promise(resolve => { release = resolve; }) : true;
+  h.activate(h.piece); await flush();
+  h.poller.stop(); h.activate(h.piece); await flush();
+  assert.equal(h.timers.size, 1);
+  release(true); await flush();
+  assert.equal(h.timers.size, 1);
+  h.poller.stop();
+});
+
+test('multi-event metadata eligibility survives playback reopen and voice moves', () => {
+  const { StreamManager } = require('../src/streambot/streamManager');
+  const manager = new StreamManager({});
+  const link = { guildId: 'g', channelId: 'old' };
+  const piece = manager._piece(link, { shareTvChannel: false, shareTvMetadata: true, sourceKind: 'sharetv',
+    sourceInput: 'events', streamUrl: 'https://tv.example/stream', contentTitle: 'Event', programmeDescription: 'Description' });
+  for (const copy of [manager._reopenSession(link, piece), manager._copyQueuedPiece({ ...link, channelId: 'new' }, piece)]) {
+    assert.equal(copy.shareTvMetadata, true);
+    assert.equal(copy.shareTvChannel, false);
+    assert.equal(copy.contentTitle, 'Event');
+    assert.equal(copy.programmeDescription, 'Description');
+  }
 });

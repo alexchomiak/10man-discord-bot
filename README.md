@@ -264,7 +264,7 @@ Each worker also has a **Music Mode** toggle in its authenticated dashboard card
 
 Music Mode shows audio-reactive frequency bars with a mirrored reflection behind the artwork by default. Set `STREAMBOT_MUSIC_VISUALIZER=false` to turn this effect off and retain the original static background. Dashboard YouTube search loads ten results at a time; **Load 10 more results** fetches the next range, up to 200 results per query.
 
-Paste a YouTube playlist URL into the dashboard, `/stream play`, `$stream`, or the stream webhook to queue its videos in order with one request. Playlist entries retain their titles, durations, and thumbnails; yt-dlp resolves each video's progressive stream when its turn starts so signed URLs do not expire in the queue. The full playlist must fit `STREAM_QUEUE_LIMIT` (default 100 waiting items, including any between-video filler); an oversized playlist is rejected without adding a partial queue.
+Paste a YouTube playlist URL into the dashboard, `/stream play`, `$stream`, or the stream webhook to queue its videos in order with one request. Playlist entries retain their titles, durations, and thumbnails; yt-dlp resolves each video's progressive stream when its turn starts so signed URLs do not expire in the queue. The full playlist must fit `STREAM_QUEUE_LIMIT` (default 100 waiting media items; internal filler and the current or paused item do not count); an oversized playlist is rejected without adding a partial queue. The admin gear menu can change each worker’s queue limit from 1–1000 at runtime. Lowering it keeps existing items and blocks additions until there is room. Changes reset to `STREAM_QUEUE_LIMIT` when that worker restarts. The same menu sets the between-video interval (0–300 seconds; 0 disables it), initially `SBOT_STREAM_BUFFER_SEC` (default 15). It updates pending and future countdowns without interrupting the active video or countdown; Music Mode stays gapless. This interval also resets on worker restart.
 
 The Docker build bundles the React app automatically. For a local non-Docker run, build it once with `npm ci --prefix web && npm run build --prefix web` before starting the CS bot.
 
@@ -398,3 +398,5 @@ it settles, without blocking playback or text/button updates.
 Credential-bearing image URLs (including Jellyfin API-key images) are excluded
 from Discord requests; those sources use the safe worker avatar when available.
 Unavailable external artwork also uses that avatar as its large-image fallback.
+
+Set `STREAM_BRAND_TITLE=Chomirack` in the container environment to customize the dashboard, browser title, and stream artwork. It defaults to `Chomirack`; blank values use that default. Restart the container after changes; no web rebuild is required. Set the same value on separately hosted workers. Display names are trimmed to 100 characters and control characters are removed.

@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs/promises');
+const { streamBrandTitle } = require('../streamBrand');
 const os = require('node:os');
 const path = require('node:path');
 const { PassThrough } = require('node:stream');
@@ -39,7 +40,7 @@ function musicSvg(url, workerId, title, hasThumbnail, chaptered = false, visuali
     <rect x="36" y="36" width="1848" height="1008" rx="26" fill="#17232d"${visualizer ? ' fill-opacity="0.38"' : ''} stroke="#344b44" stroke-width="3"/>
     <rect x="960" y="92" width="2" height="896" fill="#344b44"/>
     <rect x="90" y="85" width="56" height="56" rx="14" fill="#d9ff62"/><path d="M109 99 L109 129 L135 114 Z" fill="#17232d"/>
-    <text x="165" y="124" font-size="29" font-weight="700" fill="#e8f2f4">10MAN / MUSIC</text>
+    <text x="165" y="124" font-size="29" font-weight="700" fill="#e8f2f4">${escapeXml(shorten(streamBrandTitle(), 40))} / MUSIC</text>
     <text x="1830" y="124" text-anchor="end" font-size="25" fill="#d9ff62">${worker}</text>
     <text x="500" y="202" text-anchor="middle" font-size="21" letter-spacing="3" fill="#d9ff62">NOW PLAYING</text>
     <rect x="300" y="225" width="400" height="225" rx="16" fill="#0b141c" fill-opacity="${hasThumbnail ? '0.12' : '0.82'}" stroke="#3b5549" stroke-width="2"/>

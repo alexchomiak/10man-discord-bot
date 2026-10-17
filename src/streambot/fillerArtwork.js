@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs/promises');
+const { streamBrandTitle } = require('../streamBrand');
 const os = require('node:os');
 const path = require('node:path');
 const QRCode = require('qrcode');
@@ -73,7 +74,7 @@ function artworkSvg({ url, workerId, next, hasThumbnail }) {
   const visibleUrl = escapeXml(shorten(url, 100));
   const tag = escapeXml(shorten(workerId, 32).toUpperCase());
   const frame = `<rect width="1920" height="1080" fill="#0b111a"/><rect x="40" y="40" width="1840" height="1000" rx="28" fill="#17232d" stroke="#344b44" stroke-width="3"/>`;
-  const brand = `<rect x="90" y="87" width="56" height="56" rx="14" fill="#d9ff62"/><path d="M109 100 L109 130 L135 115 Z" fill="#17232d"/><text x="166" y="126" font-size="30" font-weight="700" fill="#e8f2f4">10MAN / STREAM</text><text x="1830" y="126" text-anchor="end" font-size="26" font-weight="700" fill="#d9ff62">${tag}</text>`;
+  const brand = `<rect x="90" y="87" width="56" height="56" rx="14" fill="#d9ff62"/><path d="M109 100 L109 130 L135 115 Z" fill="#17232d"/><text x="166" y="126" font-size="30" font-weight="700" fill="#e8f2f4">${escapeXml(shorten(streamBrandTitle(), 40))} / STREAM</text><text x="1830" y="126" text-anchor="end" font-size="26" font-weight="700" fill="#d9ff62">${tag}</text>`;
   const footer = `<text x="960" y="938" text-anchor="middle" font-size="25" fill="#e9f0f4">Scan the QR code or visit <tspan fill="#d9ff62">${visibleUrl}</tspan></text><text x="960" y="978" text-anchor="middle" font-size="23" fill="#a9bdbe">to queue more content!</text>`;
   const body = next
     ? `<rect x="90" y="205" width="920" height="518" rx="18" fill="#0b141c" stroke="#3b5549" stroke-width="3"/>${hasThumbnail ? '' : '<text x="550" y="475" text-anchor="middle" font-size="36" fill="#90a3ae">NEXT VIDEO</text>'}<text x="90" y="765" font-size="24" letter-spacing="4" fill="#d9ff62">UP NEXT</text>${titleLines(next.title)}<text x="1450" y="735" text-anchor="middle" font-size="26" fill="#b7c9c4">SCAN TO QUEUE</text>`

@@ -109,7 +109,7 @@ class StreamBroker {
         this.knownWorkerIds.add(id);
         this.workers.set(id, { id, userId, socket, status: message.status || null,
           profile: workerProfile(message.profile),
-          accessCode, contentSnapshotPreview: message.contentSnapshotPreview === true && message.contentAwareImagePreview !== true, contentAwareImagePreview: message.contentAwareImagePreview === true, deriveNicknameFromContent: message.deriveNicknameFromContent === true, musicMode: message.musicMode === true, capabilities: message.capabilities || [],
+          accessCode, queueLimit: message.queueLimit || 100, queueGapSeconds: message.queueGapSeconds ?? 15, contentSnapshotPreview: message.contentSnapshotPreview === true && message.contentAwareImagePreview !== true, contentAwareImagePreview: message.contentAwareImagePreview === true, deriveNicknameFromContent: message.deriveNicknameFromContent === true, musicMode: message.musicMode === true, capabilities: message.capabilities || [],
           externalChannels: [], availableChannels: [], channelsTruncated: false, connectedAt: Date.now() });
         this.log(`[stream-broker] worker connected: ${id}`);
         return;
@@ -136,6 +136,8 @@ class StreamBroker {
       if (message.type === 'status' && worker) {
         worker.status = message.status || null;
         if (worker.presenceArtwork?.scope !== artworkScope(worker.status)) delete worker.presenceArtwork;
+        worker.queueGapSeconds = message.queueGapSeconds ?? worker.queueGapSeconds ?? 15;
+        worker.queueLimit = message.queueLimit || worker.queueLimit || 100;
         worker.musicMode = message.musicMode === true;
         worker.contentAwareImagePreview = message.contentAwareImagePreview === true;
         worker.contentSnapshotPreview = message.contentSnapshotPreview === true && !worker.contentAwareImagePreview;
@@ -157,6 +159,8 @@ class StreamBroker {
           if (worker && message.result && Object.hasOwn(message.result, 'status')) {
             worker.status = message.result.status;
             if (worker.presenceArtwork?.scope !== artworkScope(worker.status)) delete worker.presenceArtwork;
+            worker.queueGapSeconds = message.result.queueGapSeconds ?? worker.queueGapSeconds ?? 15;
+            worker.queueLimit = message.result.queueLimit || worker.queueLimit || 100;
             worker.musicMode = message.result.musicMode === true;
             worker.contentAwareImagePreview = message.result.contentAwareImagePreview === true;
             worker.contentSnapshotPreview = message.result.contentSnapshotPreview === true && !worker.contentAwareImagePreview;
@@ -187,7 +191,7 @@ class StreamBroker {
   }
 
   listWorkers() {
-    return [...this.workers.values()].map(({ id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt }) => ({ id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt }));
+    return [...this.workers.values()].map(({ id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, queueLimit, queueGapSeconds, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt }) => ({ id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, queueLimit, queueGapSeconds, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt }));
   }
 
   getPresenceArtwork(workerId, capability) {
@@ -203,8 +207,8 @@ class StreamBroker {
     const workerId = this.resolveWorkerId(requested);
     const worker = this.workers.get(workerId);
     if (!worker || worker.socket.readyState !== WebSocket.OPEN) return null;
-    const { id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt } = worker;
-    return { id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt };
+    const { id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, queueLimit, queueGapSeconds, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt } = worker;
+    return { id, userId, status, profile, contentAwareImagePreview, contentSnapshotPreview, deriveNicknameFromContent, musicMode, queueLimit, queueGapSeconds, capabilities, externalChannels, availableChannels, channelsTruncated, connectedAt };
   }
 
   getWorkerByAccessCode(code) {

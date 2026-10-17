@@ -77,7 +77,7 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   const client = { guilds: { cache: guildCache, fetch: async id => guildCache.get(id) || null },
     users: { cache: new Map([[userId, user]]), fetch: async () => user } };
   let online = true;
-  const activeWorker = { id: 'one', userId, connectedAt: 1,
+  const activeWorker = { id: 'one', userId, connectedAt: 1, queueLimit: 250,
     availableChannels: [{ guildId: externalGuildId, guildName: 'Friends server',
       id: externalChannelId, name: 'Watch party', type: 2 }],
     status: { guildId, channelId, alive: true, inChannel: true, streamUrl: 'https://secret/?ApiKey=private',
@@ -162,6 +162,14 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(calls.at(-1).payload.ids.length, 1000);
   assert.equal((await request('/api/workers/one/actions', { operation: 'reorder', ids: [...largeOrder, 'extra'] })).status, 400);
   assert.equal((await request('/api/workers/one/actions', { operation:'remove-queued', queueId:'bad' })).status,400);
+  for (const seconds of [-1, 301, 1.5, '15', null]) assert.equal((await request('/api/workers/one/actions', { operation: 'set-queue-gap', seconds })).status, 400);
+  assert.equal((await request('/api/workers/one/actions', { operation: 'set-queue-gap', seconds: 0 })).status, 200);
+  assert.deepEqual(calls.at(-1), { operation: 'set-queue-gap', payload: { requestedBy: 'dashboard', seconds: 0 }, workerId: 'one' });
+  for (const limit of [0, 1001, 1.5, '100', null]) {
+    assert.equal((await request('/api/workers/one/actions', { operation: 'set-queue-limit', limit })).status, 400);
+  }
+  assert.equal((await request('/api/workers/one/actions', { operation: 'set-queue-limit', limit: 250 })).status, 200);
+  assert.deepEqual(calls.at(-1), { operation: 'set-queue-limit', payload: { requestedBy: 'dashboard', limit: 250 }, workerId: 'one' });
   const name = await (await request('/api/workers/one/actions', { operation:'set-name', guildId, name:'Movie Night' })).json();
   assert.equal(name.scope,'guild');
   assert.deepEqual(nicknames,['Movie Night']);
@@ -180,6 +188,10 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(scoped.worker.status.channelId, undefined);
   assert.equal(scoped.guilds, undefined);
   assert.equal(scoped.worker.availableChannels, undefined);
+  assert.equal(scoped.worker.queueLimit, undefined);
+  assert.equal(scoped.worker.queueGapSeconds, undefined);
+  assert.equal((await publicFetch('/api/public/one/actions', { operation: 'set-queue-gap', seconds: 15 })).status, 403);
+  assert.equal((await publicFetch('/api/public/one/actions', { operation: 'set-queue-limit', limit: 250 })).status, 403);
   assert.equal((await publicFetch('/api/public/one/search?q=x')).status, 400);
   assert.deepEqual((await (await publicFetch('/api/public/one/search?q=music')).json()).results.map(item => item.title), ['Found']);
   assert.deepEqual(searches, [{ query: 'music', page: 1 }, { query: 'music', page: 2 }, { query: 'music', page: 1 }]);
@@ -187,9 +199,23 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   const scopedPlay = await (await publicFetch('/api/public/one/actions', { operation: 'play',
     source: 'https://youtube.com/watch?v=test', guildId: externalGuildId, channelId: externalChannelId })).json();
   assert.equal(scopedPlay.ok, true);
+  assert.equal(scopedPlay.queueLimit, undefined);
   assert.equal(calls.at(-1).workerId, 'one');
   assert.equal(calls.at(-1).payload.guildId, guildId);
   assert.equal(calls.at(-1).payload.channelId, channelId);
+  for (const enabled of [true, false]) {
+    assert.equal((await publicFetch('/api/public/one/actions', { operation: 'toggle-music-mode', enabled, workerId: 'two' })).status, 200);
+    assert.equal(calls.at(-1).workerId, 'one');
+    assert.equal(calls.at(-1).operation, 'toggle-music-mode');
+    assert.equal(calls.at(-1).payload.enabled, enabled);
+    assert.equal(calls.at(-1).payload.requestedBy, 'public-link');
+  }
+  for (const enabled of [undefined, null, 'true', 1]) {
+    assert.equal((await publicFetch('/api/public/one/actions', { operation: 'toggle-music-mode', enabled })).status, 400);
+  }
+  for (const operation of ['join', 'toggle-overlay', 'set-content-preview', 'set-content-nickname']) {
+    assert.equal((await publicFetch('/api/public/one/actions', { operation, enabled: true })).status, 403);
+  }
   const scopedClear = await (await publicFetch('/api/public/one/actions', { operation: 'clear-queue' })).json();
   assert.equal(scopedClear.ok, true);
   assert.equal(calls.at(-1).workerId, 'one');
@@ -211,6 +237,7 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal((await publicFetch('/api/public/one/search?q=music')).status, 404);
   assert.equal((await publicFetch('/api/public/one/actions', { operation: 'pause' })).status, 404);
   assert.equal((await publicFetch('/api/public/one/actions', { operation: 'clear-queue' })).status, 404);
+  assert.equal((await publicFetch('/api/public/one/actions', { operation: 'toggle-music-mode', enabled: true })).status, 404);
   activeWorker.status = { ...activeWorker.status, alive: true, channelId: null };
   assert.equal((await publicFetch('/one')).status, 404);
   activeWorker.status = { ...activeWorker.status, channelId, inChannel: false };
@@ -316,4 +343,139 @@ test('live ShareTV programme refresh reaches public and admin status without res
   assert.equal(manager.status().current.title, 'The Big Pro Football Show');
   piece.shareTvChannel = true; piece.isFiller = true;
   assert.equal(manager.status().current.title, 'The Big Pro Football Show');
+});
+
+test('public artwork resolves only active scoped current and queued items and conceals upstream credentials', async t => {
+  const sharp = require('sharp');
+  const image = await sharp({ create: { width: 20, height: 40, channels: 3, background: 'red' } }).jpeg().toBuffer();
+  const worker = { id: 'one', connectedAt: 1, status: { alive: true, inChannel: true, guildId, channelId,
+    current: { id: 'current', sourceKind: 'jellyfin', title: '<b>Movie</b> https://secret.example/key',
+      presenceTitle: '<b>Movie (2026)</b>', presenceDetails: 'A '.repeat(1000),
+      thumbnail: 'http://private.example/poster?ApiKey=secret' },
+    queue: [{ id: 'queued', sourceKind: 'sharetv', title: 'Next', programmeDescription: 'An <i>episode</i>',
+      thumbnail: 'http://private.example/next?signature=secret2' }] } };
+  const other = { ...worker, id: 'two' };
+  let calls = 0;
+  const broker = { getWorker: id => ({ one: worker, two: other })[id], request: async () => ({ ok: true, status: worker.status }) };
+  const dashboard = createStreamDashboard({ broker, client: {}, password: 'password', host: '127.0.0.1', port: 0,
+    log: () => {}, fetchThumbnail: async () => { calls++; return image; } });
+  dashboard.listen(); await once(dashboard.server, 'listening'); t.after(() => dashboard.close());
+  const base = `http://127.0.0.1:${dashboard.server.address().port}`;
+  const state = async () => (await (await fetch(`${base}/api/public/one/state`)).json()).worker.status;
+  const status = await state();
+  assert.equal(status.current.title, 'Movie');
+  assert.equal(status.current.presenceTitle, 'Movie (2026)');
+  assert.equal(status.current.presenceDetails.length, 1000);
+  assert.equal(status.queue[0].programmeDescription, 'An episode');
+  assert(!/secret|private\.example|ApiKey|signature|guildId|channelId/.test(JSON.stringify(status)));
+  assert.equal(calls, 0, 'state polling does not fetch artwork');
+  const currentUrl = status.current.thumbnail, queuedUrl = status.queue[0].thumbnail;
+  assert.equal((await fetch(base + currentUrl)).status, 200);
+  assert.equal((await fetch(base + queuedUrl)).status, 200);
+  assert.equal((await fetch(base + currentUrl)).status, 200);
+  assert.equal(calls, 2, 'bounded cache reuses converted images');
+  const originalNow = Date.now;
+  try {
+    Date.now = () => originalNow() + 3600000;
+    assert.equal((await fetch(base + currentUrl)).status, 200);
+    assert.equal(calls, 2, 'current poster remains available beyond upstream signed URL lifetime');
+  } finally { Date.now = originalNow; }
+  assert.equal((await fetch(base + currentUrl.replace('/one/', '/two/'))).status, 404);
+  assert.equal((await fetch(base + currentUrl + '?url=http://arbitrary.example')).status, 404);
+  const action = await (await fetch(`${base}/api/public/one/actions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation: 'pause' }) })).json();
+  assert.equal(action.status.queue[0].thumbnail, queuedUrl);
+  worker.status.queue = [];
+  assert.equal((await fetch(base + queuedUrl)).status, 404);
+  worker.status.current.thumbnail += '&revision=2';
+  assert.notEqual((await state()).current.thumbnail, currentUrl);
+  assert.equal((await fetch(base + currentUrl)).status, 404);
+  const refreshedUrl = (await state()).current.thumbnail;
+  worker.status.inChannel = false;
+  assert.equal((await fetch(base + refreshedUrl)).status, 404);
+});
+
+test('public artwork bounds concurrent fetches, deduplicates flights, rejects oversized outputs and caps cache', async t => {
+  const worker = { id: 'one', connectedAt: 1, status: { alive: true, inChannel: true, guildId, channelId,
+    queue: Array.from({ length: 35 }, (_, i) => ({ id: String(i), thumbnail: `http://private.example/${i}?token=secret` })) } };
+  let calls = 0, blocked = true;
+  const pending = [];
+  const broker = { getWorker: id => id === 'one' ? worker : null };
+  const dashboard = createStreamDashboard({ broker, client: {}, password: 'password', host: '127.0.0.1', port: 0,
+    log: () => {}, fetchThumbnail: async () => { calls++; if (blocked) await new Promise(resolve => pending.push(resolve)); return Buffer.alloc(256 * 1024 + 1); } });
+  dashboard.listen(); await once(dashboard.server, 'listening'); t.after(() => dashboard.close());
+  const base = `http://127.0.0.1:${dashboard.server.address().port}`;
+  const status = (await (await fetch(`${base}/api/public/one/state`)).json()).worker.status;
+  const get = i => fetch(base + status.queue[i].thumbnail);
+  const flights = [get(0), get(0), get(1), get(2)];
+  for (let i = 0; i < 100 && pending.length < 3; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(pending.length, 3); assert.equal(calls, 3);
+  const queuedRequest = get(3);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(calls, 3, 'excess parallel requests wait for capacity');
+  blocked = false; pending.forEach(resolve => resolve());
+  assert((await Promise.all(flights)).every(response => response.status === 404));
+  assert.equal((await queuedRequest).status, 404);
+  await get(0); assert.equal(calls, 4, 'invalid images are negatively cached');
+  for (let i = 3; i < 35; i++) assert.equal((await get(i)).status, 404);
+  const before = calls; await get(0);
+  assert.equal(calls, before + 1, 'oldest entry is evicted after the 32-entry cap');
+});
+
+
+test('public artwork queues visible bursts with at most three image fetches active', async t => {
+  const worker = { id: 'one', connectedAt: 1, status: { alive: true, inChannel: true, guildId, channelId,
+    queue: Array.from({ length: 12 }, (_, i) => ({ id: String(i), thumbnail: `http://private.example/${i}` })) } };
+  let active = 0, maximum = 0, calls = 0;
+  const dashboard = createStreamDashboard({ broker: { getWorker: () => worker }, client: {}, password: 'password',
+    host: '127.0.0.1', port: 0, log: () => {}, fetchThumbnail: async () => {
+      calls++; active++; maximum = Math.max(maximum, active);
+      await new Promise(resolve => setTimeout(resolve, 15)); active--;
+      return Buffer.from('jpeg');
+    } });
+  dashboard.listen(); await once(dashboard.server, 'listening'); t.after(() => dashboard.close());
+  const base = `http://127.0.0.1:${dashboard.server.address().port}`;
+  const status = (await (await fetch(`${base}/api/public/one/state`)).json()).worker.status;
+  const responses = await Promise.all(status.queue.map(item => fetch(base + item.thumbnail)));
+  assert(responses.every(response => response.status === 200));
+  assert.equal(maximum, 3); assert.equal(calls, 12);
+});
+
+
+test('public artwork retries a transient failure after its five second negative cache expires', async t => {
+  const worker = { id: 'one', connectedAt: 1, status: { alive: true, inChannel: true, guildId, channelId,
+    current: { id: 'current', thumbnail: 'http://private.example/poster?ApiKey=secret' } } };
+  let calls = 0;
+  const dashboard = createStreamDashboard({ broker: { getWorker: () => worker }, client: {}, password: 'password',
+    host: '127.0.0.1', port: 0, log: () => {}, fetchThumbnail: async () => ++calls === 1 ? null : Buffer.from('jpeg') });
+  dashboard.listen(); await once(dashboard.server, 'listening'); t.after(() => dashboard.close());
+  const base = `http://127.0.0.1:${dashboard.server.address().port}`;
+  const status = (await (await fetch(`${base}/api/public/one/state`)).json()).worker.status;
+  const get = () => fetch(base + status.current.thumbnail);
+  assert.equal((await get()).status, 404);
+  assert.equal((await get()).status, 404); assert.equal(calls, 1);
+  const originalNow = Date.now;
+  try {
+    Date.now = () => originalNow() + 6000;
+    assert.equal((await get()).status, 200); assert.equal(calls, 2);
+  } finally { Date.now = originalNow; }
+});
+
+
+test('public gap transition uses real queue artwork and excludes filler snapshot secrets', () => {
+  const input = { current: { id: 'gap', title: 'buffer', isFiller: true, durationSec: 15 },
+    transition: { kind: 'up-next', upNext: { thumbnail: 'https://secret.example/?token=secret' } },
+    positionSec: 3, queue: [{ id: 'filler', isFiller: true }, { id: 'next', title: 'Next episode',
+      presenceTitle: 'Blue skies', presenceDetails: 'S01E02 · The garden',
+      thumbnail: 'https://private.example/image?ApiKey=private' }] };
+  const scoped = scopedStatus(input, item => item.thumbnail ? `/safe/${item.id}.jpg` : null);
+  assert.deepEqual(scoped.transition, { kind: 'up-next', remainingSec: 12 });
+  assert.equal(scoped.queue[1].thumbnail, '/safe/next.jpg');
+  assert.equal(scoped.queue[1].presenceDetails, 'S01E02 · The garden');
+  assert(!JSON.stringify(scoped).includes('private'));
+  assert(!JSON.stringify(scoped).includes('secret'));
+  assert.equal(scopedStatus({ ...input, transition: null }).transition, null);
+  assert.equal(scopedStatus({ ...input, queue: [] }).transition, null);
+  assert.equal(scopedStatus({ ...input, musicMode: true }).transition, null);
+  assert.equal(scopedStatus({ ...input, current: { ...input.current, isFiller: false } }).transition, null);
+  assert.equal(scopedStatus({ ...input, positionSec: 30 }).transition.remainingSec, 0);
 });

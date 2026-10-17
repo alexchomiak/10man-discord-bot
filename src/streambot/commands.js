@@ -322,6 +322,7 @@ class CommandRegistry {
           presenceTitle: resolved.presenceTitle ?? null,
           presenceDetails: resolved.presenceDetails ?? null,
           shareTvChannel: resolved.shareTvChannel === true,
+          shareTvMetadata: resolved.shareTvMetadata === true,
       thumbnail: resolved.thumbnail || null,
       startOffsetSec: resolved.startOffsetSec || null,
       isLive: resolved.isLive === true,

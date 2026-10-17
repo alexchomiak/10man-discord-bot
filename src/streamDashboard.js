@@ -1,6 +1,7 @@
 'use strict';
 
 const http = require('node:http');
+const { brandDashboardHtml } = require('./streamBrand');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -8,11 +9,13 @@ const { StreamSchedules } = require('./streamSchedules');
 const { searchYoutube: defaultSearchYoutube } = require('./youtubeSearch');
 const { parseExternalChannels } = require('./externalChannels');
 const { sanitizeAvailableChannels } = require('./workerChannels');
+const { presenceText } = require('./streambot/presenceMetadata');
+const { fetchPresenceArtwork } = require('./streambot/presenceArtwork');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
-const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'clear-queue', 'set-content-nickname', 'set-content-preview', 'set-name']);
-const PUBLIC_ACTIONS = new Set(['play', 'skip', 'scrub', 'seek', 'pause', 'resume', 'reorder', 'remove-queued', 'clear-queue']);
+const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'clear-queue', 'set-content-nickname', 'set-content-preview', 'set-queue-limit', 'set-queue-gap', 'set-name']);
+const PUBLIC_ACTIONS = new Set(['toggle-music-mode', 'play', 'skip', 'scrub', 'seek', 'pause', 'resume', 'reorder', 'remove-queued', 'clear-queue']);
 const ACCESS_CODE = /^[a-z]{6}$/;
 const MAX_REORDER_ITEMS = 1000;
 const MAX_ACTION_BODY_BYTES = 64 * 1024;
@@ -25,10 +28,17 @@ function sameToken(expected, actual) {
   return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+const SOURCE_KINDS = new Set(['youtube', 'twitch', 'jellyfin', 'sharetv', 'browser', 'direct']);
+const displayText = (value, max = 500) => presenceText(typeof value === 'string' ? value.slice(0, 16000) : '').slice(0, max) || null;
+
 function publicStatus(status) {
   if (!status) return null;
   const item = value => value && ({ id: value.id, title: value.title,
     thumbnail: value.thumbnail || null,
+    sourceKind: SOURCE_KINDS.has(value.sourceKind) ? value.sourceKind : null,
+    contentTitle: displayText(value.contentTitle), presenceTitle: displayText(value.presenceTitle),
+    presenceDetails: displayText(value.presenceDetails, 1000),
+    programmeDescription: displayText(value.programmeDescription, 1000),
     isFiller: !!value.isFiller, isLive: !!value.isLive,
     durationSec: Number.isFinite(value.durationSec) ? value.durationSec : null });
   return { guildId: status.guildId, channelId: status.channelId,
@@ -42,10 +52,14 @@ function publicStatus(status) {
       startSec: status.currentChapter.startSec, endSec: status.currentChapter.endSec,
       index: status.currentChapter.index },
     current: item(status.current), queue: Array.isArray(status.queue) ? status.queue.map(item) : [],
+    transition: status.current?.isFiller && !status.musicMode && status.transition?.kind === 'up-next' &&
+      status.queue?.some(value => value && !value.isFiller) && Number.isFinite(status.current.durationSec) &&
+      Number.isFinite(status.positionSec) ? { kind: 'up-next',
+        remainingSec: Math.max(0, status.current.durationSec - status.positionSec) } : null,
     stats: status.stats || null };
 }
 
-function scopedStatus(status) {
+function scopedStatus(status, thumbnailFor = null) {
   const value = publicStatus(status);
   if (!value) return null;
   const safeThumbnail = item => {
@@ -56,8 +70,17 @@ function scopedStatus(status) {
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || sensitive) item.thumbnail = null;
     } catch { item.thumbnail = null; }
   };
-  safeThumbnail(value.current);
-  value.queue.forEach(safeThumbnail);
+  const sanitizeItem = item => {
+    if (!item) return;
+    item.title = displayText(item.title);
+    if (thumbnailFor) item.thumbnail = thumbnailFor(item);
+    else safeThumbnail(item);
+  };
+  sanitizeItem(value.current);
+  value.queue.forEach(sanitizeItem);
+  value.title = displayText(value.title);
+  if (value.musicChapters) value.musicChapters.forEach(chapter => { chapter.title = displayText(chapter.title); });
+  if (value.currentChapter) value.currentChapter.title = displayText(value.currentChapter.title);
   delete value.guildId;
   delete value.channelId;
   delete value.stats;
@@ -66,7 +89,7 @@ function scopedStatus(status) {
 }
 
 function createStreamDashboard({ broker, client, password, token, randomCodes = false, configuredWorkerIds = [], channelIds = [], serverIds = [], host = '0.0.0.0', port = 8082,
-  scheduleFilePath = null, scheduleConfig = {}, staticDir = path.resolve(__dirname, '../web/dist'), log = console.log, searchYoutube = defaultSearchYoutube } = {}) {
+  scheduleFilePath = null, scheduleConfig = {}, staticDir = path.resolve(__dirname, '../web/dist'), log = console.log, searchYoutube = defaultSearchYoutube, fetchThumbnail = (url, signal) => fetchPresenceArtwork(url, signal, { preserveAspect: true }) } = {}) {
   const adminPassword = password || token;
   if (!adminPassword) return null;
   const schedules = new StreamSchedules({ broker, filePath: scheduleFilePath, log });
@@ -77,6 +100,67 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
     return status?.alive === true && status?.inChannel === true &&
       DISCORD_ID.test(String(status.guildId || '')) && DISCORD_ID.test(String(status.channelId || ''))
       ? worker : null;
+  };
+  // Opaque URLs are derived from active worker state; requests never supply an upstream URL.
+  const thumbnailSecret = crypto.randomBytes(32);
+  const thumbnailKey = (worker, item) => item?.thumbnail && typeof item.thumbnail === 'string' && item.thumbnail.length <= 8192
+    ? crypto.createHmac('sha256', thumbnailSecret).update(JSON.stringify([worker.id, worker.connectedAt,
+      worker.status?.guildId, worker.status?.channelId, item.id, item.thumbnail])).digest('hex').slice(0, 32) : null;
+  const scopedFor = (worker, publicId, status = worker.status) => scopedStatus(status, item => {
+    const key = thumbnailKey(worker, item);
+    return key ? `/api/public/${publicId}/thumbnail/${key}.jpg` : null;
+  });
+  const thumbnailCache = new Map();
+  const thumbnailFlights = new Map();
+  let thumbnailActive = 0;
+  const findThumbnail = (worker, key) => [worker.status?.current, ...(worker.status?.queue || [])]
+    .find(item => thumbnailKey(worker, item) === key);
+  const thumbnailPending = [];
+  const thumbnailAbort = new AbortController();
+  const THUMBNAIL_BUSY = Symbol('thumbnail-busy');
+  const pumpThumbnails = () => {
+    while (thumbnailActive < 3 && thumbnailPending.length && !thumbnailAbort.signal.aborted) {
+      const job = thumbnailPending.shift();
+      thumbnailActive++;
+      Promise.resolve().then(() => {
+        const current = publicWorkerFor(job.publicId);
+        return current && current.connectedAt === job.worker.connectedAt && findThumbnail(current, job.key)
+          ? fetchThumbnail(job.item.thumbnail, thumbnailAbort.signal) : null;
+      }).then(bytes => {
+        if (!Buffer.isBuffer(bytes) || bytes.length > 256 * 1024) bytes = null;
+        if (!thumbnailAbort.signal.aborted) {
+          if (thumbnailCache.size >= 32) {
+            // Keep active current posters where possible: signed upstream URLs may expire
+            // long before their programme ends. The opaque key changes with the URL.
+            const evict = [...thumbnailCache].find(([key, cached]) => {
+              const worker = publicWorkerFor(cached.publicId);
+              return !worker || thumbnailKey(worker, worker.status?.current) !== key;
+            })?.[0] || thumbnailCache.keys().next().value;
+            thumbnailCache.delete(evict);
+          }
+          thumbnailCache.set(job.key, { at: Date.now(), bytes, publicId: job.publicId });
+        }
+        job.resolve(bytes);
+      }).catch(() => job.resolve(null)).finally(() => {
+        thumbnailActive--; thumbnailFlights.delete(job.key); pumpThumbnails();
+      });
+    }
+  };
+  const loadThumbnail = (worker, publicId, key, item) => {
+    const cached = thumbnailCache.get(key);
+    if (cached && (cached.bytes || Date.now() - cached.at < 5000)) {
+      thumbnailCache.delete(key); thumbnailCache.set(key, cached);
+      return cached.bytes;
+    }
+    if (cached) thumbnailCache.delete(key);
+    if (thumbnailFlights.has(key)) return thumbnailFlights.get(key);
+    if (thumbnailAbort.signal.aborted || thumbnailPending.length >= 64) return THUMBNAIL_BUSY;
+    let resolve;
+    const flight = new Promise(done => { resolve = done; });
+    thumbnailFlights.set(key, flight);
+    thumbnailPending.push({ worker, publicId, key, item, resolve });
+    pumpThumbnails();
+    return flight;
   };
   const invalidCodes = new Map();
   const authFailures = new Map();
@@ -154,6 +238,24 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
   async function handle(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     if (url.pathname.startsWith('/api/')) {
+      const thumbnailMatch = /^\/api\/public\/([A-Za-z0-9_-]{1,32})\/thumbnail\/([a-f0-9]{32})\.jpg$/.exec(url.pathname);
+      if (thumbnailMatch) {
+        const worker = publicWorkerFor(thumbnailMatch[1]);
+        const item = worker && !url.search && findThumbnail(worker, thumbnailMatch[2]);
+        if (!item) return invalidCodeResponse(req, res);
+        if (!['GET', 'HEAD'].includes(req.method)) return json(res, 405, { error: 'Method not allowed.' });
+        const bytes = await loadThumbnail(worker, thumbnailMatch[1], thumbnailMatch[2], item);
+        const current = publicWorkerFor(thumbnailMatch[1]);
+        if (!current || current.connectedAt !== worker.connectedAt || !findThumbnail(current, thumbnailMatch[2])) return invalidCodeResponse(req, res);
+        if (bytes === THUMBNAIL_BUSY) {
+          res.setHeader('Retry-After', '2');
+          return json(res, 503, { error: 'Artwork busy. Try again shortly.' });
+        }
+        if (!bytes) return json(res, 404, { error: 'Artwork unavailable.' });
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': bytes.length,
+          'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
+        return res.end(req.method === 'HEAD' ? undefined : bytes);
+      }
       const artworkMatch = /^\/api\/public\/([A-Za-z0-9_-]{1,32})\/artwork\/([a-f0-9]{32})\.jpg$/.exec(url.pathname);
       if (artworkMatch) {
         const worker = publicWorkerFor(artworkMatch[1]);
@@ -175,7 +277,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           if (!current || current.connectedAt !== scopedWorker.connectedAt) return json(res, 404, { error: 'Player unavailable.' });
           return json(res, 200, { worker: { id: scopedWorker.id, online: true,
             musicMode: scopedWorker.musicMode === true,
-            status: scopedStatus(scopedWorker.status),
+            status: scopedFor(scopedWorker, scopedMatch[1]),
             profile: workerProfile } });
         }
         if (scopedMatch[2] !== 'search' && (req.method !== 'POST' || scopedMatch[2] !== 'actions')) {
@@ -255,6 +357,8 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           id, online: online.has(id), userId: online.get(id)?.userId || null,
           connectedAt: online.get(id)?.connectedAt || null,
           status: publicStatus(online.get(id)?.status),
+          queueLimit: online.get(id)?.queueLimit || 100,
+          queueGapSeconds: online.get(id)?.queueGapSeconds ?? 15,
           musicMode: online.get(id)?.musicMode === true,
           deriveNicknameFromContent: online.get(id)?.deriveNicknameFromContent === true,
           contentAwareImagePreview: online.get(id)?.contentAwareImagePreview === true,
@@ -310,12 +414,18 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           }
           return json(res, 200, await setName(workerId, name, String(body.guildId)));
         }
+        if (operation === 'toggle-music-mode' && ((scopedWorker || body.enabled !== undefined) && typeof body.enabled !== 'boolean')) return json(res, 400, { error: 'Enabled must be a boolean.' });
+        if (operation === 'set-queue-gap' && (!Number.isInteger(body.seconds) || body.seconds < 0 || body.seconds > 300)) return json(res, 400, { error: 'Between-video interval must be an integer from 0 to 300 seconds.' });
+        if (operation === 'set-queue-limit' && (!Number.isInteger(body.limit) || body.limit < 1 || body.limit > 1000)) return json(res, 400, { error: 'Queue limit must be an integer from 1 to 1000.' });
         if (['set-content-nickname', 'set-content-preview'].includes(operation) && typeof body.enabled !== 'boolean') {
           return json(res, 400, { error: 'Enabled must be a boolean.' });
         }
         if (operation === 'set-content-preview' && body.snapshotEnabled !== undefined && typeof body.snapshotEnabled !== 'boolean') return json(res, 400, { error: 'Snapshot enabled must be a boolean.' });
         if (operation === 'set-content-preview' && body.enabled && body.snapshotEnabled) return json(res, 400, { error: 'Preview modes are mutually exclusive.' });
         const payload = { requestedBy: scopedWorker ? 'public-link' : 'dashboard' };
+        if (operation === 'toggle-music-mode' && body.enabled !== undefined) payload.enabled = body.enabled;
+        if (operation === 'set-queue-limit') payload.limit = body.limit;
+        if (operation === 'set-queue-gap') payload.seconds = body.seconds;
         if (['set-content-nickname', 'set-content-preview'].includes(operation)) payload.enabled = body.enabled;
         if (operation === 'set-content-preview' && body.snapshotEnabled !== undefined) payload.snapshotEnabled = body.snapshotEnabled;
         if (['play', 'join', 'move'].includes(operation)) {
@@ -367,7 +477,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
         }
         const result = await broker.request(operation, payload, workerId);
         return json(res, result.ok ? 200 : 409, { ok: !!result.ok, message: result.message,
-          status: scopedWorker ? scopedStatus(result.status) : publicStatus(result.status),
+          status: scopedWorker ? scopedFor(scopedWorker, scopedMatch[1], result.status) : publicStatus(result.status),
           detail: scopedWorker ? null : result.detail || null });
       }
       return json(res, 404, { error: 'Not found.' });
@@ -388,8 +498,8 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
       'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow',
       'Content-Security-Policy': "default-src 'self'; img-src 'self' https: http: data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'" });
     if (req.method === 'HEAD') res.end();
-    else if (publicId && filename === 'index.html') {
-      res.end(data.toString('utf8').replace('</head>', `<meta name="stream-public-id" content="${publicId}" /></head>`));
+    else if (filename === 'index.html') {
+      res.end(brandDashboardHtml(data.toString('utf8'), publicId));
     } else res.end(data);
   }
   const server = http.createServer((req, res) => {
@@ -402,7 +512,11 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
   return {
     server, schedules,
     listen() { schedules.start(); server.listen(port, host, () => log(`[stream-dashboard] listening on http://${host}:${server.address().port}`)); },
-    close() { schedules.dispose(); return new Promise(resolve => server.close(resolve)); }
+    close() {
+      schedules.dispose(); thumbnailAbort.abort(); thumbnailCache.clear();
+      for (const job of thumbnailPending.splice(0)) { thumbnailFlights.delete(job.key); job.resolve(null); }
+      return new Promise(resolve => server.close(resolve));
+    }
   };
 }
 

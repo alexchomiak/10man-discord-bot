@@ -22,7 +22,7 @@ test('broker: default and explicit worker routing, command correlation and statu
   const server = broker.start();
   await once(server, 'listening');
   const calls = [];
-  const manager = { client: { user: { id: '111111111111111111', globalName: 'Music Bot', username: 'musicbot',
+  const manager = { queueLimit: 250, client: { user: { id: '111111111111111111', globalName: 'Music Bot', username: 'musicbot',
     displayAvatarURL: () => 'https://cdn.discordapp.com/avatars/111111111111111111/avatar.png' } }, config: { dashboardAccessCode: 'abcdef' },
     status: () => ({ title: 'Video', paused: false, queued: 1 }) };
   const control = { execute: async (operation, payload) => {
@@ -43,7 +43,7 @@ test('broker: default and explicit worker routing, command correlation and statu
       secondaryCalls.push({ operation, payload });
       return { ok: true, message: `youtube ${operation} ok`, status: manager.status() };
     } },
-    streamManager: { ...manager, config: { dashboardAccessCode: 'ghijkl' } }, log: () => {}
+    streamManager: { ...manager, queueLimit: 75, config: { dashboardAccessCode: 'ghijkl' } }, log: () => {}
   });
   t.after(async () => { worker.close(); secondary.close(); await broker.close(); });
   worker.start();
@@ -59,6 +59,9 @@ test('broker: default and explicit worker routing, command correlation and statu
   assert.deepStrictEqual(secondaryCalls, [{ operation: 'pause', payload: {} }]);
   assert.strictEqual(broker.resolveWorkerId(null), 'primary');
   assert.deepStrictEqual(broker.listWorkers().map(item => item.id).sort(), ['primary', 'youtube']);
+  assert.strictEqual(broker.getWorker('primary').queueLimit, 250);
+  assert.strictEqual(broker.getWorker('youtube').queueLimit, 75);
+  assert.strictEqual(broker.getWorkerByAccessCode('abcdef').queueLimit, undefined);
   assert.strictEqual(broker.getWorker('primary').userId, '111111111111111111');
   assert.deepStrictEqual(broker.getWorker('primary').profile, { displayName: 'Music Bot', globalName: 'Music Bot',
     nickname: null, guildId: null, username: 'musicbot', avatarUrl: 'https://cdn.discordapp.com/avatars/111111111111111111/avatar.png' });

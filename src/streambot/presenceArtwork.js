@@ -3,7 +3,7 @@ const crypto = require('node:crypto');
 const sharp = require('sharp');
 const { MAX_ARTWORK_BYTES, artworkScope, artworkUrl } = require('../presenceArtwork');
 
-async function fetchPresenceArtwork(url, signal) {
+async function fetchPresenceArtwork(url, signal, { preserveAspect = false } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3500);
   const abort = () => controller.abort();
@@ -12,7 +12,7 @@ async function fetchPresenceArtwork(url, signal) {
     signal?.throwIfAborted();
     const parsed = new URL(url);
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
-    const response = await fetch(parsed, { signal: controller.signal });
+    const response = await fetch(parsed, { signal: controller.signal, redirect: preserveAspect ? 'error' : 'follow' });
     if (!response.ok || !/^image\/(jpeg|png|webp)(;|$)/i.test(response.headers.get('content-type') || '') ||
         Number(response.headers.get('content-length')) > 3 * 1024 * 1024) return null;
     const chunks = []; let size = 0;
@@ -23,7 +23,9 @@ async function fetchPresenceArtwork(url, signal) {
     }
     signal?.throwIfAborted();
     const jpeg = await sharp(Buffer.concat(chunks), { limitInputPixels: 4096 * 4096 })
-      .rotate().resize(512, 512, { fit: 'contain', background: '#000000' }).jpeg({ quality: 80 }).toBuffer();
+      .rotate().resize(preserveAspect ? 640 : 512, preserveAspect ? 640 : 512,
+        preserveAspect ? { fit: 'inside', withoutEnlargement: true } : { fit: 'contain', background: '#000000' })
+      .timeout({ seconds: 3 }).jpeg({ quality: 80 }).toBuffer();
     controller.signal.throwIfAborted();
     signal?.throwIfAborted();
     return jpeg.length <= MAX_ARTWORK_BYTES ? jpeg : null;

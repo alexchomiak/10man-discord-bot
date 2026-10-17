@@ -371,6 +371,8 @@ async function resolveShareTv(raw, cfg) {
     title,
     contentTitle: contentTitle || ((share.kind !== 'static' && (share.mode === 'range' || (share.mode !== 'programs' && !!share.channel_id))) ? null : title),
     programmeDescription,
+    // Static/event and selected-programme shares rotate EPG without changing media.
+    shareTvMetadata: true,
     shareTvChannel: share.kind !== 'static' && (share.mode === 'range' || (share.mode !== 'programs' && !!share.channel_id)),
     thumbnail,
     channel,

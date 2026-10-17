@@ -753,22 +753,22 @@ test('playlist overflow rejects the whole batch before joining voice', async t =
   const result = await mgr.startPlaylist({ guildId: 'g1', channelId: 'c1', entries,
     firstResolved: { available: true, streamUrl: 'https://cdn.example/first.mp4' } });
   assert.equal(result.ok, false);
-  assert.match(result.message, /STREAM_QUEUE_LIMIT/);
+  assert.match(result.message, /queue limit in admin settings/);
   assert.equal(fv.calls.joinVoice, 0);
 });
 
-test('a 23-video playlist fits the default queue with between-video filler', async t => {
+test('a 52-video playlist fits the default queue with between-video filler', async t => {
   const { mgr } = fixture(t, { streamQueueLimit: 100, streamBufferSec: 15 });
-  const entries = Array.from({ length: 23 }, (_, index) => ({
+  const entries = Array.from({ length: 52 }, (_, index) => ({
     sourceInput: `https://www.youtube.com/watch?v=${String(index).padStart(11, '0')}`,
     title: `Episode ${index + 1}`
   }));
   const result = await mgr.startPlaylist({ guildId: 'g1', channelId: 'c1', entries,
     firstResolved: { available: true, streamUrl: 'https://cdn.example/first.mp4' } });
   assert.equal(result.ok, true);
-  assert.equal(result.count, 23);
-  assert.equal(result.gaps, 22);
-  assert.equal(mgr.voiceLink.pipeline.enqueue.length, 44);
+  assert.equal(result.count, 52);
+  assert.equal(result.gaps, 51);
+  assert.equal(mgr.voiceLink.pipeline.enqueue.length, 102);
 });
 
 test('one persistent track session is used regardless of legacy startup burst setting', async t => {
@@ -903,6 +903,12 @@ test('buffer is inserted before a real piece while a real piece is active', asyn
   assert.equal(buf.isFiller, true, 'the piece before "b" must be a filler buffer');
   assert.equal(buf.title, 'buffer', 'the buffer title must be "buffer"');
   assert.equal(buf.upNext?.title, 'b', 'the countdown must describe the video following this buffer');
+  const active = mgr.session;
+  mgr.session = buf;
+  assert.deepEqual(mgr.status().transition, { kind: 'up-next' });
+  mgr.session = { ...buf, upNext: null };
+  assert.equal(mgr.status().transition, null, 'idle filler has no countdown');
+  mgr.session = active;
   assert.match(buf.streamUrl || '', /testsrc/, 'the buffer must be a testsrc/lavfi filler (same codec path as the placeholder)');
   await mgr.stop();
 });
@@ -1065,6 +1071,18 @@ test('adding music does not make a current VOD FFmpeg failure skip that track', 
   assert.equal(fv.plays.length, 1);
 });
 
+test('explicit music mode requests serialize and repeated targets do not toggle or restart', async t => {
+  const { mgr } = fixture(t, { streamBufferSec: 0, dashboardBaseUrl: 'https://example.com/player' });
+  const results = await Promise.all([mgr.toggleMusicMode(true), mgr.toggleMusicMode(true)]);
+  assert.equal(results[0].enabled, true);
+  assert.deepEqual(results[1], { ok: true, enabled: true, restarted: false });
+  assert.equal(mgr.musicMode, true);
+  assert.equal((await mgr.toggleMusicMode('false')).ok, false);
+  assert.equal(mgr.musicMode, true);
+  assert.equal((await mgr.toggleMusicMode(false)).enabled, false);
+  assert.deepEqual(await mgr.toggleMusicMode(false), { ok: true, enabled: false, restarted: false });
+});
+
 test('switching a chaptered mix to video mode hides chapters and preserves normal seek and skip', async t => {
   const { mgr, fv } = fixture(t, { streamBufferSec: 0,
     dashboardBaseUrl: 'https://example.com/player' });
@@ -1087,6 +1105,9 @@ test('switching a chaptered mix to video mode hides chapters and preserves norma
   assert.equal(mgr.status().musicChapters, null);
   assert.equal((await mgr.toggleMusicMode()).enabled, true);
   await until(() => mgr.voiceLink.pipeline.activeWriter?.musicMode === true);
+  const sameWriter = mgr.voiceLink.pipeline.activeWriter;
+  assert.deepEqual(await mgr.toggleMusicMode(true), { ok: true, enabled: true, restarted: false });
+  assert.equal(mgr.voiceLink.pipeline.activeWriter, sameWriter);
   assert.equal(mgr.status().currentChapter.title, 'Intro');
   assert.equal((await mgr.skip()).skippedTo, 'Track one');
   assert.equal((await mgr.toggleMusicMode()).enabled, false);

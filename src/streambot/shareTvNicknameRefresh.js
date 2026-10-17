@@ -12,9 +12,10 @@ class ShareTvNicknameRefresh {
     this.timer = null;
     this.request = null;
     this.running = false;
+    this.generation = 0;
   }
   sync(piece) {
-    if (piece && (!piece.shareTvChannel || piece.sourceKind !== 'sharetv' || piece.isFiller || !this.isCurrent(piece))) piece = null;
+    if (piece && (!(piece.shareTvChannel || piece.shareTvMetadata) || piece.sourceKind !== 'sharetv' || piece.isFiller || !this.isCurrent(piece))) piece = null;
     if (this.piece === piece) return;
     this.stop();
     if (!piece) return;
@@ -24,6 +25,7 @@ class ShareTvNicknameRefresh {
     void this._refresh();
   }
   stop() {
+    this.generation++;
     if (this.timer !== null) this.clearTimer(this.timer);
     this.timer = null;
     this.piece?.control?.signal?.removeEventListener('abort', this.onAbort);
@@ -44,6 +46,7 @@ class ShareTvNicknameRefresh {
   async _refresh() {
     if (this.running || !this.piece) return;
     const piece = this.piece;
+    const generation = this.generation;
     if (!this._active(piece)) { this.stop(); return; }
     this.running = true;
     const controller = new AbortController();
@@ -63,7 +66,7 @@ class ShareTvNicknameRefresh {
         (!(Number.isFinite(end) && end > 0) || end * 1000 > this.now())) {
       try { imageReady = await this.onProgramme(piece, programme.title, programme); } catch { imageReady = false; }
     }
-    if (!this._active(piece)) return;
+    if (this.generation !== generation || !this._active(piece)) return;
     const deadline = imageReady !== false && Number.isFinite(end) && end > 0 ? end * 1000 + RETRY_MS : NaN;
     this._schedule(piece, Number.isFinite(deadline) && deadline > this.now() ? deadline : this.now() + RETRY_MS);
   }

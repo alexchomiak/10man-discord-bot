@@ -18,6 +18,7 @@ test('presence artwork fetch bounds bytes, pixels, types, cancellation and reenc
   const image = await jpeg();
   const server = http.createServer((req, res) => {
     if (req.url === '/slow') return;
+    if (req.url === '/redirect') { res.writeHead(302, { location: '/' }); res.end(); return; }
     if (req.url === '/large') { res.writeHead(200, { 'content-type': 'image/jpeg' }); res.end(Buffer.alloc(3 * 1024 * 1024 + 1)); return; }
     if (req.url === '/pixels') { res.writeHead(200, { 'content-type': 'image/png' }); sharp({ create: { width: 4097, height: 4097, channels: 3, background: 'red' } }).png().toBuffer().then(b => res.end(b)); return; }
     res.writeHead(200, { 'content-type': req.url === '/html' ? 'text/html' : 'image/jpeg' }); res.end(image);
@@ -28,9 +29,19 @@ test('presence artwork fetch bounds bytes, pixels, types, cancellation and reenc
   const output = await fetchPresenceArtwork(base, new AbortController().signal);
   assert.equal((await sharp(output).metadata()).format, 'jpeg');
   assert.ok(output.length <= MAX_ARTWORK_BYTES);
+  const portrait = await sharp({ create: { width: 20, height: 40, channels: 3, background: 'red' } }).jpeg().toBuffer();
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async () => new Response(portrait, { headers: { 'content-type': 'image/jpeg' } });
+    const natural = await fetchPresenceArtwork(base, undefined, { preserveAspect: true });
+    const metadata = await sharp(natural).metadata();
+    assert.equal(metadata.width, 20); assert.equal(metadata.height, 40);
+    assert.equal(metadata.exif, undefined);
+  } finally { global.fetch = originalFetch; }
   assert.equal(await fetchPresenceArtwork(base + '/large'), null);
   assert.equal(await fetchPresenceArtwork(base + '/pixels'), null);
   assert.equal(await fetchPresenceArtwork(base + '/html'), null);
+  assert.equal(await fetchPresenceArtwork(base + '/redirect', undefined, { preserveAspect: true }), null);
   const abort = new AbortController();
   const pending = fetchPresenceArtwork(base + '/slow', abort.signal); abort.abort();
   assert.equal(await pending, null);

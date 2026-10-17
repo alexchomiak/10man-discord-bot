@@ -5,7 +5,10 @@ import { CSS } from '@dnd-kit/utilities';
 import { Toaster, toast } from 'sonner';
 import { createPortal } from 'react-dom';
 import ScheduleModal from './ScheduleModal';
+import PublicAurora from './PublicAurora';
 
+const brandTitle = document.querySelector('meta[name="stream-brand-title"]')?.content || 'Chomirack';
+document.title = `Stream Deck · ${brandTitle}`;
 const TIMEOUT_MS = 65000;
 const publicId = document.querySelector('meta[name="stream-public-id"]')?.content || null;
 const apiPrefix = publicId
@@ -63,16 +66,16 @@ function Icon({ name, size = 17 }) {
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-function SortableQueueItem({ item, index, canControl, onRemove, onTop, isFirst }) {
+function SortableQueueItem({ item, index, canControl, onRemove, onTop, isFirst, publicView = false }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: !canControl });
   return <div ref={setNodeRef} className={`queue-item ${isDragging ? 'dragging' : ''}`}
     style={{ transform: CSS.Transform.toString(transform), transition }}>
     <button type="button" className="drag-handle" title="Drag to reorder" aria-label={`Reorder ${item.title}`}
       disabled={!canControl} {...attributes} {...listeners}>⠿</button>
     <span className="queue-index">{String(index + 1).padStart(2, '0')}</span>
-    {item.thumbnail && <img className="queue-thumb" src={item.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer"
+    {publicView ? <PublicArtwork item={item} queue /> : item.thumbnail && <img className="queue-thumb" src={item.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer"
       onError={event => { event.currentTarget.style.display = 'none'; }} />}
-    <div className="queue-copy"><strong>{item.title}</strong><small>{item.isLive ? 'Live' : item.durationSec ? fmt(item.durationSec) : 'Video'}</small></div>
+    <div className="queue-copy"><strong>{publicView ? item.presenceTitle || item.contentTitle || item.title : item.title}</strong><small>{publicView && item.sourceKind ? `${sourceLabel(item.sourceKind)} · ` : ''}{item.isLive ? 'Live' : item.durationSec ? fmt(item.durationSec) : 'Video'}</small></div>
     <div className="queue-actions">
       <button type="button" className="queue-top" aria-label={`Move ${item.title} to top of queue`}
         title="Move to top" disabled={!canControl || isFirst} onClick={() => onTop(item.id)}><Icon name="top" size={17} /></button>
@@ -184,6 +187,14 @@ function WorkerSettings({ worker, action, busy }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [previewPending, setPreviewPending] = useState(null);
+  const queueLimit = Number.isInteger(worker.queueLimit) ? worker.queueLimit : 100;
+  const [limitDraft, setLimitDraft] = useState(String(queueLimit));
+  const [limitDirty, setLimitDirty] = useState(false);
+  const limitSaving = useRef(false);
+  const queueGapSeconds = Number.isInteger(worker.queueGapSeconds) ? worker.queueGapSeconds : 15;
+  const [gapDraft, setGapDraft] = useState(String(queueGapSeconds));
+  const [gapDirty, setGapDirty] = useState(false);
+  const gapSaving = useRef(false);
   const [position, setPosition] = useState({ top: 0, left: 0 });
   const trigger = useRef(null);
   const panel = useRef(null);
@@ -193,6 +204,12 @@ function WorkerSettings({ worker, action, busy }) {
   const snapshotEnabled = previewPending?.snapshot ?? (worker.contentSnapshotPreview === true);
   const disabled = !worker.online || busy || pending;
   const panelId = `settings-${worker.id}`;
+  useEffect(() => {
+    if (!limitDirty) setLimitDraft(String(queueLimit));
+  }, [queueLimit, limitDirty]);
+  useEffect(() => {
+    if (!gapDirty) setGapDraft(String(queueGapSeconds));
+  }, [queueGapSeconds, gapDirty]);
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {
@@ -242,6 +259,36 @@ function WorkerSettings({ worker, action, busy }) {
     try { await action(worker.id, 'set-content-preview', { enabled: next.aware, snapshotEnabled: next.snapshot }); }
     finally { setPreviewPending(null); setPending(false); }
   };
+  const saveQueueLimit = async event => {
+    event.preventDefault();
+    if (disabled || limitSaving.current) return;
+    const limit = Number(limitDraft);
+    if (!/^\d+$/.test(limitDraft) || !Number.isInteger(limit) || limit < 1 || limit > 1000) {
+      toast.error('Queue limit must be a whole number from 1 to 1000.');
+      return;
+    }
+    limitSaving.current = true;
+    setPending(true);
+    try {
+      const result = await action(worker.id, 'set-queue-limit', { limit });
+      if (result) { setLimitDraft(String(limit)); setLimitDirty(false); }
+    } finally { limitSaving.current = false; setPending(false); }
+  };
+  const saveQueueGap = async event => {
+    event.preventDefault();
+    if (disabled || gapSaving.current) return;
+    const seconds = Number(gapDraft);
+    if (!/^\d+$/.test(gapDraft) || !Number.isInteger(seconds) || seconds < 0 || seconds > 300) {
+      toast.error('Time between videos must be a whole number from 0 to 300 seconds.');
+      return;
+    }
+    gapSaving.current = true;
+    setPending(true);
+    try {
+      const result = await action(worker.id, 'set-queue-gap', { seconds });
+      if (result) { setGapDraft(String(seconds)); setGapDirty(false); }
+    } finally { gapSaving.current = false; setPending(false); }
+  };
   return <>
     <button ref={trigger} type="button" className="icon-button worker-settings-trigger" title="Worker settings"
       aria-label={`Settings for ${worker.id}`} aria-haspopup="dialog" aria-expanded={open}
@@ -249,6 +296,29 @@ function WorkerSettings({ worker, action, busy }) {
     {open && createPortal(<div ref={panel} id={panelId} className="worker-settings-popover" role="dialog"
       aria-label={`Settings for ${worker.id}`} tabIndex={-1} style={position}>
       <div className="eyebrow">WORKER SETTINGS</div>
+      <form className="worker-queue-limit" onSubmit={saveQueueLimit}>
+        <label htmlFor={`${panelId}-queue-limit`}>Queue limit</label>
+        <div className="worker-queue-limit-controls">
+          <input id={`${panelId}-queue-limit`} type="number" inputMode="numeric" min="1" max="1000" step="1" required
+            aria-describedby={`${panelId}-queue-description`} value={limitDraft} disabled={disabled}
+            onChange={event => { setLimitDraft(event.target.value); setLimitDirty(true); }} />
+          <button type="submit" className="secondary-button" disabled={disabled || Number(limitDraft) === queueLimit}
+            aria-busy={pending || undefined}>Save</button>
+        </div>
+        <p id={`${panelId}-queue-description`}>Applies to queued videos and music (1–1000). Existing items are kept when lowered. Resets on worker restart.</p>
+      </form>
+      <form className="worker-queue-limit" onSubmit={saveQueueGap}>
+        <label htmlFor={`${panelId}-queue-gap`}>Time between videos</label>
+        <div className="worker-queue-limit-controls">
+          <input id={`${panelId}-queue-gap`} type="number" inputMode="numeric" min="0" max="300" step="1" required
+            aria-describedby={`${panelId}-gap-unit ${panelId}-gap-description`} value={gapDraft} disabled={disabled}
+            onChange={event => { setGapDraft(event.target.value); setGapDirty(true); }} />
+          <span id={`${panelId}-gap-unit`} className="worker-setting-unit">sec</span>
+          <button type="submit" className="secondary-button" disabled={disabled || Number(gapDraft) === queueGapSeconds}
+            aria-busy={pending || undefined}>Save</button>
+        </div>
+        <p id={`${panelId}-gap-description`}>Video mode only (0–300 seconds). 0 skips the countdown. Resets on worker restart.</p>
+      </form>
       <div className="worker-setting-row">
         <label id={`${panelId}-label`} htmlFor={`${panelId}-switch`}>Derive nickname from content</label>
         <button ref={switchRef} id={`${panelId}-switch`} type="button" role="switch"
@@ -278,6 +348,24 @@ function WorkerSettings({ worker, action, busy }) {
   </>;
 }
 
+const sourceLabel = kind => ({ youtube: 'YouTube', twitch: 'Twitch', jellyfin: 'Jellyfin', sharetv: 'ShareTV', direct: 'Video', url: 'Video' }[kind] || 'Stream');
+
+function PublicArtwork({ item, queue = false }) {
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => { setFailed(false); setAttempt(0); }, [item?.thumbnail]);
+  useEffect(() => {
+    if (!failed || attempt >= 2 || !item?.thumbnail) return;
+    const timer = setTimeout(() => { setAttempt(value => value + 1); setFailed(false); }, attempt === 0 ? 2000 : 8000);
+    return () => clearTimeout(timer);
+  }, [failed, attempt, item?.thumbnail]);
+  return <div className={`public-artwork ${queue ? 'public-queue-art' : ''}`}>
+    {item?.thumbnail && !failed ? <img src={item.thumbnail} alt="" width={queue ? 96 : 280} height={queue ? 54 : 158}
+      loading={queue ? 'lazy' : 'eager'} decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+      : <div className="public-art-fallback"><Icon name="play" size={queue ? 20 : 32} />{!queue && <span>{item ? sourceLabel(item.sourceKind) : 'Ready when you are'}</span>}</div>}
+  </div>;
+}
+
 function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, onModal, busy, refreshChannels, expanded = false, publicView = false }) {
   const status = worker.status;
   const musicMode = worker.musicMode === true || status?.musicMode === true;
@@ -287,6 +375,23 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
   const currentChapter = musicMode ? status?.currentChapter : null;
   const chapters = musicMode && Array.isArray(status?.musicChapters) ? status.musicChapters : [];
   const upcomingChapters = chapters.slice((currentChapter?.index ?? -1) + 1);
+  const transition = publicView && !musicMode && current?.isFiller && status?.transition?.kind === 'up-next' && realQueue[0]
+    ? status.transition : null;
+  const publicItem = transition ? realQueue[0] : current?.isFiller ? null : current;
+  const publicDescription = publicItem?.programmeDescription || publicItem?.presenceDetails;
+  const [countdown, setCountdown] = useState(0);
+  useEffect(() => {
+    if (!transition) { setCountdown(0); return; }
+    const receivedAt = Date.now();
+    const update = () => setCountdown(Math.max(0, Math.ceil(transition.remainingSec - (status?.paused ? 0 : (Date.now() - receivedAt) / 1000))));
+    update();
+    if (status?.paused) return;
+    const timer = setInterval(() => {
+      update();
+      if (Date.now() - receivedAt >= transition.remainingSec * 1000) clearInterval(timer);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [transition, status?.paused, current?.id, musicMode]);
   const duration = current?.durationSec;
   const position = Number(status?.positionSec) || 0;
   const [source, setSource] = useState('');
@@ -296,6 +401,9 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
   const [seeking, setSeeking] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
+  const [modeTarget, setModeTarget] = useState(null);
+  const [descriptionOpen, setDescriptionOpen] = useState(false);
+  useEffect(() => setDescriptionOpen(false), [current?.id, current?.title, publicItem?.id]);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   const displayQueue = useMemo(() => {
@@ -362,20 +470,25 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
     try { await send('seek', { positionSec: target }); }
     finally { setSeeking(false); setSeek(null); }
   };
-  return <article className={`worker-card ${expanded ? 'expanded' : ''} ${worker.online ? '' : 'offline'}`}>
+  return <article className={`worker-card ${expanded ? 'expanded' : ''} ${worker.online ? '' : 'offline'} ${publicView ? 'public-player' : ''}`}>
     <header className="worker-header">
       <div className="avatar-wrap">
         {worker.profile?.avatarUrl ? <img className="avatar" src={worker.profile.avatarUrl} alt="" /> : <div className="avatar avatar-fallback">{worker.id.slice(0, 1).toUpperCase()}</div>}
         <span className={`presence ${worker.online ? 'on' : ''}`} />
       </div>
       <div className="worker-title">
-        <div className="eyebrow">STREAM WORKER · {worker.id}</div>
+        <div className="eyebrow">{publicView ? 'YOUR SHARED PLAYER' : `STREAM WORKER · ${worker.id}`}</div>
         <h2>{worker.profile?.displayName || worker.id}</h2>
         <div className="worker-subtitle">{worker.online ? publicView ? status?.inVoiceChannel ? 'In a voice channel' : 'Standing by' : status?.channelId ? <><Icon name="audio" size={13} /> {channelName || `Voice ${status.channelId}`}</> : 'Standing by' : 'Offline'}</div>
       </div>
+      {publicView && <div className="public-mode-switch" role="group" aria-label="Playback mode">
+        {[false, true].map(enabled => <button type="button" key={String(enabled)} aria-pressed={musicMode === enabled}
+          disabled={!canControl || modeTarget !== null} onClick={() => { if (musicMode !== enabled) setModeTarget(enabled); }}>
+          <Icon name={enabled ? 'audio' : 'play'} size={15} />{enabled ? 'Music' : 'Video'}</button>)}
+      </div>}
       {!publicView && <div className="worker-header-actions">
         <button type="button" className="icon-button schedule-trigger" title="Scheduled content" aria-label={`Scheduled content for ${worker.id}`} onClick={() => onModal({ kind: 'schedule', worker })}><Icon name="clock" /></button>
-        <WorkerSettings worker={worker} action={action} busy={busy} />
+        <WorkerSettings key={worker.id} worker={worker} action={action} busy={busy} />
         <button type="button" className={`mode-toggle ${musicMode ? 'active' : ''}`}
           aria-label={`Turn Music Mode ${musicMode ? 'off' : 'on'} for ${worker.id}`}
           aria-pressed={musicMode} disabled={!canControl}
@@ -402,25 +515,30 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
     </header>
 
     <div className="now-playing">
-      <div className="section-topline"><span className="live-dot" /> NOW PLAYING <span className="stage-state">{status?.paused ? 'PAUSED' : status?.isFiller ? 'FILLER' : status?.isLive ? 'LIVE' : current ? 'PLAYING' : 'IDLE'}</span></div>
-      {current?.thumbnail && <img className="playing-thumb" src={current.thumbnail} alt="" referrerPolicy="no-referrer"
+      <div className="section-topline"><span className="live-dot" /> {publicView && current?.isFiller ? transition ? 'UP NEXT' : 'READY TO PLAY' : 'NOW PLAYING'} <span className="stage-state">{publicView && current?.isFiller ? transition ? countdown > 0 ? `Up next in ${countdown}s` : 'Starting next…' : 'READY' : status?.paused ? 'PAUSED' : status?.isFiller ? 'FILLER' : status?.isLive ? 'LIVE' : current ? 'PLAYING' : 'IDLE'}</span></div>
+      {publicView ? <div className="public-current-media"><PublicArtwork item={publicItem} /><div className="public-current-copy">
+        <div className="public-media-tags">{publicItem && <span>{sourceLabel(publicItem.sourceKind)}</span>}{musicMode && <span>♫ Music</span>}{status?.isLive && <span className="public-live">Live</span>}</div>
+        <h1>{currentChapter?.title || publicItem?.presenceTitle || publicItem?.contentTitle || publicItem?.title || (current?.isFiller ? musicMode ? 'Ready for music' : 'Ready for the next video' : 'Nothing on air yet')}</h1>
+        {publicItem?.programmeDescription && publicItem?.presenceDetails && <div className="public-episode">{publicItem.presenceDetails}</div>}
+        {publicDescription ? <div className={`public-synopsis ${descriptionOpen ? 'is-open' : ''}`}><p>{publicDescription}</p>{publicDescription.length > 80 && <button type="button" aria-expanded={descriptionOpen} onClick={() => setDescriptionOpen(!descriptionOpen)}>{descriptionOpen ? 'Show less' : 'Read more'}</button>}</div> : <p className="public-caption">{transition ? 'Your next video will start shortly.' : current?.isFiller ? 'Add something to the queue to keep watching together.' : current ? musicMode ? 'Audio playing through the voice channel' : status?.isLive ? 'Live stream' : 'Video on demand' : 'Add a video or find something on YouTube to start watching together.'}</p>}
+      </div></div> : <>{current?.thumbnail && <img className="playing-thumb" src={current.thumbnail} alt="" referrerPolicy="no-referrer"
         onError={event => { event.currentTarget.style.display = 'none'; }} />}
       <div className="playing-title">{currentChapter?.title || current?.title || 'Nothing on air'}</div>
-      <div className="playing-meta">{currentChapter ? `From ${current.title}` : current ? current.isFiller ? musicMode ? 'Ready for music' : 'Ready for the next video' : musicMode ? 'Audio plays through the bot’s voice' : current.isLive ? 'Live source' : 'Video on demand' : 'Join a voice channel to get started'}</div>
-      <div className="progress-row"><span>{fmt(seek ?? position)}</span><span>{duration ? fmt(duration) : status?.isLive ? 'LIVE' : '—:—'}</span></div>
+      <div className="playing-meta">{currentChapter ? `From ${current.title}` : current ? current.isFiller ? musicMode ? 'Ready for music' : 'Ready for the next video' : musicMode ? 'Audio plays through the bot’s voice' : current.isLive ? 'Live source' : 'Video on demand' : 'Join a voice channel to get started'}</div></>}
+      <div className="progress-row"><span>{publicView && current?.isFiller ? transition ? `${countdown}s remaining` : 'Ready when you are' : fmt(seek ?? position)}</span><span>{publicView && current?.isFiller ? '' : duration ? fmt(duration) : status?.isLive ? 'LIVE' : '—:—'}</span></div>
       {duration && !current?.isFiller ? <input className="seek-slider" aria-label="Seek playback position" type="range"
         min="0" max={duration} value={seek ?? position} onChange={event => setSeek(Number(event.target.value))}
         onPointerUp={event => void commitSeek(event.currentTarget.value)}
         onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) void commitSeek(event.currentTarget.value); }}
         disabled={!canControl || seeking}
         style={{ '--seek-percent': `${Math.min(100, (seek ?? position) / duration * 100)}%` }} />
-        : <div className="visual-progress"><span style={{ width: '0%' }} /></div>}
+        : <div className="visual-progress"><span style={{ width: transition && duration > 0 ? `${Math.min(100, countdown / duration * 100)}%` : '0%' }} /></div>}
     </div>
 
     <div className="transport">
       <button className="transport-main" disabled={!canControl || !current} title={status?.paused ? 'Resume' : 'Pause'} onClick={() => send(status?.paused ? 'resume' : 'pause')}><Icon name={status?.paused ? 'play' : 'pause'} size={20} /></button>
-      <button className="transport-button" disabled={!canControl || !current || status?.isLive} onClick={() => send('scrub', { deltaSec: -30 })}>−30s</button>
-      <button className="transport-button" disabled={!canControl || !current || status?.isLive} onClick={() => send('scrub', { deltaSec: 30 })}>+30s</button>
+      <button className="transport-button" disabled={!canControl || !current || current?.isFiller || status?.isLive} onClick={() => send('scrub', { deltaSec: -30 })}>−30s</button>
+      <button className="transport-button" disabled={!canControl || !current || current?.isFiller || status?.isLive} onClick={() => send('scrub', { deltaSec: 30 })}>+30s</button>
       <span className="transport-spacer" />
       <button className="transport-button" disabled={!canControl || !current} title="Skip" onClick={() => send('skip')}><Icon name="skip" /></button>
       {!publicView && <button className="transport-button danger" disabled={!canControl || !status} title="Stop and leave" onClick={() => send('stop')}><Icon name="stop" /></button>}
@@ -439,7 +557,7 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
           </div>)}
           {displayQueue.length ? displayQueue.map((item, index) =>
             <SortableQueueItem key={item.id} item={item} index={index + upcomingChapters.length} canControl={canControl}
-              isFirst={index === 0} onTop={queueId => void moveToTop(queueId)}
+              publicView={publicView} isFirst={index === 0} onTop={queueId => void moveToTop(queueId)}
               onRemove={queueId => void send('remove-queued', { queueId })} />)
             : !upcomingChapters.length && <div className="queue-empty">{musicMode ? 'No music in the queue yet.' : 'No videos in the queue yet.'}</div>}
         </div>
@@ -459,9 +577,59 @@ function WorkerCard({ worker, guildId, guilds, channels, action, searchYoutube, 
     </div>}
     {searchOpen && createPortal(<YoutubeSearchModal workerName={worker.profile?.displayName || worker.id}
       close={() => setSearchOpen(false)} search={(query, page) => searchYoutube(worker.id, query, page)} add={playSource} />, document.body)}
+    {modeTarget !== null && createPortal(<ModeSwitchModal target={modeTarget} current={musicMode} busy={busy} available={worker.online}
+      close={() => setModeTarget(null)} confirm={() => send('toggle-music-mode', { enabled: modeTarget })} />, document.body)}
     {clearOpen && createPortal(<ClearQueueModal count={realQueue.length} close={() => setClearOpen(false)}
       confirm={async () => { const result = await send('clear-queue'); if (result) setPreviewIds(null); return result; }} />, document.body)}
   </article>;
+}
+
+function ModeSwitchModal({ target, current, busy, available, close, confirm }) {
+  const [working, setWorking] = useState(false);
+  const pending = useRef(false);
+  const dialog = useRef(null);
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  const titleId = useId();
+  const descriptionId = useId();
+  useEffect(() => {
+    const previous = document.activeElement;
+    dialog.current?.querySelector('button')?.focus();
+    return () => { if (previous?.isConnected) previous.focus(); };
+  }, []);
+  useEffect(() => {
+    const onKey = event => {
+      if (event.key === 'Escape') { event.preventDefault(); if (!pending.current) closeRef.current(); }
+      if (event.key === 'Tab') {
+        const buttons = [...dialog.current.querySelectorAll('button:not(:disabled)')];
+        if (!buttons.length) { event.preventDefault(); dialog.current.focus(); return; }
+        const first = buttons[0], last = buttons[buttons.length - 1];
+        if (event.shiftKey && (document.activeElement === first || !buttons.includes(document.activeElement))) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && (document.activeElement === last || !buttons.includes(document.activeElement))) { event.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+  const submit = async () => {
+    if (pending.current || busy || !available) return;
+    if (current === target) { close(); return; }
+    pending.current = true;
+    setWorking(true);
+    try { if (await confirm()) close(); }
+    finally { pending.current = false; setWorking(false); }
+  };
+  const label = target ? 'Music' : 'Video';
+  return <div className="modal-backdrop mode-switch-backdrop" onMouseDown={() => { if (!pending.current) close(); }}>
+    <section ref={dialog} tabIndex={-1} className="modal mode-switch-modal" role="alertdialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} aria-busy={working} onMouseDown={event => event.stopPropagation()}>
+      <div className="eyebrow">PLAYBACK MODE</div><h2 id={titleId}>Switch to {label}?</h2>
+      <div id={descriptionId}><p>{target ? 'Audio will play through the bot’s voice in the voice channel. The Go Live stream will show a music visualization, now playing and the queue instead of video.' : 'Audio and video will play through the Go Live stream again. Music through the bot’s voice will stop.'}</p>
+        <p className="mode-switch-note">Playing media may briefly restart at its current position; live streams reconnect at the live edge. Your queued media stays.</p></div>
+      {current === target && <p role="status">The player is already in {label} mode.</p>}
+      <div className="modal-actions"><button type="button" className="secondary-button" disabled={working} onClick={close}>Cancel</button>
+        <button type="button" className="primary-button" disabled={working || busy || !available} onClick={() => void submit()}>{working ? 'Switching…' : current === target ? 'Done' : `Switch to ${label}`}</button></div>
+    </section>
+  </div>;
 }
 
 function ClearQueueModal({ count, close, confirm }) {
@@ -622,9 +790,16 @@ function PublicWorkerPage() {
     } finally { setBusy(false); }
   };
   const searchYoutube = async (_workerId, query, page = 1) => api(null, `/api/public/${publicId}/search?q=${encodeURIComponent(query)}&page=${page}`);
-  return <div className="app-shell public-shell"><Toaster position="top-right" theme="dark" richColors closeButton />
+  const current = worker?.status?.current;
+  const auroraItem = current?.isFiller
+    ? worker?.status?.transition?.kind === 'up-next' && !worker?.musicMode && !worker?.status?.musicMode
+      ? worker?.status?.queue?.find(item => !item.isFiller) : null
+    : current;
+  const playing = !!(!expired && worker?.online && worker?.status?.inVoiceChannel
+    && current && !current.isFiller && !worker.status.isFiller && !worker.status.paused);
+  return <div className="app-shell public-shell"><PublicAurora artwork={expired ? null : auroraItem?.thumbnail} playing={playing} /><Toaster position="top-right" theme="dark" richColors closeButton />
     <main className="main-content detail-mode">
-      <div className="topbar"><div className="topbar-identity"><span className="mobile-brand-mark" aria-hidden="true">▶</span><div className="eyebrow">10MAN / STREAM · PUBLIC PLAYER</div></div></div>
+      <div className="topbar"><div className="topbar-identity"><span className="public-brand-mark" aria-hidden="true">▶</span><span className="public-wordmark" title={brandTitle}>{brandTitle}<span> / stream</span></span></div><span className="public-room-label">Shared player</span></div>
       <div className="detail-view">
         {expired ? <div className="empty-fleet">This player is unavailable. The worker must be active in a server voice channel.</div>
           : worker ? <WorkerCard worker={worker} guildId="" guilds={[]} channels={[]} action={action} searchYoutube={searchYoutube}
@@ -693,7 +868,7 @@ function AdminApp() {
   };
   if (!answer) return <div className="login-page"><Toaster position="top-right" theme="dark" richColors closeButton />
     <div className="login-glow" /><div className="login-card">
-    <div className="brand-mark">▶</div><div className="eyebrow">10MAN CONTROL ROOM</div>
+    <div className="brand-mark">▶</div><div className="eyebrow">{brandTitle} CONTROL ROOM</div>
     <h1>Stream Deck</h1><p>Your Discord streams, all in one place.</p>
     <form onSubmit={event => { event.preventDefault(); sessionStorage.setItem('stream-dashboard-password', login); setAnswer(login); }}>
       <label htmlFor="dashboard-answer">Dashboard password</label><input id="dashboard-answer" type="password" value={login} onChange={event => setLogin(event.target.value)} autoComplete="current-password" placeholder="Password" required />
@@ -701,7 +876,7 @@ function AdminApp() {
     </form>
   </div></div>;
   return <div className="app-shell"><Toaster position="top-right" theme="dark" richColors closeButton />
-    <aside className="sidebar"><div className="sidebar-brand"><div className="brand-mark">▶</div><span>10MAN<span className="brand-light">/STREAM</span></span></div>
+    <aside className="sidebar"><div className="sidebar-brand"><div className="brand-mark">▶</div><span className="sidebar-wordmark" title={brandTitle}>{brandTitle}<span className="brand-light">/STREAM</span></span></div>
       <div className="sidebar-label">WORKSPACE</div><a href="#/" className={`sidebar-item ${!selectedWorkerId ? 'active' : ''}`}>◫ <span>Control room</span></a>
       <div className="sidebar-section"><div className="sidebar-label">FLEET</div>{workers.map(worker => <a key={worker.id} href={`#/${worker.id}`} className={`sidebar-worker ${selectedWorkerId === worker.id ? 'active' : ''}`}><span className={`sidebar-status ${worker.online ? 'on' : ''}`} />{worker.profile?.displayName || worker.id}</a>)}</div>
       <div className="sidebar-footer"><span className="sidebar-status on" /> Broker connected <button onClick={() => { sessionStorage.removeItem('stream-dashboard-password'); setAnswer(''); }} title="Sign out">↪</button></div>
@@ -723,7 +898,7 @@ function AdminApp() {
         <div className="cards-grid">{workers.map(worker => <div key={worker.id}><WorkerCard worker={worker} guildId={guildId} guilds={state.guilds} channels={channelsFor(worker)} action={action} searchYoutube={searchYoutube} onModal={setModal} busy={busy[worker.id]} refreshChannels={() => loadWorkerChannels(worker.id)} /></div>)}</div>
         {!workers.length && <div className="empty-fleet">No stream workers configured or connected.</div>}
       </>}
-      <footer>10MAN STREAM DECK <span>·</span> Persistent Go Live control</footer>
+      <footer>{brandTitle} STREAM DECK <span>·</span> Persistent Go Live control</footer>
     </main>
     {modal?.kind === 'schedule' && <ScheduleModal worker={workers.find(worker => worker.id === modal.worker.id) || modal.worker} close={() => setModal(null)} request={scheduleRequest} channels={channelsFor(workers.find(worker => worker.id === modal.worker.id) || modal.worker)} ChannelPicker={ChannelPicker} loadChannels={() => loadWorkerChannels(modal.worker.id)} />}
     {modal && modal.kind !== 'schedule' && <Modal key={`${modal.kind}-${modal.worker.id}`} modal={modal} close={() => setModal(null)} action={action} guildId={guildId} />}
