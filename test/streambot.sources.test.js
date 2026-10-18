@@ -261,8 +261,16 @@ if (argv.includes('--dump-json')) {
     process.stderr.write('ERROR: Unsupported URL\\n');
     process.exit(1);
   }
+  if (scenario === 'authFailed') {
+    process.stderr.write('ERROR: Sign in to confirm your age\\n');
+    process.exit(1);
+  }
   if ((scenario === 'authRequired' || scenario === 'ageSafari') && !argv.includes('--cookies')) {
     process.stderr.write('ERROR: Sign in to confirm your age\\n');
+    process.exit(1);
+  }
+  if (scenario === 'ageSafari' && !argv.includes('youtube:player_client=web_safari')) {
+    process.stderr.write('ERROR: Requested format is not available\\n');
     process.exit(1);
   }
   const obj = scenario.startsWith('youtubeHls') ? SCENARIOS.youtubeHls : (SCENARIOS[scenario] || SCENARIOS.hls);
@@ -650,6 +658,7 @@ test('yt-dlp retries with cookies when public lookup requires sign-in', async ()
   assert.strictEqual(calls.length, 2);
   assert.ok(!calls[0].argv.includes('--cookies'));
   assert.deepStrictEqual(calls[1].argv.slice(-3), ['--cookies', '/app/data/youtube cookies.txt', url]);
+  assert.ok(!calls[1].argv.includes('--extractor-args'), 'authenticated default clients must be tried first');
 });
 
 test('unsupported web pages do not waste a second yt-dlp lookup with cookies', async () => {
@@ -682,6 +691,50 @@ test('unsupported web page falls through one yt-dlp attempt to Chromium', async 
   } finally { browserStream.probeBrowser = original; }
 });
 
+test('YouTube failures preserve yt-dlp diagnostics and never probe Chromium, including after cookie retry', async () => {
+  const browserStream = require('../src/streambot/browserStream');
+  const original = browserStream.probeBrowser;
+  let browserCalls = 0;
+  browserStream.probeBrowser = async () => { browserCalls++; throw new Error('YouTube must not use Chromium'); };
+  try {
+    for (const host of ['youtube.com', 'www.youtube.com', 'music.youtube.com', 'm.youtube.com',
+      'youtu.be', 'www.youtube-nocookie.com']) {
+      for (const scenario of ['unsupported', 'authFailed']) {
+        setScenario(scenario);
+        const before = readFakeLog().length;
+        const url = `https://${host}/watch?v=FAIL`;
+        const result = await resolveSource(url, { ...CfgPlain, browserFallback: true,
+          ytdlpCookiesFile: '/app/data/youtube cookies.txt' });
+        const calls = readFakeLog().slice(before);
+        assert.equal(result.available, false);
+        assert.equal(result.sourceKind, 'youtube');
+        assert.match(result.note, scenario === 'unsupported' ? /Unsupported URL/ : /Sign in to confirm your age/);
+        assert.equal(calls.length, scenario === 'unsupported' ? 1 : 3);
+        assert.ok(!calls[0].argv.includes('--cookies'));
+        if (calls.length > 1) assert.deepEqual(calls[1].argv.slice(-3),
+          ['--cookies', '/app/data/youtube cookies.txt', url]);
+      }
+    }
+    assert.equal(browserCalls, 0);
+  } finally { browserStream.probeBrowser = original; }
+});
+
+test('YouTube lookalike hosts still use generic Chromium fallback', async () => {
+  setScenario('unsupported');
+  const browserStream = require('../src/streambot/browserStream');
+  const original = browserStream.probeBrowser;
+  const url = 'https://youtube.com.example.org/player';
+  browserStream.probeBrowser = async input => {
+    assert.equal(input, url);
+    return { kind: 'browser', available: true };
+  };
+  try {
+    const result = await resolveSource(url, { ...CfgPlain, browserFallback: true });
+    assert.equal(result.kind, 'browser');
+    assert.equal(result.available, true);
+  } finally { browserStream.probeBrowser = original; }
+});
+
 test('age-restricted YouTube uses Safari HLS and its selected 1080p playlist', async () => {
   setScenario('ageSafari');
   const before = readFakeLog().length;
@@ -692,7 +745,9 @@ test('age-restricted YouTube uses Safari HLS and its selected 1080p playlist', a
   assert.strictEqual(res.available, true);
   assert.strictEqual(res.streamType, 'single');
   assert.strictEqual(res.streamUrl, 'https://manifest.googlevideo.com/api/manifest/hls_playlist/1080/index.m3u8');
-  assert.ok(calls[1].argv.includes('youtube:player_client=web_safari'));
+  assert.equal(calls.length, 3);
+  assert.ok(!calls[1].argv.includes('--extractor-args'));
+  assert.ok(calls[2].argv.includes('youtube:player_client=web_safari'));
 });
 
 // ============================================================================

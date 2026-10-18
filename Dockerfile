@@ -67,7 +67,9 @@ ENV LIBVA_DRIVER_NAME=iHD
 # script and would require python3, which this image does not ship.
 # TARGETARCH is set by Docker buildx (amd64 | arm64 | arm).
 # Override the install with YTDLP_PATH if you prefer your own.
-ARG YTDLP_VERSION=2026.08.19
+# This nightly fixes YouTube extraction failures in the previous stable pin.
+# Stable YTDLP_VERSION overrides still use the main release repository.
+ARG YTDLP_VERSION=2026.10.10.233141
 ARG TARGETARCH
 RUN case "$TARGETARCH" in \
         amd64)  ASSET=yt-dlp_linux ;; \
@@ -75,7 +77,11 @@ RUN case "$TARGETARCH" in \
         arm*)   ASSET=yt-dlp_linux_armv7l ;; \
         *)      echo "yt-dlp: unsupported TARGETARCH '$TARGETARCH'" >&2; exit 1 ;; \
     esac \
-  && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/${ASSET}" \
+  && case "$YTDLP_VERSION" in \
+        *.*.*.*) YTDLP_REPO=yt-dlp/yt-dlp-nightly-builds ;; \
+        *)       YTDLP_REPO=yt-dlp/yt-dlp ;; \
+    esac \
+  && curl -fsSL "https://github.com/${YTDLP_REPO}/releases/download/${YTDLP_VERSION}/${ASSET}" \
       -o /usr/local/bin/yt-dlp \
   && chmod +x /usr/local/bin/yt-dlp \
   && yt-dlp --version

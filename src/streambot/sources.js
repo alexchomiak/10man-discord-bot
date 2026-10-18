@@ -46,6 +46,12 @@ function hostOf(value) {
   }
 }
 
+function isYoutubeUrl(value) {
+  const host = hostOf(value);
+  return host != null && ['youtube.com', 'youtu.be', 'youtube-nocookie.com']
+    .some(domain => host === domain || host.endsWith(`.${domain}`));
+}
+
 function thumbnailUrl(value, base) {
   if (!value) return null;
   try {
@@ -214,7 +220,7 @@ async function getShareTvPreview(input, cfg, signal) {
 // Platform-page hosts (mirrors iptv-share's PLATFORM_PAGE_HOSTS). A URL on one
 // of these is a page, not a media endpoint: it must go through yt-dlp.
 const PLATFORM_PAGE_HOSTS = [
-  'twitch.tv', 'youtube.com', 'youtu.be',
+  'twitch.tv', 'youtube.com', 'youtu.be', 'youtube-nocookie.com',
   'vimeo.com', 'facebook.com', 'fb.watch',
   'instagram.com', 'tiktok.com', 'tmuxapp.com'
 ];
@@ -613,16 +619,14 @@ function parseSignedDuration(raw) {
 
 // --dump-json probe: returns the raw spawn result; parsing happens in
 // resolveYtdlp so tests can stub stdout.
-function ytdlpDumpJson(cfg, url, useCookies = false) {
+function ytdlpDumpJson(cfg, url, useCookies = false, playerClient = null) {
   const timeoutMs = Number.isFinite(cfg.ytdlpTimeoutMs) && cfg.ytdlpTimeoutMs > 0 ? cfg.ytdlpTimeoutMs : 20000;
   // The image already includes Node. Let current yt-dlp use it for YouTube's
   // player challenges so format discovery does not silently return a reduced
   // set with the "no supported JavaScript runtime" warning.
   const args = ['--js-runtimes', 'node', '--dump-json', '--no-playlist'];
   if (useCookies && cfg.ytdlpCookiesFile) {
-    // Authenticated default clients can expose only format 18 (360p) for
-    // age-restricted videos. web_safari exposes their HLS renditions instead.
-    args.push('--extractor-args', 'youtube:player_client=web_safari');
+    if (playerClient) args.push('--extractor-args', `youtube:player_client=${playerClient}`);
     args.push('--cookies', cfg.ytdlpCookiesFile);
   }
   args.push(url);
@@ -818,6 +822,13 @@ async function resolveYtdlp(raw, cfg) {
   if (!res.ok && !res.spawnErr && !res.timedOut && config.ytdlpCookiesFile && authRequired) {
     verboseLog(config, 'public yt-dlp lookup failed; retrying with cookies');
     res = await ytdlpDumpJson(config, raw, true);
+    // Let yt-dlp choose its authenticated clients first. Safari can recover
+    // some age-restricted videos, but forcing it can hide every playable format.
+    if (!res.ok && !res.spawnErr && !res.timedOut && isYoutubeUrl(raw) &&
+        /(?:requested format.*not available|no (?:video )?formats|only images|confirm your age|age.restricted)/i.test(String(res.stderr || ''))) {
+      verboseLog(config, 'authenticated yt-dlp lookup failed; retrying with Safari client');
+      res = await ytdlpDumpJson(config, raw, true, 'web_safari');
+    }
   }
 
   if (res.spawnErr) {
@@ -1156,7 +1167,9 @@ async function resolveSource(input, config) {
   }
   if (isHttp || isPrefixed) {
     const resolved = await resolveYtdlp(raw, cfg);
-    if (resolved.available || !isHttp) return { ...resolved, sourceKind: /^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)(?:[/:]|$)/i.test(raw) || /^(?:ytsearch|youtube):/i.test(raw) ? 'youtube' : resolved.sourceKind || resolved.kind };
+    // YouTube stays on yt-dlp even after authentication fails. Preserve its
+    // failure detail so cookie/extractor problems are visible to the caller.
+    if (resolved.available || !isHttp || isYoutubeUrl(raw)) return { ...resolved, sourceKind: isYoutubeUrl(raw) || /^(?:ytsearch|youtube):/i.test(raw) ? 'youtube' : resolved.sourceKind || resolved.kind };
     if (isTwitchUrl(raw)) {
       const note = String(resolved.note || '');
       const failureKind = /no_cdm_specified|DRM|protected content/i.test(note) ? 'protected-playback'
