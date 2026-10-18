@@ -427,42 +427,13 @@
 .login-card .eyebrow{overflow-wrap:anywhere}
 @media(max-width:480px){.public-wordmark>span{display:none}.public-shell .topbar{gap:12px}}
 
-/* The public room's ambient light is independent of playback and stays behind controls. */
+/* One capped bitmap supplies the ambient room; glass uses no live blur. */
 .public-shell{position:relative;isolation:isolate;background:#0b111a}
 .public-shell>.main-content{position:relative;z-index:1}
 .public-aurora{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none;contain:strict;background:#0b111a}
-.aurora-palette{position:absolute;inset:0;opacity:.68}
-.aurora-palette i{position:absolute;display:block;width:95vw;height:100vh;left:-32vw;top:-32vh;background:radial-gradient(ellipse,var(--aurora-a),transparent 67%);animation:aurora-drift 26s ease-in-out infinite alternate;opacity:.72}
-.aurora-palette i:nth-child(2){left:43vw;top:3vh;width:82vw;height:110vh;background:radial-gradient(ellipse,var(--aurora-b),transparent 66%);animation-duration:33s;animation-delay:-13s;opacity:.54}
-.aurora-palette i:nth-child(3){left:7vw;top:49vh;width:95vw;height:90vh;background:radial-gradient(ellipse,var(--aurora-c),transparent 67%);animation-duration:29s;animation-delay:-8s;opacity:.42}
-.aurora-outgoing{animation:aurora-depart 6s ease both}
-.aurora-incoming{animation:aurora-arrive 6s ease both}
-.aurora-particles{position:absolute;inset:0;transition:opacity 3s}
-.aurora-particles b{position:absolute;top:calc(8% + var(--row)*7.4%);width:2px;height:2px;border-radius:50%;color:var(--aurora-b);transition:color 6s ease;background:currentColor;box-shadow:0 0 10px 2px currentColor;opacity:.4;animation:aurora-light 8.36s ease-in-out infinite alternate;animation-delay:calc(var(--n)*-1.67s)}
-.aurora-particles .light-left{left:calc(clamp(5px,3vw,70px) + var(--column)*clamp(0px,2vw,24px))}
-.aurora-particles .light-right{right:calc(clamp(5px,3vw,70px) + var(--column)*clamp(0px,2vw,24px))}
-.aurora-particles .light-top{left:calc(8% + var(--top-column)*12%);top:calc(2% + var(--column)*2%)}
-.aurora-particles b:nth-child(4n){width:3px;height:3px;animation-duration:10.57s}
-.aurora-particles b:nth-child(3n){color:var(--aurora-c);box-shadow:0 0 9px 1px currentColor}
-/* Only the background is translucent: content and controls remain fully opaque. */
-.public-shell .worker-card.expanded{background:linear-gradient(130deg,rgb(25 38 55 / .7),rgb(16 26 39 / .7) 65%);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.public-aurora canvas{position:absolute;inset:0;display:block;width:100%;height:100%}
+.public-shell .worker-card.expanded{background:linear-gradient(130deg,rgb(25 38 55 / .7),rgb(16 26 39 / .7) 65%);border-color:#52627880;box-shadow:inset 0 1px 0 #ffffff0b,0 18px 50px #0003}
 .public-shell .worker-card.expanded .queue-item{background:rgb(27 42 59 / .8)}
-.aurora-particles .light-field{left:calc(22% + var(--field-column)*18%);top:calc(22% + var(--field-row)*19%);width:3px;height:3px;box-shadow:0 0 12px 3px currentColor}
-@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){.public-shell .worker-card.expanded{background:linear-gradient(130deg,rgb(25 38 55 / .95),rgb(16 26 39 / .95) 65%)}}
-@media(prefers-reduced-transparency:reduce){.public-shell .worker-card.expanded{background:linear-gradient(130deg,#192637,#101a27 65%);-webkit-backdrop-filter:none;backdrop-filter:none}}
-.aurora-particles[data-motion-paused="true"] b{animation-play-state:paused}
-.public-aurora.is-paused *{animation-play-state:paused!important}
-@keyframes aurora-drift{from{transform:translate3d(-3%,-3%,0) scale(1);opacity:.5}to{transform:translate3d(10%,8%,0) scale(1.12);opacity:.8}}
-@keyframes aurora-light{from{transform:translate3d(-2px,10px,0);opacity:.25}to{transform:translate3d(3px,-20px,0);opacity:.8}}
-@keyframes aurora-depart{from{opacity:.68}to{opacity:0}}
-@keyframes aurora-arrive{from{opacity:0}to{opacity:.68}}
-@media(max-width:740px){.aurora-palette i{width:150vw;left:-68vw}.aurora-palette i:nth-child(2){left:20vw;width:140vw}.aurora-palette i:nth-child(3){display:none}.aurora-particles b:nth-child(n+25){display:none}.aurora-particles b{top:calc(6% + var(--row)*13%);animation-name:aurora-light-mobile}.aurora-particles .light-left{left:5px}.aurora-particles .light-right{right:5px}}
-@media(prefers-reduced-motion:reduce){.public-aurora *{animation:none!important;transition:none!important}.aurora-outgoing{display:none}.aurora-incoming{opacity:.68}.aurora-particles{opacity:.3}}
+@media(prefers-reduced-transparency:reduce){.public-shell .worker-card.expanded{background:linear-gradient(130deg,#192637,#101a27 65%)}}
 
-@keyframes aurora-light-mobile{from{transform:translate3d(-1px,8px,0);opacity:.25}to{transform:translate3d(1px,-15px,0);opacity:.8}}
-
-@media(max-width:740px){
-.public-shell .worker-card.expanded{-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
-.aurora-particles .light-field{left:calc(30% + var(--mobile-column)*38%);top:calc(22% + var(--mobile-row)*20%)}
-}
-@media(max-width:740px) and (prefers-reduced-transparency:reduce){.public-shell .worker-card.expanded{-webkit-backdrop-filter:none;backdrop-filter:none}}
+.public-aurora .aurora-stars{inset:-24px;width:calc(100% + 48px);height:calc(100% + 48px)}

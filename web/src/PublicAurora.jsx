@@ -27,69 +27,156 @@ function samplePalette(image) {
   return fallback.map((color, index) => colors[index] || color);
 }
 
+// Numeric colors let the small canvas blend palettes without repainting full-size layers.
+function rgb(color) {
+  const [h, s, l] = color.match(/[\d.]+/g).map(Number);
+  const saturation = s / 100, light = l / 100;
+  const a = saturation * Math.min(light, 1 - light);
+  return [0, 8, 4].map(n => {
+    const k = (n + h / 30) % 12;
+    return Math.round(255 * (light - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+  });
+}
+const initialColors = fallback.map(rgb);
+function starSprites(colors) {
+  return colors.map(color => {
+    const sprite = document.createElement('canvas');
+    sprite.width = sprite.height = 24;
+    const context = sprite.getContext('2d');
+    const light = color.map(value => Math.round(value * .35 + 165)).join(',');
+    const glow = context.createRadialGradient(12, 12, 0, 12, 12, 12);
+    glow.addColorStop(0, `rgba(${light},.95)`);
+    glow.addColorStop(.14, `rgba(${light},.8)`);
+    glow.addColorStop(.35, `rgba(${light},.22)`);
+    glow.addColorStop(1, `rgba(${light},0)`);
+    context.fillStyle = glow; context.fillRect(0, 0, 24, 24);
+    return sprite;
+  });
+}
+const smooth = value => value * value * (3 - 2 * value);
+
 export default function PublicAurora({ artwork, playing = false }) {
   const [palette, setPalette] = useState(fallback);
-  const [previous, setPrevious] = useState(fallback);
-  const currentPalette = useRef(fallback);
   const [hidden, setHidden] = useState(document.hidden);
-  const particles = useRef(null);
-  const playbackRate = useRef(0);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const canvas = useRef(null);
+  const stars = useRef(null);
+  const starDrift = useRef(null);
+  useEffect(() => () => { starDrift.current?.cancel(); starDrift.current = null; }, []);
+  const scene = useRef({ phase: 0, speed: 0, colors: initialColors, target: initialColors, from: initialColors, paletteKey: fallback.join(), blendStart: -Infinity });
   useEffect(() => {
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const changed = () => setReducedMotion(preference.matches);
-    preference.addEventListener('change', changed);
-    return () => preference.removeEventListener('change', changed);
+    const motionChanged = () => setReducedMotion(preference.matches);
+    const visibilityChanged = () => setHidden(document.hidden);
+    preference.addEventListener('change', motionChanged);
+    document.addEventListener('visibilitychange', visibilityChanged);
+    return () => { preference.removeEventListener('change', motionChanged); document.removeEventListener('visibilitychange', visibilityChanged); };
   }, []);
   useEffect(() => {
-    const element = particles.current;
-    if (!element) return;
-    let timer;
-    const target = playing && !hidden && !reducedMotion ? 1 : 0;
-    const applyRate = rate => {
-      playbackRate.current = rate;
-      if (!element.getAnimations) {
-        // Older browsers still freeze safely; supported browsers retain animation phase.
-        element.dataset.motionPaused = String(rate === 0);
-        return;
-      }
-      for (const animation of element.getAnimations({ subtree: true })) {
-        // Palette color transitions keep their own six-second timing.
-        if (animation.animationName?.startsWith('aurora-light')) animation.updatePlaybackRate(rate);
-      }
-    };
-    const resized = () => applyRate(playbackRate.current);
-    window.addEventListener('resize', resized);
-    const start = playbackRate.current;
-    applyRate(hidden || reducedMotion ? 0 : start);
-    if (!hidden && !reducedMotion && start !== target) {
-      const duration = target ? 500 : 850;
-      const steps = 12;
-      let step = 0;
-      const tick = () => {
-        step++;
-        const progress = step / steps;
-        const eased = progress * progress * (3 - 2 * progress);
-        applyRate(start + (target - start) * eased);
-        if (step < steps) timer = setTimeout(tick, duration / steps);
-      };
-      timer = setTimeout(tick, duration / steps);
+    const element = canvas.current;
+    const context = element?.getContext('2d', { alpha: false });
+    const starCanvas = stars.current;
+    const starContext = starCanvas?.getContext('2d');
+    if (!context || !starContext) return;
+    const state = scene.current;
+    if (!starDrift.current) {
+      starDrift.current = starCanvas.animate([
+        { transform: 'translate3d(-8px, -20px, 0)' },
+        { transform: 'translate3d(8px, 20px, 0)' },
+      ], { duration: 5000, iterations: Infinity, direction: 'alternate', easing: 'steps(150, end)' });
+      starDrift.current.updatePlaybackRate(0);
     }
-    return () => { clearTimeout(timer); window.removeEventListener('resize', resized); };
-  }, [playing, hidden, reducedMotion]);
-  useEffect(() => {
-    const changed = () => setHidden(document.hidden);
-    document.addEventListener('visibilitychange', changed);
-    return () => document.removeEventListener('visibilitychange', changed);
-  }, []);
+    const applyStarRate = rate => {
+      if (starDrift.current.playbackRate !== rate) starDrift.current.updatePlaybackRate(rate);
+    };
+    let timer, stopped = false;
+    const now = performance.now();
+    if (state.paletteKey !== palette.join()) {
+      state.paletteKey = palette.join(); state.from = state.colors;
+      state.target = palette.map(rgb); state.blendStart = now;
+    }
+    const fromSprites = starSprites(state.from), targetSprites = starSprites(state.target);
+    let lastAurora = -Infinity, starsDrawn = false;
+    const startSpeed = state.speed;
+    const targetSpeed = playing && !hidden && !reducedMotion ? 1 : 0;
+    const rampDuration = targetSpeed ? 500 : 850;
+    let last = now;
+    const size = () => {
+      const mobile = window.innerWidth <= 740;
+      const scale = Math.min((mobile ? 280 : 480) / window.innerWidth, (mobile ? 200 : 300) / window.innerHeight);
+      element.width = Math.max(1, Math.round(window.innerWidth * scale));
+      element.height = Math.max(1, Math.round(window.innerHeight * scale));
+      const starScale = Math.min(window.devicePixelRatio || 1, 1.25, Math.sqrt(1500000 / ((window.innerWidth + 48) * (window.innerHeight + 48))));
+      starCanvas.width = Math.max(1, Math.floor((window.innerWidth + 48) * starScale));
+      starCanvas.height = Math.max(1, Math.floor((window.innerHeight + 48) * starScale));
+      starContext.setTransform(starCanvas.width / (window.innerWidth + 48), 0, 0, starCanvas.height / (window.innerHeight + 48), 0, 0);
+      starsDrawn = false;
+    };
+    size();
+    function draw(time) {
+      const width = element.width, height = element.height;
+      const blend = reducedMotion ? 1 : smooth(Math.min(1, (time - state.blendStart) / 6000));
+      state.colors = state.target.map((color, index) => color.map((value, channel) => state.from[index][channel] + (value - state.from[index][channel]) * blend));
+      context.fillStyle = '#0b111a'; context.fillRect(0, 0, width, height);
+      // Broad, softly edged ribbons cross the room instead of sitting in its corners.
+      for (let band = 0; band < 3; band++) {
+        const color = state.colors[band].map(Math.round).join(',');
+        const center = height * (.08 + band * .28);
+        const points = Array.from({ length: 29 }, (_, point) => {
+          const x = (point - 2) / 24 * width;
+          return [x, center + Math.sin(x / width * 5 + state.phase * .13 + band * 1.8) * height * .12 + Math.sin(x / width * 9 - state.phase * .08) * height * .035];
+        });
+        // Nested translucent strokes feather each ribbon without any blur/filter pass.
+        context.lineCap = context.lineJoin = 'round';
+        for (let layer = 0; layer < 10; layer++) {
+          context.beginPath();
+          points.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
+          context.lineWidth = height * (.42 - layer * .037);
+          context.strokeStyle = `rgba(${color},${.025 + layer * .0015})`;
+          context.stroke();
+        }
+      }
+    }
+    function drawStars(time) {
+      const width = window.innerWidth + 48, height = window.innerHeight + 48;
+      const blend = reducedMotion ? 1 : smooth(Math.min(1, (time - state.blendStart) / 6000));
+      starContext.clearRect(0, 0, width, height);
+      const count = window.innerWidth <= 740 ? 24 : 40;
+      for (let index = 0; index < count; index++) {
+        const x = (index * .618034 % 1) * width;
+        const y = (index * .414213 % 1) * height;
+        const diameter = index % 4 ? 10 : 12;
+        starContext.globalAlpha = 1 - blend;
+        starContext.drawImage(fromSprites[index % 3], x - diameter / 2, y - diameter / 2, diameter, diameter);
+        starContext.globalAlpha = blend;
+        starContext.drawImage(targetSprites[index % 3], x - diameter / 2, y - diameter / 2, diameter, diameter);
+      }
+      starContext.globalAlpha = 1;
+      starsDrawn = true;
+    }
+    function tick() {
+      if (stopped || document.hidden) return;
+      const time = performance.now();
+      const ramp = smooth(Math.min(1, (time - now) / rampDuration));
+      state.speed = reducedMotion ? 0 : startSpeed + (targetSpeed - startSpeed) * ramp;
+      applyStarRate(state.speed);
+      state.phase += Math.min(.2, (time - last) / 1000) * state.speed;
+      last = time;
+      if (time - lastAurora >= 1000 / 12) { draw(time); lastAurora = time; }
+      if (!starsDrawn || time - state.blendStart < 6000) drawStars(time);
+      // One cached starfield drifts without bitmap repaints once its palette settles.
+      if (!reducedMotion && (state.speed > 0 || targetSpeed > 0 || time - state.blendStart < 6000)) timer = setTimeout(tick, 1000 / 12);
+    }
+    const resized = () => { size(); if (!document.hidden) { draw(performance.now()); drawStars(performance.now()); } };
+    window.addEventListener('resize', resized);
+    if (hidden) { state.speed = 0; applyStarRate(0); }
+    else tick();
+    return () => { stopped = true; clearTimeout(timer); window.removeEventListener('resize', resized); };
+  }, [playing, hidden, reducedMotion, palette]);
   useEffect(() => {
     let cancelled = false;
-    const apply = colors => {
-      if (cancelled || window.matchMedia('(prefers-reduced-motion: reduce)').matches || colors.join() === currentPalette.current.join()) return;
-      setPrevious(currentPalette.current); currentPalette.current = colors; setPalette(colors);
-    };
+    const apply = colors => { if (!cancelled && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPalette(current => current.join() === colors.join() ? current : colors); };
     if (!artwork) { apply(fallback); return; }
-    // Public thumbnails are scoped same-origin routes. Never inspect arbitrary remote art.
     let url;
     try { url = new URL(artwork, window.location.href); } catch { apply(fallback); return; }
     if (url.origin !== window.location.origin) { apply(fallback); return; }
@@ -107,10 +194,5 @@ export default function PublicAurora({ artwork, playing = false }) {
     image.src = url.href;
     return () => { cancelled = true; image.onload = image.onerror = null; image.removeAttribute('src'); };
   }, [artwork]);
-  const colors = values => ({ '--aurora-a': values[0], '--aurora-b': values[1], '--aurora-c': values[2] });
-  return <div className={`public-aurora${hidden ? ' is-paused' : ''}`} aria-hidden="true">
-    {previous && <div className="aurora-palette aurora-outgoing" key={`old-${palette.join()}`} style={colors(previous)} onAnimationEnd={event => { if (event.target === event.currentTarget) setPrevious(null); }}><i /><i /><i /></div>}
-    <div className="aurora-palette aurora-incoming" key={palette.join()} style={colors(palette)}><i /><i /><i /></div>
-    <div ref={particles} className="aurora-particles" style={colors(palette)}>{Array.from({ length: 40 }, (_, index) => <b key={index} className={index < 16 ? index % 2 ? 'light-right' : 'light-left' : index < 32 ? 'light-field' : 'light-top'} style={{ '--n': index, '--row': Math.floor(index / 2), '--column': index % 3, '--top-column': index - 32, '--field-column': (index - 16) % 4, '--field-row': Math.floor((index - 16) / 4), '--mobile-column': (index - 16) % 2, '--mobile-row': Math.floor((index - 16) / 2) }} />)}</div>
-  </div>;
+  return <div className="public-aurora" aria-hidden="true"><canvas ref={canvas} className="aurora-ribbons" /><canvas ref={stars} className="aurora-stars" /></div>;
 }
