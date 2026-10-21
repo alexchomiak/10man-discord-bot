@@ -22,7 +22,7 @@ test('broker: default and explicit worker routing, command correlation and statu
   const server = broker.start();
   await once(server, 'listening');
   const calls = [];
-  const manager = { queueLimit: 250, client: { user: { id: '111111111111111111', globalName: 'Music Bot', username: 'musicbot',
+  const manager = { videoQuality: () => ({ width: 1920, height: 1080, bitrateKbps: 4000 }), queueLimit: 250, client: { user: { id: '111111111111111111', globalName: 'Music Bot', username: 'musicbot',
     displayAvatarURL: () => 'https://cdn.discordapp.com/avatars/111111111111111111/avatar.png' } }, config: { dashboardAccessCode: 'abcdef' },
     status: () => ({ title: 'Video', paused: false, queued: 1 }) };
   const control = { execute: async (operation, payload) => {
@@ -59,6 +59,11 @@ test('broker: default and explicit worker routing, command correlation and statu
   assert.deepStrictEqual(secondaryCalls, [{ operation: 'pause', payload: {} }]);
   assert.strictEqual(broker.resolveWorkerId(null), 'primary');
   assert.deepStrictEqual(broker.listWorkers().map(item => item.id).sort(), ['primary', 'youtube']);
+  assert.deepStrictEqual(broker.getWorker('primary').videoQuality, { width: 1920, height: 1080, bitrateKbps: 4000 });
+  assert.strictEqual(broker.getWorkerByAccessCode('abcdef').videoQuality, undefined);
+  manager.videoQuality = () => ({ width: 1280, height: 720, bitrateKbps: 2000 });
+  worker._publishStatus();
+  await until(() => broker.getWorker('primary').videoQuality.height === 720);
   assert.strictEqual(broker.getWorker('primary').queueLimit, 250);
   assert.strictEqual(broker.getWorker('youtube').queueLimit, 75);
   assert.strictEqual(broker.getWorkerByAccessCode('abcdef').queueLimit, undefined);

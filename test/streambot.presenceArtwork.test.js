@@ -41,10 +41,39 @@ test('presence artwork fetch bounds bytes, pixels, types, cancellation and reenc
   assert.equal(await fetchPresenceArtwork(base + '/large'), null);
   assert.equal(await fetchPresenceArtwork(base + '/pixels'), null);
   assert.equal(await fetchPresenceArtwork(base + '/html'), null);
-  assert.equal(await fetchPresenceArtwork(base + '/redirect', undefined, { preserveAspect: true }), null);
+  assert.ok(await fetchPresenceArtwork(base + '/redirect', undefined, { preserveAspect: true }));
   const abort = new AbortController();
   const pending = fetchPresenceArtwork(base + '/slow', abort.signal); abort.abort();
   assert.equal(await pending, null);
+});
+
+test('public poster redirects validate each target and stop after three hops', async t => {
+  const image = await jpeg();
+  const hits = [];
+  const server = http.createServer((req, res) => {
+    hits.push(req.url);
+    const targets = {
+      '/poster': '/cdn/poster', '/cdn/poster': '/image',
+      '/loop': '/loop', '/scheme': 'file:///private/poster.jpg',
+      '/credentials': 'http://user:secret@127.0.0.1/private', '/missing': null, '/malformed': 'http://['
+    };
+    if (Object.hasOwn(targets, req.url)) {
+      res.writeHead(302, targets[req.url] ? { location: targets[req.url] } : {}); res.end(); return;
+    }
+    res.writeHead(200, { 'content-type': 'image/jpeg' }); res.end(image);
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const poster = await fetchPresenceArtwork(base + '/poster', undefined, { preserveAspect: true });
+  assert.equal((await sharp(poster).metadata()).format, 'jpeg');
+  assert.deepEqual(hits.splice(0), ['/poster', '/cdn/poster', '/image']);
+  for (const path of ['/scheme', '/credentials', '/missing', '/malformed']) {
+    assert.equal(await fetchPresenceArtwork(base + path, undefined, { preserveAspect: true }), null);
+    assert.deepEqual(hits.splice(0), [path]);
+  }
+  assert.equal(await fetchPresenceArtwork(base + '/loop', undefined, { preserveAspect: true }), null);
+  assert.equal(hits.length, 4);
 });
 
 test('worker artwork retries transient failures, cancels stale content, and exposes capability only', async () => {
@@ -79,7 +108,9 @@ test('broker artwork is private, scoped to current content and random public cod
   let status = active();
   socket.send(JSON.stringify({ type: 'register', workerId: 'one', userId: '333333333333333333', accessCode: 'abcdef', status }));
   await until(() => broker.getWorker('one'));
-  const dashboard = createStreamDashboard({ broker, password: 'admin', randomCodes: true, host: '127.0.0.1', port: 0, log: () => {} });
+  const dashboard = createStreamDashboard({ broker, password: 'admin', randomCodes: true, host: '127.0.0.1', port: 0,
+    client: { users: { cache: new Map() }, guilds: { cache: new Map() } },
+    log: () => {}, fetchThumbnail: async () => { throw new Error('Expired upstream poster'); } });
   dashboard.listen(); await once(dashboard.server, 'listening');
   t.after(async () => { socket.terminate(); await dashboard.close(); await broker.close(); });
   const capability = 'a'.repeat(32), bytes = await jpeg();
@@ -91,11 +122,26 @@ test('broker artwork is private, scoped to current content and random public cod
   const image = await fetch(base + 'abcdef' + path);
   assert.equal(image.status, 200); assert.equal(image.headers.get('content-type'), 'image/jpeg');
   assert.deepEqual(Buffer.from(await image.arrayBuffer()), bytes);
+  assert.deepEqual(broker.getCurrentPresenceArtwork('one', artworkScope(status)), bytes);
+  assert.equal(broker.getCurrentPresenceArtwork('other', artworkScope(status)), null);
+  assert.equal(broker.getCurrentPresenceArtwork('one', 'stale'), null);
+  const publicState = async () => (await (await fetch(base + 'abcdef/state')).json()).worker.status;
+  const thumbnail = (await publicState()).current.thumbnail;
+  const cachedPoster = await fetch(new URL(thumbnail, base));
+  assert.equal(cachedPoster.status, 200, 'worker artwork survives an expired upstream poster');
+  assert.deepEqual(Buffer.from(await cachedPoster.arrayBuffer()), bytes);
+  status = { ...status, queue: [{ ...status.current, id: 'queued', thumbnail: status.current.thumbnail + '&next=1' }] };
+  socket.send(JSON.stringify({ type: 'status', status }));
+  await until(() => broker.getWorker('one').status.queue?.length === 1);
+  assert.equal((await fetch(new URL((await publicState()).queue[0].thumbnail, base))).status, 404,
+    'queued content cannot use the current programme image');
   assert.equal((await fetch(base + 'one' + path)).status, 404);
   assert.equal((await fetch(base + 'abcdef' + path + '?url=http://private')).status, 404);
   status = { ...status, current: { ...status.current, contentTitle: 'Changed EPG' } };
   socket.send(JSON.stringify({ type: 'status', status }));
   await until(() => !broker.getPresenceArtwork('one', capability));
+  assert.equal((await fetch(new URL(thumbnail, base))).status, 404, 'a cached fallback expires with its programme scope');
+  assert.equal(broker.getCurrentPresenceArtwork('one', artworkScope(status)), null);
   assert.equal((await fetch(base + 'abcdef' + path)).status, 404);
   upload({ jpeg: Buffer.alloc(MAX_ARTWORK_BYTES + 1).toString('base64') });
   await new Promise(r => setTimeout(r, 20)); assert.equal(broker.getPresenceArtwork('one', capability), null);
@@ -103,6 +149,7 @@ test('broker artwork is private, scoped to current content and random public cod
   status = { ...status, inChannel: false }; socket.send(JSON.stringify({ type: 'status', status }));
   await until(() => broker.getWorker('one').status.inChannel === false);
   assert.equal((await fetch(base + 'abcdef' + path)).status, 404);
+  assert.equal(broker.getCurrentPresenceArtwork('one', artworkScope(status)), null);
 });
 
 test('disabled or disconnected artwork aborts immediately and never starts new fetches', async () => {

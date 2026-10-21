@@ -803,6 +803,14 @@ function isCombined(format) {
   return format && format.vcodec !== 'none' && format.acodec !== 'none';
 }
 
+// The selected output raster governs YouTube input selection. An explicitly
+// configured provider cap remains a ceiling, including when output is 4K.
+function youtubeSourceHeight(config = {}) {
+  const output = Number(config.streamHeight) > 0 ? Number(config.streamHeight) : 1080;
+  const explicit = config.sourceMaxHeightExplicit !== false && Number(config.sourceMaxHeight) > 0;
+  return Math.round(explicit ? Math.min(output, Number(config.sourceMaxHeight)) : output);
+}
+
 async function resolveYtdlp(raw, cfg) {
   const config = cfg || {};
   verboseLog(config, 'resolving via yt-dlp');
@@ -867,7 +875,9 @@ async function resolveYtdlp(raw, cfg) {
 
   const startOffsetSec = parseStartTime(raw);
   const formats = Array.isArray(data.formats) ? data.formats : [];
-  const sourceMaxHeight = Number.isFinite(config.sourceMaxHeight) && config.sourceMaxHeight > 0
+  const sourceMaxHeight = isYoutubeUrl(raw) || /^(?:ytsearch|youtube):/i.test(raw)
+    ? youtubeSourceHeight(config)
+    : Number.isFinite(config.sourceMaxHeight) && config.sourceMaxHeight > 0
     ? Math.round(config.sourceMaxHeight)
     : 1080;
   // Prefer tracks at or below the output raster. If a provider exposes only
@@ -920,7 +930,17 @@ async function resolveYtdlp(raw, cfg) {
   const thumbnail = thumbnailUrl(data.thumbnail || data.thumbnails?.at(-1)?.url);
   const chapters = config.musicMode === true && !isLive ? musicChapters(data.chapters, vodDuration) : null;
 
-  if (bestManifest) {
+  // A low combined rendition must not hide a sharper playable split pair.
+  // Keep the existing transport preference when resolutions are equal.
+  const youtube = isYoutubeUrl(raw) || /^(?:ytsearch|youtube):/i.test(raw);
+  const hasDirectAudio = selectableFormats.some(f => f?.acodec && f.acodec !== 'none' && f.url && looksProgressive(f));
+  const hasHlsAudio = selectableFormats.some(f => f?.vcodec === 'none' && f.acodec && f.acodec !== 'none' && isYoutubeHlsUrl(f.url));
+  const bestPlayableHeight = youtube ? Math.max(0, ...selectableFormats.filter(f =>
+    f?.vcodec && f.vcodec !== 'none' && f.url &&
+    (isCombined(f) || (looksProgressive(f) && hasDirectAudio) || (!isLive && isYoutubeHlsUrl(f.url) && hasHlsAudio)))
+    .map(f => Number(f.height) || 0)) : 0;
+
+  if (bestManifest && (!youtube || (Number(bestManifest.height) || 0) >= bestPlayableHeight)) {
     // Preserve the selected HLS rendition rather than reopening its adaptive
     // master. Some extractors expose only the rendition URL.
     const streamUrl = bestManifest.url && (/^m3u8(?:_native)?$/i.test(bestManifest.protocol || '') || /\.m3u8(?:[?#]|$)/i.test(bestManifest.url) || isYoutubeHlsUrl(bestManifest.url))
@@ -971,7 +991,7 @@ async function resolveYtdlp(raw, cfg) {
     }
   }
 
-  if (bestDirect) {
+  if (bestDirect && (!youtube || (Number(bestDirect.height) || 0) >= bestPlayableHeight)) {
     return {
       kind: 'ytdlp',
       streamType: 'single',
@@ -1167,6 +1187,10 @@ async function resolveSource(input, config) {
   }
   if (isHttp || isPrefixed) {
     const resolved = await resolveYtdlp(raw, cfg);
+    if (resolved.available && (isYoutubeUrl(raw) || /^(?:ytsearch|youtube):/i.test(raw))) {
+      resolved.youtubeSourceHeight = youtubeSourceHeight(cfg);
+      resolved.youtubeResolvedAt = Date.now();
+    }
     // YouTube stays on yt-dlp even after authentication fails. Preserve its
     // failure detail so cookie/extractor problems are visible to the caller.
     if (resolved.available || !isHttp || isYoutubeUrl(raw)) return { ...resolved, sourceKind: isYoutubeUrl(raw) || /^(?:ytsearch|youtube):/i.test(raw) ? 'youtube' : resolved.sourceKind || resolved.kind };
@@ -1205,6 +1229,7 @@ async function resolveSource(input, config) {
 }
 
 module.exports = {
+  youtubeSourceHeight,
   resolveSource,
   getShareTvPreview,
   getShareTvScheduleHint,

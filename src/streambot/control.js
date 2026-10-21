@@ -15,6 +15,7 @@ class StreamControl {
 
   _result(ok, message, extra = {}) {
     return { ok, message, status: this.streamManager.status(),
+      videoQuality: this.streamManager.videoQuality?.(),
       queueLimit: this.streamManager.queueLimit, queueGapSeconds: this.streamManager.queueGapSeconds,
       progressOverlay: this.streamManager.progressOverlay === true,
       musicMode: this.streamManager.musicMode === true,
@@ -61,6 +62,10 @@ class StreamControl {
         return { ok: true, guildId: targetGuildId, guildName: guild.name,
           channelId: targetChannelId, channelName: channel.name, channelType: channel.type };
       }
+      case 'set-video-quality': {
+        const r = await this.streamManager.setVideoQuality(payload);
+        return this._result(r.ok, r.message || 'Video quality updated.', { detail: this._detail(r, ['restarted']) });
+      }
       case 'set-queue-gap': {
         const r = await this.streamManager.setQueueGap(payload.seconds);
         return this._result(r.ok, r.message || `Between-video interval set to ${r.seconds} seconds.`, { detail: this._detail(r, ['seconds']) });
@@ -100,7 +105,8 @@ class StreamControl {
       case 'status': {
         const status = this.streamManager.status();
         return { ok: true, message: status ? M.STREAM_STATUS(status) : M.STREAM_NOTHING, status,
-          queueLimit: this.streamManager.queueLimit, queueGapSeconds: this.streamManager.queueGapSeconds,
+          videoQuality: this.streamManager.videoQuality?.(),
+      queueLimit: this.streamManager.queueLimit, queueGapSeconds: this.streamManager.queueGapSeconds,
           progressOverlay: this.streamManager.progressOverlay === true,
           musicMode: this.streamManager.musicMode === true,
           contentAwareImagePreview: this.streamManager.contentAwareImagePreview === true,
@@ -184,7 +190,7 @@ class StreamControl {
       }
       case 'scheduled-play': {
         if (!guildId || !channelId || !Array.isArray(payload.sources) || !payload.sources.length || payload.sources.length > 100) return this._result(false, 'Invalid scheduled playback.');
-        const sourceConfig = { ...this.config, musicMode: this.streamManager.musicMode === true };
+        const sourceConfig = { ...(this.streamManager.config || this.config), musicMode: this.streamManager.musicMode === true };
         const entries = [];
         const deadline = Number(payload.dispatchDeadline);
         const expired = () => Number.isFinite(deadline) && Date.now() >= deadline;
@@ -215,7 +221,7 @@ class StreamControl {
         if (!guildId || !channelId) return this._result(false, M.STREAM_NEED_CHANNEL);
         const input = String(payload.source || '').trim();
         if (!input) return this._result(false, M.STREAM_USAGE);
-        const sourceConfig = { ...this.config, musicMode: this.streamManager.musicMode === true };
+        const sourceConfig = { ...(this.streamManager.config || this.config), musicMode: this.streamManager.musicMode === true };
         const resolved = await this.resolveSource(input, sourceConfig);
         if (!resolved?.available) return this._result(false, resolved?.note || M.SOURCE_UNRECOGNIZED);
         if (resolved.kind === 'youtube-playlist') {
@@ -234,6 +240,8 @@ class StreamControl {
         const r = await this.streamManager.start({
           guildId, channelId,
           sourceInput: input,
+          youtubeSourceHeight: resolved.youtubeSourceHeight,
+          youtubeResolvedAt: resolved.youtubeResolvedAt,
           browserPageUrl: resolved.browserPageUrl || null,
           streamUrl: resolved.streamUrl || null,
           videoUrl: resolved.videoUrl || null,

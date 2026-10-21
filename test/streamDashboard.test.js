@@ -162,6 +162,9 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(calls.at(-1).payload.ids.length, 1000);
   assert.equal((await request('/api/workers/one/actions', { operation: 'reorder', ids: [...largeOrder, 'extra'] })).status, 400);
   assert.equal((await request('/api/workers/one/actions', { operation:'remove-queued', queueId:'bad' })).status,400);
+  assert.equal((await request('/api/workers/one/actions', { operation: 'set-video-quality', height: 720, bitrateKbps: 8000 })).status, 200);
+  assert.deepEqual(calls.at(-1), { operation: 'set-video-quality', payload: { requestedBy: 'dashboard', height: 720, bitrateKbps: 8000 }, workerId: 'one' });
+  for (const height of [null, '720', -1, 4321]) assert.equal((await request('/api/workers/one/actions', { operation: 'set-video-quality', height, bitrateKbps: 4000 })).status, 400);
   for (const seconds of [-1, 301, 1.5, '15', null]) assert.equal((await request('/api/workers/one/actions', { operation: 'set-queue-gap', seconds })).status, 400);
   assert.equal((await request('/api/workers/one/actions', { operation: 'set-queue-gap', seconds: 0 })).status, 200);
   assert.deepEqual(calls.at(-1), { operation: 'set-queue-gap', payload: { requestedBy: 'dashboard', seconds: 0 }, workerId: 'one' });
@@ -190,6 +193,8 @@ test('dashboard authenticates reads and commands, routes moves/reorders, and fal
   assert.equal(scoped.worker.availableChannels, undefined);
   assert.equal(scoped.worker.queueLimit, undefined);
   assert.equal(scoped.worker.queueGapSeconds, undefined);
+  assert.equal(scoped.worker.videoQuality, undefined);
+  assert.equal((await publicFetch('/api/public/one/actions', { operation: 'set-video-quality', height: 720, bitrateKbps: 4000 })).status, 403);
   assert.equal((await publicFetch('/api/public/one/actions', { operation: 'set-queue-gap', seconds: 15 })).status, 403);
   assert.equal((await publicFetch('/api/public/one/actions', { operation: 'set-queue-limit', limit: 250 })).status, 403);
   assert.equal((await publicFetch('/api/public/one/search?q=x')).status, 400);
@@ -478,4 +483,21 @@ test('public gap transition uses real queue artwork and excludes filler snapshot
   assert.equal(scopedStatus({ ...input, musicMode: true }).transition, null);
   assert.equal(scopedStatus({ ...input, current: { ...input.current, isFiller: false } }).transition, null);
   assert.equal(scopedStatus({ ...input, positionSec: 30 }).transition.remainingSec, 0);
+});
+
+test('public poster response rejects a programme change while its image is in flight', async t => {
+  const worker = { id: 'one', connectedAt: 1, status: { alive: true, inChannel: true, guildId, channelId,
+    current: { id: 'current', sourceKind: 'sharetv', title: 'First programme', thumbnail: 'http://private.example/poster' } } };
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const dashboard = createStreamDashboard({ broker: { getWorker: () => worker }, client: {}, password: 'password',
+    host: '127.0.0.1', port: 0, log: () => {}, fetchThumbnail: () => new Promise(resolve => { release = resolve; entered(); }) });
+  dashboard.listen(); await once(dashboard.server, 'listening'); t.after(() => dashboard.close());
+  const base = `http://127.0.0.1:${dashboard.server.address().port}`;
+  const status = (await (await fetch(`${base}/api/public/one/state`)).json()).worker.status;
+  const pending = fetch(base + status.current.thumbnail);
+  await started;
+  worker.status.current.title = 'Second programme';
+  release(Buffer.from('jpeg'));
+  assert.equal((await pending).status, 404);
 });

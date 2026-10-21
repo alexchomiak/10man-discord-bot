@@ -10,9 +10,18 @@ async function fetchPresenceArtwork(url, signal, { preserveAspect = false } = {}
   signal?.addEventListener('abort', abort, { once: true });
   try {
     signal?.throwIfAborted();
-    const parsed = new URL(url);
+    let parsed = new URL(url);
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
-    const response = await fetch(parsed, { signal: controller.signal, redirect: preserveAspect ? 'error' : 'follow' });
+    let response;
+    for (let redirects = 0; ; redirects++) {
+      response = await fetch(parsed, { signal: controller.signal, redirect: preserveAspect ? 'manual' : 'follow' });
+      if (!preserveAspect || ![301, 302, 303, 307, 308].includes(response.status)) break;
+      const location = response.headers.get('location');
+      await response.body?.cancel();
+      if (!location || redirects >= 3) return null;
+      parsed = new URL(location, parsed);
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+    }
     if (!response.ok || !/^image\/(jpeg|png|webp)(;|$)/i.test(response.headers.get('content-type') || '') ||
         Number(response.headers.get('content-length')) > 3 * 1024 * 1024) return null;
     const chunks = []; let size = 0;

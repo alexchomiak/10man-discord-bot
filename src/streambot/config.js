@@ -159,7 +159,7 @@ function loadConfig() {
     streamWidth: parsePositiveInt(process.env.STREAM_WIDTH, 1920),
     streamHeight: parsePositiveInt(process.env.STREAM_HEIGHT, 1080),
     streamFrameRate: parsePositiveNumber(process.env.STREAM_FRAME_RATE, 30),
-    streamBitrate: parseKbps(process.env.STREAM_BITRATE, 5000),
+    streamBitrate: parseKbps(process.env.STREAM_BITRATE, 4000),
     // Limit the encoder's short-term bitrate reservoir. At 1080p, a large
     // reservoir lets forced H.264 IDRs become hundreds of KiB and arrive as
     // a single RTP burst even though the average bitrate is reasonable.
@@ -173,6 +173,7 @@ function loadConfig() {
     // Keep the source at or below the output raster. Pulling a 1440p/4K track
     // only to downscale it to 1080p wastes decoder bandwidth and GPU/CPU.
     sourceMaxHeight: parsePositiveInt(process.env.SBOT_SOURCE_MAX_HEIGHT, 1080),
+    sourceMaxHeightExplicit: Number(process.env.SBOT_SOURCE_MAX_HEIGHT) > 0,
     // Audio bitrate used when merging separate video+audio (DASH) streams in-memory.
     streamAudioBitrate: parseKbps(process.env.STREAMBOT_AUDIO_BITRATE, 128),
     videoCodec: (process.env.VIDEO_CODEC || 'H264').trim() || 'H264',

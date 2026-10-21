@@ -11,10 +11,11 @@ const { parseExternalChannels } = require('./externalChannels');
 const { sanitizeAvailableChannels } = require('./workerChannels');
 const { presenceText } = require('./streambot/presenceMetadata');
 const { fetchPresenceArtwork } = require('./streambot/presenceArtwork');
+const { artworkScope } = require('./presenceArtwork');
 
 const WORKER_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const DISCORD_ID = /^\d{17,20}$/;
-const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'clear-queue', 'set-content-nickname', 'set-content-preview', 'set-queue-limit', 'set-queue-gap', 'set-name']);
+const ACTIONS = new Set(['play', 'join', 'move', 'stop', 'skip', 'scrub', 'seek', 'pause', 'resume', 'catchup', 'toggle-overlay', 'toggle-music-mode', 'reorder', 'remove-queued', 'clear-queue', 'set-content-nickname', 'set-content-preview', 'set-queue-limit', 'set-queue-gap', 'set-video-quality', 'set-name']);
 const PUBLIC_ACTIONS = new Set(['toggle-music-mode', 'play', 'skip', 'scrub', 'seek', 'pause', 'resume', 'reorder', 'remove-queued', 'clear-queue']);
 const ACCESS_CODE = /^[a-z]{6}$/;
 const MAX_REORDER_ITEMS = 1000;
@@ -122,10 +123,21 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
     while (thumbnailActive < 3 && thumbnailPending.length && !thumbnailAbort.signal.aborted) {
       const job = thumbnailPending.shift();
       thumbnailActive++;
-      Promise.resolve().then(() => {
+      let fallbackScope = null;
+      Promise.resolve().then(async () => {
         const current = publicWorkerFor(job.publicId);
-        return current && current.connectedAt === job.worker.connectedAt && findThumbnail(current, job.key)
-          ? fetchThumbnail(job.item.thumbnail, thumbnailAbort.signal) : null;
+        if (!current || current.connectedAt !== job.worker.connectedAt || !findThumbnail(current, job.key)) return null;
+        const scope = thumbnailKey(current, current.status?.current) === job.key ? artworkScope(current.status) : null;
+        let bytes;
+        try { bytes = await fetchThumbnail(job.item.thumbnail, thumbnailAbort.signal); } catch {}
+        if (Buffer.isBuffer(bytes) && bytes.length <= 256 * 1024) return bytes;
+        const latest = publicWorkerFor(job.publicId);
+        if (scope && latest?.connectedAt === current.connectedAt &&
+            thumbnailKey(latest, latest.status?.current) === job.key && artworkScope(latest.status) === scope) {
+          fallbackScope = scope;
+          return broker.getCurrentPresenceArtwork?.(current.id, scope);
+        }
+        return null;
       }).then(bytes => {
         if (!Buffer.isBuffer(bytes) || bytes.length > 256 * 1024) bytes = null;
         if (!thumbnailAbort.signal.aborted) {
@@ -138,7 +150,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
             })?.[0] || thumbnailCache.keys().next().value;
             thumbnailCache.delete(evict);
           }
-          thumbnailCache.set(job.key, { at: Date.now(), bytes, publicId: job.publicId });
+          thumbnailCache.set(job.key, { at: Date.now(), bytes, publicId: job.publicId, fallbackScope });
         }
         job.resolve(bytes);
       }).catch(() => job.resolve(null)).finally(() => {
@@ -148,7 +160,8 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
   };
   const loadThumbnail = (worker, publicId, key, item) => {
     const cached = thumbnailCache.get(key);
-    if (cached && (cached.bytes || Date.now() - cached.at < 5000)) {
+    if (cached && (!cached.fallbackScope || (thumbnailKey(worker, worker.status?.current) === key &&
+        artworkScope(worker.status) === cached.fallbackScope)) && (cached.bytes || Date.now() - cached.at < 5000)) {
       thumbnailCache.delete(key); thumbnailCache.set(key, cached);
       return cached.bytes;
     }
@@ -244,9 +257,11 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
         const item = worker && !url.search && findThumbnail(worker, thumbnailMatch[2]);
         if (!item) return invalidCodeResponse(req, res);
         if (!['GET', 'HEAD'].includes(req.method)) return json(res, 405, { error: 'Method not allowed.' });
+        const requestedScope = thumbnailKey(worker, worker.status?.current) === thumbnailMatch[2] ? artworkScope(worker.status) : null;
         const bytes = await loadThumbnail(worker, thumbnailMatch[1], thumbnailMatch[2], item);
         const current = publicWorkerFor(thumbnailMatch[1]);
-        if (!current || current.connectedAt !== worker.connectedAt || !findThumbnail(current, thumbnailMatch[2])) return invalidCodeResponse(req, res);
+        if (!current || current.connectedAt !== worker.connectedAt || !findThumbnail(current, thumbnailMatch[2]) ||
+            (requestedScope && artworkScope(current.status) !== requestedScope)) return invalidCodeResponse(req, res);
         if (bytes === THUMBNAIL_BUSY) {
           res.setHeader('Retry-After', '2');
           return json(res, 503, { error: 'Artwork busy. Try again shortly.' });
@@ -359,6 +374,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           status: publicStatus(online.get(id)?.status),
           queueLimit: online.get(id)?.queueLimit || 100,
           queueGapSeconds: online.get(id)?.queueGapSeconds ?? 15,
+          videoQuality: online.get(id)?.videoQuality || null,
           musicMode: online.get(id)?.musicMode === true,
           deriveNicknameFromContent: online.get(id)?.deriveNicknameFromContent === true,
           contentAwareImagePreview: online.get(id)?.contentAwareImagePreview === true,
@@ -415,6 +431,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
           return json(res, 200, await setName(workerId, name, String(body.guildId)));
         }
         if (operation === 'toggle-music-mode' && ((scopedWorker || body.enabled !== undefined) && typeof body.enabled !== 'boolean')) return json(res, 400, { error: 'Enabled must be a boolean.' });
+        if (operation === 'set-video-quality' && (!Number.isInteger(body.height) || body.height < 1 || body.height > 4320 || !Number.isInteger(body.bitrateKbps) || body.bitrateKbps < 1 || body.bitrateKbps > 100000)) return json(res, 400, { error: 'Invalid video resolution or bitrate.' });
         if (operation === 'set-queue-gap' && (!Number.isInteger(body.seconds) || body.seconds < 0 || body.seconds > 300)) return json(res, 400, { error: 'Between-video interval must be an integer from 0 to 300 seconds.' });
         if (operation === 'set-queue-limit' && (!Number.isInteger(body.limit) || body.limit < 1 || body.limit > 1000)) return json(res, 400, { error: 'Queue limit must be an integer from 1 to 1000.' });
         if (['set-content-nickname', 'set-content-preview'].includes(operation) && typeof body.enabled !== 'boolean') {
@@ -424,6 +441,7 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
         if (operation === 'set-content-preview' && body.enabled && body.snapshotEnabled) return json(res, 400, { error: 'Preview modes are mutually exclusive.' });
         const payload = { requestedBy: scopedWorker ? 'public-link' : 'dashboard' };
         if (operation === 'toggle-music-mode' && body.enabled !== undefined) payload.enabled = body.enabled;
+        if (operation === 'set-video-quality') { payload.height = body.height; payload.bitrateKbps = body.bitrateKbps; }
         if (operation === 'set-queue-limit') payload.limit = body.limit;
         if (operation === 'set-queue-gap') payload.seconds = body.seconds;
         if (['set-content-nickname', 'set-content-preview'].includes(operation)) payload.enabled = body.enabled;
@@ -478,7 +496,8 @@ function createStreamDashboard({ broker, client, password, token, randomCodes = 
         const result = await broker.request(operation, payload, workerId);
         return json(res, result.ok ? 200 : 409, { ok: !!result.ok, message: result.message,
           status: scopedWorker ? scopedFor(scopedWorker, scopedMatch[1], result.status) : publicStatus(result.status),
-          detail: scopedWorker ? null : result.detail || null });
+          detail: scopedWorker ? null : result.detail || null,
+          ...(!scopedWorker && result.videoQuality ? { videoQuality: result.videoQuality } : {}) });
       }
       return json(res, 404, { error: 'Not found.' });
     }

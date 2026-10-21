@@ -26,6 +26,9 @@ class TimedTrack extends Writable {
       ? options.defaultDurationMs : (type === 'video' ? 1000 / 30 : 20);
     this.pts = undefined;
     this.previousPts = undefined;
+    this.previousRawPts = undefined;
+    this.previousDurationMs = undefined;
+    this.ptsCorrectionMs = 0;
     this.syncTrack = null;
     this.startTime = undefined;
     this.startPts = undefined;
@@ -66,25 +69,30 @@ class TimedTrack extends Writable {
       const frameMs = Number.isFinite(packetDurationMs) && packetDurationMs > 0
         ? packetDurationMs : this.defaultDurationMs;
       const started = this.now();
-      const packetPts = Number(pts) * timeBase.num * 1000 / timeBase.den;
-      const ptsStep = Number.isFinite(this.previousPts) ? packetPts - this.previousPts : frameMs;
+      const rawPts = Number(pts) * timeBase.num * 1000 / timeBase.den;
+      const expectedStep = this.previousDurationMs ?? frameMs;
+      const ptsStep = Number.isFinite(this.previousRawPts) ? rawPts - this.previousRawPts : expectedStep;
       if (this.diagnostics && Number.isFinite(ptsStep)) {
         this.diagnostics.ptsStepErrorMaxMs = Math.max(this.diagnostics.ptsStepErrorMaxMs,
-          Math.abs(ptsStep - frameMs));
+          Math.abs(ptsStep - expectedStep));
       }
-      // Live MPEG-TS feeds can jump their timestamps forward/backward after a
-      // discontinuity. Treating that jump as wall time makes the sender sleep
-      // for seconds, freezing video before it resumes at the new timestamp.
-      // Rebase the pacing clock; RTP still advances by the normalized frame
-      // duration, so delivery remains a steady 30 fps.
+      // Normalized CFR video and Opus advance RTP by packet duration. Remove
+      // timestamp discontinuities from that track's scheduling clock too:
+      // rebasing the shared wall clock alone leaves an audio-only or video-only
+      // jump as a permanent content offset. First timestamps remain untouched,
+      // preserving legitimate A/V start offsets. A common jump is removed as
+      // each track reaches it, without waiting on the interleaved demux queue.
+      // This compresses timestamp holes; it cannot reconstruct missing media.
       if (Number.isFinite(this.previousPts) &&
-          (ptsStep < 0 || Math.abs(ptsStep - frameMs) > this.maxPtsJumpMs)) {
-        this.timeline.startTime = started;
-        this.timeline.startPts = packetPts;
+          (ptsStep < 0 || Math.abs(ptsStep - expectedStep) > this.maxPtsJumpMs)) {
+        this.ptsCorrectionMs = this.previousPts + expectedStep - rawPts;
         if (this.diagnostics) { this.diagnostics.resets++; this.diagnostics.timestampResets++; }
       }
+      const packetPts = rawPts + this.ptsCorrectionMs;
       this.pts = packetPts;
       this.previousPts = packetPts;
+      this.previousRawPts = rawPts;
+      this.previousDurationMs = frameMs;
       const other = this.syncTrack?.pts;
       let waitedForAudio = false;
       if (this.type === 'video' && !this.syncTrack?.writableEnded && Number.isFinite(other) && this.pts - other > this.syncToleranceMs) {
@@ -162,12 +170,13 @@ class TimedTrack extends Writable {
 }
 
 class PersistentTrackFeeder {
-  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30, videoCodec = 'H264', diagnostics = false, transportLog = null } = {}) {
+  constructor({ streamer, videoModule, width = 1920, height = 1080, frameRate = 30, bitrateKbps = 4000, videoCodec = 'H264', diagnostics = false, transportLog = null } = {}) {
     this.streamer = streamer;
     this.videoModule = videoModule;
     this.width = width;
     this.height = height;
     this.frameRate = frameRate;
+    this.bitrateKbps = bitrateKbps;
     this.videoCodec = videoCodec;
     this.videoTransport = null;
     this.diagnostics = diagnostics;
@@ -220,6 +229,22 @@ class PersistentTrackFeeder {
     }
   }
 
+  updateVideoQuality({ width, height, bitrateKbps }) {
+    const previous = { width: this.width, height: this.height, bitrateKbps: this.bitrateKbps };
+    const apply = quality => this.connection?.mediaConnection.setVideoAttributes(true, {
+      width: Math.round(quality.width), height: Math.round(quality.height), fps: Math.round(this.frameRate),
+      bitrateKbps: Math.round(quality.bitrateKbps * 1.4)
+    });
+    try { apply({ width, height, bitrateKbps }); }
+    catch (error) {
+      try { apply(previous); } catch { /* old transport may already be unavailable */ }
+      throw error;
+    }
+    // Reconnection callbacks read these dimensions too. The transport's
+    // adaptive pacer continues measuring encoded frames without an override.
+    Object.assign(this, { width, height, bitrateKbps });
+  }
+
   _restoreVideoTransport() {
     if (this.closed || !this.connection) return;
     this.videoTransport?.dispose?.();
@@ -227,7 +252,8 @@ class PersistentTrackFeeder {
     const media = this.connection.mediaConnection;
     media.setSpeaking(true);
     media.setVideoAttributes(true, {
-      width: Math.round(this.width), height: Math.round(this.height), fps: Math.round(this.frameRate)
+      width: Math.round(this.width), height: Math.round(this.height), fps: Math.round(this.frameRate),
+      bitrateKbps: Math.round(this.bitrateKbps * 1.4)
     });
   }
 

@@ -437,3 +437,12 @@
 @media(prefers-reduced-transparency:reduce){.public-shell .worker-card.expanded{background:linear-gradient(130deg,#192637,#101a27 65%)}}
 
 .public-aurora .aurora-stars{inset:-24px;width:calc(100% + 48px);height:calc(100% + 48px)}
+
+.worker-video-quality{margin-top:16px;padding-bottom:14px;border-bottom:1px solid #435269}
+.worker-video-quality>label{display:block;margin:12px 0 8px;font-size:13px;font-weight:600}
+.worker-video-quality>label:first-child{margin-top:0}
+.worker-video-quality select{display:block;width:100%;min-width:0;min-height:44px;padding:0 12px;background:#131c28;color:#edf0f6;border:1px solid #435269;border-radius:8px;font:inherit;font-size:14px;color-scheme:dark}
+.worker-video-quality select:focus-visible{outline:2px solid #d9ff62;outline-offset:2px}
+.worker-video-quality select:disabled{opacity:.6;cursor:wait}
+.worker-quality-status{display:block;color:#d9ff9a;font-size:12px;line-height:1.5}
+.worker-quality-status:not(:empty){margin-top:8px}

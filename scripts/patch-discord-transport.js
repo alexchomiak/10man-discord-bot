@@ -63,6 +63,7 @@ const generationReplacements = [
     ['        this._videoPacketizer.addToChain(this._videoPacer);\n        this._setMediaHandler();', '        this._videoPacketizer.addToChain(this._videoPacer);\n        // Tracks are attached together by setPacketizer().'],
 ];
 const mediaReplacements = [
+    ['max_bitrate: 10000 * 1000,', 'max_bitrate: Number.isFinite(attr.bitrateKbps) && attr.bitrateKbps > 0 ? Math.round(attr.bitrateKbps * 1000) : 10000 * 1000,'],
     ['    _closed = false;', '    _closed = false;\n    _transportGeneration = 0;'],
     ['                console.error(err);', `                this.emit("transport_event", { type: "websocket-error", generation: this._transportGeneration });
                 if (!this.listenerCount("transport_event")) console.error("Discord media websocket error");`],

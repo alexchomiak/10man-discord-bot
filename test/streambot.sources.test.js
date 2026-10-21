@@ -158,6 +158,34 @@ const SCENARIOS = {
       { format_id: '140', vcodec: 'none', acodec: 'mp4a.40.2', tbr: 129, url: 'https://cdn.example/fake/audio.m4a' }
     ]
   },
+  youtubeUnusableHlsVod: {
+    formats: [
+      { protocol: 'm3u8_native', vcodec: 'avc1', acodec: 'mp4a', height: 360,
+        url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/combined/index.m3u8' },
+      { protocol: 'm3u8_native', vcodec: 'vp9', acodec: 'none', height: 1080,
+        url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/video/index.m3u8' }
+    ]
+  },
+  youtubeUnusableHlsLive: {
+    is_live: true,
+    formats: [
+      { protocol: 'm3u8_native', vcodec: 'avc1', acodec: 'mp4a', height: 360,
+        url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/combined/index.m3u8' },
+      { protocol: 'm3u8_native', vcodec: 'vp9', acodec: 'none', height: 1080,
+        url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/video/index.m3u8' },
+      { protocol: 'm3u8_native', vcodec: 'none', acodec: 'mp4a',
+        url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/audio/index.m3u8' }
+    ]
+  },
+  youtubeMixedQualities: {
+    formats: [
+      { protocol: 'https', vcodec: 'avc1', acodec: 'mp4a', height: 360, url: 'https://cdn.example/combined-360.mp4' },
+      { protocol: 'm3u8_native', vcodec: 'avc1', acodec: 'mp4a', height: 360, url: 'https://cdn.example/combined-360.m3u8' },
+      { protocol: 'https', vcodec: 'vp9', acodec: 'none', height: 1080, url: 'https://cdn.example/video-1080.webm' },
+      { protocol: 'https', vcodec: 'vp9', acodec: 'none', height: 2160, url: 'https://cdn.example/video-2160.webm' },
+      { protocol: 'https', vcodec: 'none', acodec: 'mp4a', url: 'https://cdn.example/audio.m4a' }
+    ]
+  },
   dashMixedCodecs: {
     formats: [
       { protocol: 'https', vcodec: 'avc1.4d401e', acodec: 'none', height: 360, url: 'https://cdn.example/video-360-h264.mp4' },
@@ -1825,4 +1853,35 @@ test('Twitch failures stay native-only even when generic browser fallback is ena
     }
     assert.equal(calls, 0);
   } finally { browserStream.probeBrowser = original; }
+});
+
+test('YouTube output quality replaces the default input cap and respects an explicit source ceiling', () => {
+  const { youtubeSourceHeight } = require('../src/streambot/sources');
+  assert.equal(youtubeSourceHeight({ streamHeight: 2160, sourceMaxHeight: 1080, sourceMaxHeightExplicit: false }), 2160);
+  assert.equal(youtubeSourceHeight({ streamHeight: 720, sourceMaxHeight: 1080, sourceMaxHeightExplicit: false }), 720);
+  assert.equal(youtubeSourceHeight({ streamHeight: 2160, sourceMaxHeight: 1440, sourceMaxHeightExplicit: true }), 1440);
+  assert.equal(youtubeSourceHeight({ streamHeight: 720, sourceMaxHeight: 1440, sourceMaxHeightExplicit: true }), 720);
+});
+
+
+test('YouTube selects higher split resolution over low combined HLS and direct formats', async () => {
+  setScenario('youtubeMixedQualities');
+  for (const height of [1080, 2160]) {
+    const result = await resolveYtdlp('https://www.youtube.com/watch?v=MIXED', { ...CfgPlain, streamHeight: height });
+    assert.equal(result.streamType, 'dash');
+    assert.equal(result.videoUrl, `https://cdn.example/video-${height}.webm`);
+    assert.equal(result.audioUrl, 'https://cdn.example/audio.m4a');
+  }
+});
+
+
+test('YouTube keeps playable combined HLS when higher split rendition cannot be delivered', async () => {
+  for (const scenario of ['youtubeUnusableHlsVod', 'youtubeUnusableHlsLive']) {
+    setScenario(scenario);
+    const result = await resolveYtdlp('https://www.youtube.com/watch?v=HLS', CfgPlain);
+    assert.equal(result.available, true);
+    assert.equal(result.streamType, 'single');
+    assert.match(result.streamUrl, /hls_playlist\/combined\//);
+    assert.equal(result.isLive, scenario === 'youtubeUnusableHlsLive');
+  }
 });

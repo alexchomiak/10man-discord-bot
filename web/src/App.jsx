@@ -183,10 +183,32 @@ function ChannelPicker({ workerId, channels, selected, onSelect, disabled, onRef
   </div>;
 }
 
+const videoResolutions = [
+  [720, '720p (HD)'], [1080, '1080p (Full HD)'], [1440, '1440p (QHD)'], [2160, '4K (UHD)'],
+];
+const videoBitrates = [2000, 4000, 6000, 8000, 12000, 16000, 20000, 30000];
+const bitrateLabel = value => `${value / 1000} Mbps`;
+
 function WorkerSettings({ worker, action, busy }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [previewPending, setPreviewPending] = useState(null);
+  const [qualityOverride, setQualityOverride] = useState(null);
+  const qualitySaving = useRef(false);
+  const reportedHeight = worker.videoQuality?.height ?? 1080;
+  const reportedBitrate = worker.videoQuality?.bitrateKbps ?? 4000;
+  const quality = qualityOverride || { height: reportedHeight, bitrateKbps: reportedBitrate };
+  useEffect(() => {
+    if (!qualitySaving.current && qualityOverride?.height === reportedHeight
+      && qualityOverride?.bitrateKbps === reportedBitrate) setQualityOverride(null);
+  }, [reportedHeight, reportedBitrate, qualityOverride]);
+  useEffect(() => {
+    if (!qualityOverride || pending) return;
+    // Keep late polling responses from undoing an accepted selection, but always
+    // return to worker-reported truth if it restarts or changes elsewhere.
+    const timer = setTimeout(() => setQualityOverride(null), 15000);
+    return () => clearTimeout(timer);
+  }, [qualityOverride, pending]);
   const queueLimit = Number.isInteger(worker.queueLimit) ? worker.queueLimit : 100;
   const [limitDraft, setLimitDraft] = useState(String(queueLimit));
   const [limitDirty, setLimitDirty] = useState(false);
@@ -259,6 +281,17 @@ function WorkerSettings({ worker, action, busy }) {
     try { await action(worker.id, 'set-content-preview', { enabled: next.aware, snapshotEnabled: next.snapshot }); }
     finally { setPreviewPending(null); setPending(false); }
   };
+  const changeQuality = async (field, value) => {
+    if (disabled || qualitySaving.current) return;
+    const next = { ...quality, [field]: Number(value) };
+    qualitySaving.current = true;
+    setQualityOverride(next);
+    setPending(true);
+    try {
+      const result = await action(worker.id, 'set-video-quality', next);
+      setQualityOverride(result ? (result.videoQuality || next) : null);
+    } finally { qualitySaving.current = false; setPending(false); }
+  };
   const saveQueueLimit = async event => {
     event.preventDefault();
     if (disabled || limitSaving.current) return;
@@ -296,6 +329,27 @@ function WorkerSettings({ worker, action, busy }) {
     {open && createPortal(<div ref={panel} id={panelId} className="worker-settings-popover" role="dialog"
       aria-label={`Settings for ${worker.id}`} tabIndex={-1} style={position}>
       <div className="eyebrow">WORKER SETTINGS</div>
+      <div className="worker-video-quality" aria-busy={pending || undefined}>
+        <label htmlFor={`${panelId}-resolution`}>Resolution</label>
+        <select id={`${panelId}-resolution`} value={quality.height} disabled={disabled}
+          aria-describedby={`${panelId}-quality-description`}
+          onChange={event => changeQuality('height', event.target.value)}>
+          {!videoResolutions.some(([height]) => height === quality.height)
+            && <option value={quality.height}>{quality.height}p (current)</option>}
+          {videoResolutions.map(([height, label]) => <option key={height} value={height}>{label}</option>)}
+        </select>
+        <label htmlFor={`${panelId}-bitrate`}>Video bitrate</label>
+        <select id={`${panelId}-bitrate`} value={quality.bitrateKbps} disabled={disabled}
+          aria-describedby={`${panelId}-quality-description ${panelId}-bitrate-description`}
+          onChange={event => changeQuality('bitrateKbps', event.target.value)}>
+          {!videoBitrates.includes(quality.bitrateKbps)
+            && <option value={quality.bitrateKbps}>{bitrateLabel(quality.bitrateKbps)} (current)</option>}
+          {videoBitrates.map(bitrate => <option key={bitrate} value={bitrate}>{bitrateLabel(bitrate)}</option>)}
+        </select>
+        <p id={`${panelId}-bitrate-description`}>Higher settings use more GPU and bandwidth. Higher resolutions may need more bitrate.</p>
+        <p id={`${panelId}-quality-description`}>Changes apply immediately to this bot and briefly buffer playback. The queue is kept. Resets on worker restart.</p>
+        <span className="worker-quality-status" role="status">{qualitySaving.current ? 'Applying video quality…' : ''}</span>
+      </div>
       <form className="worker-queue-limit" onSubmit={saveQueueLimit}>
         <label htmlFor={`${panelId}-queue-limit`}>Queue limit</label>
         <div className="worker-queue-limit-controls">
@@ -353,16 +407,19 @@ const sourceLabel = kind => ({ youtube: 'YouTube', twitch: 'Twitch', jellyfin: '
 function PublicArtwork({ item, queue = false }) {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  useEffect(() => { setFailed(false); setAttempt(0); }, [item?.thumbnail]);
+  const [loadedThumbnail, setLoadedThumbnail] = useState(null);
+  useEffect(() => { setFailed(false); setAttempt(0); setLoadedThumbnail(null); }, [item?.thumbnail]);
   useEffect(() => {
     if (!failed || attempt >= 2 || !item?.thumbnail) return;
     const timer = setTimeout(() => { setAttempt(value => value + 1); setFailed(false); }, attempt === 0 ? 2000 : 8000);
     return () => clearTimeout(timer);
   }, [failed, attempt, item?.thumbnail]);
   return <div className={`public-artwork ${queue ? 'public-queue-art' : ''}`}>
-    {item?.thumbnail && !failed ? <img src={item.thumbnail} alt="" width={queue ? 96 : 280} height={queue ? 54 : 158}
-      loading={queue ? 'lazy' : 'eager'} decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
-      : <div className="public-art-fallback"><Icon name="play" size={queue ? 20 : 32} />{!queue && <span>{item ? sourceLabel(item.sourceKind) : 'Ready when you are'}</span>}</div>}
+    {item?.thumbnail && !failed && <img key={item.thumbnail} src={item.thumbnail} alt="" width={queue ? 96 : 280} height={queue ? 54 : 158}
+      style={{ position: 'absolute', inset: 0, visibility: loadedThumbnail === item.thumbnail ? 'visible' : 'hidden' }}
+      loading={queue ? 'lazy' : 'eager'} decoding="async" referrerPolicy="no-referrer"
+      onLoad={() => setLoadedThumbnail(item.thumbnail)} onError={() => { setLoadedThumbnail(null); setFailed(true); }} />}
+    {(!item?.thumbnail || failed || loadedThumbnail !== item.thumbnail) && <div className="public-art-fallback"><Icon name="play" size={queue ? 20 : 32} />{!queue && <span>{item ? sourceLabel(item.sourceKind) : 'Ready when you are'}</span>}</div>}
   </div>;
 }
 

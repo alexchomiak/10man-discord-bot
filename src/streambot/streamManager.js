@@ -173,7 +173,7 @@ class StreamManager {
     this._statusRtcKbps = null;
     this._feederFactory = (streamer, videoModule) => new PersistentTrackFeeder({
       streamer, videoModule, width: this.config.streamWidth || 1920,
-      height: this.config.streamHeight || 1080, frameRate: this.config.streamFrameRate || 30,
+      height: this.config.streamHeight || 1080, bitrateKbps: this.config.streamBitrate || 4000, frameRate: this.config.streamFrameRate || 30,
       videoCodec: this._outputCodec(),
       diagnostics: this.config.verbose === true || !!this.metricSink,
       transportLog: message => log('info', `[worker:${this.config.workerId || 'default'}] transport: ${message}`)
@@ -202,7 +202,7 @@ class StreamManager {
   setupStreamOptions(videoModule, startOffsetSec, durationSec, inputFormat) {
     const cfg = this.config;
     const codec = this._outputCodec();
-    const bitrate = Number.isFinite(cfg.streamBitrate) ? cfg.streamBitrate : 5000;
+    const bitrate = Number.isFinite(cfg.streamBitrate) ? cfg.streamBitrate : 4000;
     const width = cfg.streamWidth || 1920; // fixed session format; pad instead of changing aspect ratio
     const height = Number.isFinite(cfg.streamHeight) && cfg.streamHeight > 0 ? cfg.streamHeight : 1080;
     if (cfg.verbose) log('info', `stream options: width=${width} (padded, AR-preserving), height=${height}, codec=${codec}`);
@@ -438,7 +438,7 @@ class StreamManager {
     const ff = require('fluent-ffmpeg');
 
     const codec = this._outputCodec();
-    const bitrate = Number.isFinite(cfg.streamBitrate) && cfg.streamBitrate > 0 ? Math.round(cfg.streamBitrate) : 5000;
+    const bitrate = Number.isFinite(cfg.streamBitrate) && cfg.streamBitrate > 0 ? Math.round(cfg.streamBitrate) : 4000;
     const bitrateMax = Math.round(bitrate * 1.4);
     // A small VBV reservoir smooths the encoded wire rate. With the previous
     // two-second reservoir, complex 1080p IDRs reached ~300 KiB and were
@@ -1267,7 +1267,7 @@ class StreamManager {
       // !link.paused: while a pause is held, do NOT shift the next queued
       // piece — the loop exits and the .finally below holds (no advance, no
       // grace). $resume clears the flag, re-enqueues the held session, pumps.
-      while (!p.closed && !link.paused && p.enqueue.length) {
+      while (!p.closed && !link.paused && !p.qualityUpdating && p.enqueue.length) {
         const piece = p.enqueue.shift();
         piece.musicMode = this.musicMode;
         // Queue time is not playback time. This also makes recovery after an
@@ -1287,7 +1287,7 @@ class StreamManager {
         let lastVideoFrameAt = 0;
         let stallTriggered = false;
         try {
-          if (!piece.isFiller && piece.sourceInput && !piece.streamUrl && !piece.videoUrl) {
+          if (this._needsSourceResolution(piece)) {
             // Playlist entries keep page URLs in the queue. Resolve the signed
             // media URL only when playback reaches that entry, not hours early.
             const resolved = await require('./sources').resolveSource(piece.sourceInput,
@@ -1298,6 +1298,8 @@ class StreamManager {
               error.code = 'SOURCE_UNAVAILABLE';
               throw error;
             }
+            piece.youtubeSourceHeight = resolved.youtubeSourceHeight;
+            piece.youtubeResolvedAt = resolved.youtubeResolvedAt;
             piece.streamUrl = resolved.streamUrl || null;
             piece.browserPageUrl = resolved.browserPageUrl || null;
             piece.videoUrl = resolved.videoUrl || null;
@@ -1538,7 +1540,7 @@ class StreamManager {
           if (this.session === piece) this.session = null;
           p.activeWriter = null;
         }
-        if (recoverLive && !p.closed && !link.paused && p.enqueue.length === 0) {
+        if (recoverLive && !p.closed && !link.paused && !p.qualityUpdating && p.enqueue.length === 0) {
           const activeMs = Date.now() - piece.startedAt;
           const attempt = activeMs >= 30000 ? 1 : (piece.recoveryAttempt || 0) + 1;
           if (attempt <= 8) {
@@ -1558,7 +1560,7 @@ class StreamManager {
         // Music queue additions must not turn a recoverable interruption of
         // the current track into a silent skip. Keep its bounded retry ahead
         // of the songs that were just queued.
-        if (recoverVod && !p.closed && !link.paused && (piece.musicMode || p.enqueue.length === 0)) {
+        if (recoverVod && !p.closed && !p.qualityUpdating && !link.paused && (piece.musicMode || p.enqueue.length === 0)) {
           const activeMs = Date.now() - piece.startedAt;
           const attempt = activeMs >= 30000 ? 1 : (piece.recoveryAttempt || 0) + 1;
           const offsetSec = Math.round(this.positionOf(piece));
@@ -1581,7 +1583,7 @@ class StreamManager {
       }
     })().finally(() => {
       p.writerTask = null;
-      if (p.closed) return;
+      if (p.closed || p.qualityUpdating) return;
       // PAUSE-HOLD: while a pause is requested, the active writer was just
       // cancelled but the queued items are HELD — do not advance to the next
       // piece and do NOT start the leave/grace timer. The muxer + go-live
@@ -1745,6 +1747,14 @@ class StreamManager {
       upNext: nextPiece ? { title: nextPiece.title, thumbnail: nextPiece.thumbnail } : null });
   }
 
+  _needsSourceResolution(piece) {
+    if (piece.isFiller || !piece.sourceInput) return false;
+    if (!piece.streamUrl && !piece.videoUrl) return true;
+    if (piece.sourceKind !== 'youtube') return false;
+    return piece.youtubeSourceHeight !== require('./sources').youtubeSourceHeight(this.config) ||
+      !piece.youtubeResolvedAt || Date.now() - piece.youtubeResolvedAt > 60000;
+  }
+
   _piece(link, args) {
     const isFiller = !!args.isFiller;
     // isLive: continuous live feed (HLS/MPEG-TS) → not seekable; a VOD/filler
@@ -1880,6 +1890,103 @@ class StreamManager {
     });
   }
 
+  videoQuality() {
+    return { width: this.config.streamWidth || 1920, height: this.config.streamHeight || 1080,
+      bitrateKbps: this.config.streamBitrate || 4000 };
+  }
+
+  async setVideoQuality({ height, bitrateKbps } = {}) {
+    return this._serialize(async () => {
+      const previous = this.videoQuality();
+      const widths = { 720: 1280, 1080: 1920, 1440: 2560, 2160: 3840 };
+      if ((!Object.hasOwn(widths, height) && height !== previous.height) ||
+          !Number.isInteger(height) || height < 1 || height > 4320 ||
+          (![2000, 4000, 6000, 8000, 12000, 16000, 20000, 30000].includes(bitrateKbps) && bitrateKbps !== previous.bitrateKbps) ||
+          !Number.isInteger(bitrateKbps) || bitrateKbps < 1 || bitrateKbps > 100000) {
+        return { ok: false, message: 'Choose a supported resolution and bitrate.' };
+      }
+      const next = { width: height === previous.height ? previous.width : widths[height], height, bitrateKbps };
+      if (next.height === previous.height && bitrateKbps === previous.bitrateKbps) return { ok: true, restarted: false };
+      const link = this.voiceLink;
+      const pipeline = link?.pipeline;
+      if (!pipeline) {
+        this.config = { ...this.config, streamWidth: next.width, streamHeight: height, streamBitrate: bitrateKbps };
+        return { ok: true, restarted: false };
+      }
+      // Resolve dependencies before stopping the old producer. The Go Live
+      // transport survives this change; only the normalized encoder is reopened.
+      let videoModule;
+      try { videoModule = await this.preparePlayback(await this._video()); }
+      catch { return { ok: false, message: 'Unable to prepare the video quality change.' }; }
+      const wasPaused = !!link.paused;
+      const writer = pipeline.activeWriter;
+      // A seek or mode toggle can leave its replacement waiting while the
+      // cancelled writer drains. That queued piece is the latest intent.
+      const pending = !wasPaused && writer && pipeline.enqueue.find(piece => piece.queueId === writer.queueId);
+      const active = wasPaused ? link.pausedSession : pending || writer;
+      let position = wasPaused ? link.pausedPositionSec : pending ? pending.startOffsetSec || 0
+        : active ? this.positionOf(active) : 0;
+      let refreshed = null;
+      if (active?.sourceKind === 'youtube' && active.sourceInput && height !== previous.height) {
+        try {
+          refreshed = await require('./sources').resolveSource(active.sourceInput,
+            { ...this.config, streamHeight: height, musicMode: this.musicMode });
+          if (!refreshed?.available || refreshed.kind === 'youtube-playlist' ||
+              (refreshed.isLive === true) !== (active.isLive === true)) throw new Error('Source unavailable or changed live status');
+        } catch { return { ok: false, message: 'Unable to resolve YouTube at the selected quality; previous settings retained.' }; }
+        if (this.voiceLink !== link || link.pipeline !== pipeline || pipeline.closed || link.closing ||
+            !!link.paused !== wasPaused || (wasPaused ? link.pausedSession !== active :
+              pipeline.activeWriter !== writer || (pending && !pipeline.enqueue.includes(pending)))) {
+          return { ok: false, message: 'Playback changed while resolving YouTube quality; retry the quality change.' };
+        }
+        if (!wasPaused && !pending) position = this.positionOf(active);
+      }
+      const reopen = () => {
+        if (!active) return null;
+        if (!active.isFiller) return this._reopenSession(link, active, { offsetSec: active.isLive ? 0 : position });
+        // Keep a transition's artwork, queue identity and remaining countdown.
+        return this._piece(link, { streamUrl: active.streamUrl, inputFormat: active.inputFormat,
+          durationSec: Math.max(1, (active.durationSec || this._fillerDurationSec()) - (position || 0)),
+          isFiller: true, title: active.title, queueId: active.queueId, upNext: active.upNext });
+      };
+      pipeline.qualityUpdating = true;
+      let failure = null;
+      try {
+        this._cancelPiece(pipeline.activeWriter);
+        await this._raceWithTimeout(pipeline.writerTask, 5000, 'Timed out stopping the previous video encoder');
+        if (link.closing || pipeline.closed || this.voiceLink !== link) throw new Error('Stream connection changed');
+        const nextQueue = pipeline.enqueue.map(piece => piece.isFiller && piece !== pending ? this._copyQueuedPiece(link, piece) : piece);
+        await pipeline.feeder.updateVideoQuality(next);
+        this.config = { ...this.config, streamWidth: next.width, streamHeight: height, streamBitrate: bitrateKbps };
+        if (refreshed) {
+          Object.assign(active, { streamUrl: refreshed.streamUrl || null, videoUrl: refreshed.videoUrl || null,
+            audioUrl: refreshed.audioUrl || null, browserPageUrl: null,
+            youtubeSourceHeight: refreshed.youtubeSourceHeight, youtubeResolvedAt: refreshed.youtubeResolvedAt });
+        }
+        // Filler artwork is generated when the fresh piece reaches the pump.
+        pipeline.enqueue = nextQueue;
+      } catch (error) {
+        failure = error;
+      } finally {
+        pipeline.qualityUpdating = false;
+        if (!pipeline.closed && this.voiceLink === link) {
+          if (!wasPaused) {
+            if (pending) {
+              const index = pipeline.enqueue.indexOf(pending);
+              if (index !== -1) pipeline.enqueue.splice(index, 1);
+            }
+            const replacement = reopen();
+            if (replacement) pipeline.enqueue.unshift(replacement);
+            if (!pipeline.writerTask && pipeline.enqueue.length) this._pump(link, videoModule);
+          }
+          this.playerPresence?.sync();
+        }
+      }
+      if (failure) return { ok: false, message: 'Unable to apply video quality; previous settings retained.' };
+      return { ok: true, restarted: !!active && !wasPaused };
+    });
+  }
+
   setQueueLimit(limit) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
       return { ok: false, message: 'Queue limit must be an integer from 1 to 1000.' };
@@ -1940,7 +2047,7 @@ class StreamManager {
         .map(item => this._queueItem(item)),
       stats: {
         videoCodec: this._outputCodec(), videoEncoder: this.config.videoEncoder || 'software',
-        targetBitrateKbps: this.config.streamBitrate || 5000,
+        targetBitrateKbps: this.config.streamBitrate || 4000,
         width: this.config.streamWidth || 1920, height: this.config.streamHeight || 1080,
         fps: this.config.streamFrameRate || 30,
         rtcBytesSent, rtcBitrateKbps: this._statusRtcKbps
@@ -2192,6 +2299,8 @@ class StreamManager {
       const queued = !!p.activeWriter && !p.activeWriter.isFiller;
       const pieces = entries.map((entry, index) => this._piece(link, {
         sourceInput: entry.sourceInput,
+        youtubeSourceHeight: index === 0 ? firstResolved.youtubeSourceHeight : undefined,
+        youtubeResolvedAt: index === 0 ? firstResolved.youtubeResolvedAt : undefined,
         sourceKind: index === 0 ? firstResolved.sourceKind || firstResolved.kind : 'youtube',
         presenceTitle: index === 0 ? firstResolved.presenceTitle ?? null : null,
         presenceDetails: index === 0 ? firstResolved.presenceDetails ?? null : null,
@@ -2321,6 +2430,8 @@ class StreamManager {
       videoUrl: piece.videoUrl,
       audioUrl: piece.audioUrl,
       sourceInput: piece.sourceInput,
+      youtubeSourceHeight: piece.youtubeSourceHeight,
+      youtubeResolvedAt: piece.youtubeResolvedAt,
       inputFormat: piece.inputFormat,
       durationSec: piece.durationSec,
       title: piece.title,
@@ -2350,7 +2461,8 @@ class StreamManager {
         durationSec: piece.durationSec,
         isFiller: true,
         title: piece.title,
-        queueId: piece.queueId
+        queueId: piece.queueId,
+        upNext: piece.upNext
       });
     }
     return this._reopenSession(link, piece, {
