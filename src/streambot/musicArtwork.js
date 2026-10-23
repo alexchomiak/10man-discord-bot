@@ -71,6 +71,13 @@ function queueSvg(items, { chaptered = false, currentTitle = null } = {}) {
     ? `<text x="${x + 12}" y="${songs.length * 64 + 29}" font-family="DejaVu Sans,Arial" font-size="22" fill="#d9ff62">+${all.length - songs.length} more queued</text>` : '';
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="700">${title}${cards}${more}</svg>`);
 }
+// Queue PNGs use the same 1920x1080 design coordinates as the base artwork.
+function musicQueueFilter({ width = 1920, height = 1080, chaptered = false } = {}) {
+  const sx = width / 1920;
+  const sy = height / 1080;
+  return `[2:v]format=rgba,scale=${Math.round((chaptered ? 1920 : 820) * sx)}:${Math.round(700 * sy)}[queue];` +
+    `[stage][queue]overlay=${chaptered ? 0 : Math.round(1000 * sx)}:${Math.round(265 * sy)}:repeatlast=1:shortest=0`;
+}
 function chapterIndex(artwork) {
   if (!artwork.chaptered) return -1;
   const position = artwork.getPosition?.() || 0;
@@ -157,8 +164,11 @@ async function createMusicArtwork({ baseUrl, workerId, accessCode, randomCodes =
     composites.push({ input: avatar, left: 476, top: 731 });
   }
   const chaptered = Array.isArray(chapters) && chapters.length > 1;
-  const image = await sharp(musicSvg(url, workerId, title, !!currentThumbnail, chaptered, visualizer))
-    .composite(composites).resize(width, height).png().toBuffer();
+  // Sharp applies resize before composite, regardless of call order. Finish the
+  // 1920x1080 design first so every layer shares the same coordinate system.
+  const design = await sharp(musicSvg(url, workerId, title, !!currentThumbnail, chaptered, visualizer))
+    .composite(composites).png().toBuffer();
+  const image = await sharp(design).resize(width, height).png().toBuffer();
   signal?.throwIfAborted();
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sbot-music-'));
   try {
@@ -187,5 +197,5 @@ async function updateMusicQueue(artwork, queue, signal) {
     } while (artwork.dirty && !artwork.queueStream.destroyed);
   } finally { artwork.rendering = false; }
 }
-module.exports = { createMusicArtwork, updateMusicQueue, startMusicQueueFrames,
+module.exports = { musicQueueFilter, createMusicArtwork, updateMusicQueue, startMusicQueueFrames,
   stopMusicQueueFrames };

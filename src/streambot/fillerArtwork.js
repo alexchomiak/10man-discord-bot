@@ -126,8 +126,11 @@ async function createFillerArtwork({ baseUrl, workerId, accessCode, randomCodes 
     composites.push({ input: avatar, left: ringLeft + Math.round((ringSize - avatarSize) / 2),
       top: ringTop + Math.round((ringSize - avatarSize) / 2) });
   }
-  const image = await sharp(artworkSvg({ url, workerId, next, hasThumbnail: !!thumbnail }))
-    .composite(composites).resize(width, height).png().toBuffer();
+  // Sharp applies resize before composite, regardless of call order. Finish the
+  // 1920x1080 design first so every layer shares the same coordinate system.
+  const design = await sharp(artworkSvg({ url, workerId, next, hasThumbnail: !!thumbnail }))
+    .composite(composites).png().toBuffer();
+  const image = await sharp(design).resize(width, height).png().toBuffer();
   signal?.throwIfAborted();
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sbot-filler-'));
   try {

@@ -23,7 +23,7 @@ const { createAlertSink } = require('./alerts');
 const { progressOverlayFilter } = require('./progressOverlay');
 const { createFillerArtwork, fillerCountdownFilter, workerDashboardUrl, createQrPreview } = require('./fillerArtwork');
 const { createMusicArtwork, updateMusicQueue, startMusicQueueFrames,
-  stopMusicQueueFrames } = require('./musicArtwork');
+  stopMusicQueueFrames, musicQueueFilter } = require('./musicArtwork');
 const { musicVisualizerFilter } = require('./musicVisualizer');
 const { uploadStreamPreview, snapshotPreview, programmeImage, programmePreviewKey } = require('./streamPreview');
 
@@ -591,8 +591,8 @@ class StreamManager {
       ? `[0:v]${baseVideoFilter}[base];` +
         (piece.musicArtwork.visualizer ? musicVisualizerFilter({ width: cfg.streamWidth || 1920, height, fps }) : '') +
         `movie=${piece.musicArtwork.file}[art];` +
-        `[${piece.musicArtwork.visualizer ? 'visual' : 'base'}][art]overlay=0:0:eof_action=repeat[stage];[2:v]format=rgba[queue];` +
-        `[stage][queue]overlay=${piece.musicArtwork.chaptered ? 0 : 1000}:265:repeatlast=1:shortest=0` +
+        `[${piece.musicArtwork.visualizer ? 'visual' : 'base'}][art]overlay=0:0:eof_action=repeat[stage];` +
+        musicQueueFilter({ width: cfg.streamWidth || 1920, height, chaptered: piece.musicArtwork.chaptered }) +
         (cfg.videoEncoder === 'vaapi' ? ',format=nv12,hwupload' : '') + '[v]'
       : showProgress
       ? progressOverlayFilter({

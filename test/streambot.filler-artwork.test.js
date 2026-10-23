@@ -6,7 +6,7 @@ const { execFileSync } = require('node:child_process');
 const test = require('node:test');
 const sharp = require('sharp');
 const { workerDashboardUrl, createFillerArtwork, fillerCountdownFilter } = require('../src/streambot/fillerArtwork');
-const { createMusicArtwork, updateMusicQueue, stopMusicQueueFrames } = require('../src/streambot/musicArtwork');
+const { musicQueueFilter, createMusicArtwork, updateMusicQueue, stopMusicQueueFrames } = require('../src/streambot/musicArtwork');
 const { musicVisualizerFilter } = require('../src/streambot/musicVisualizer');
 
 test('filler links target the selected worker, preserving a reverse-proxy path', () => {
@@ -189,5 +189,140 @@ test('music screen composites the worker avatar, current thumbnail, and queued t
       stopMusicQueueFrames(artwork);
       await fs.rm(artwork.directory, { recursive: true, force: true });
     }
+  }
+});
+
+test('all output resolutions keep QR, avatar and thumbnails in their design bounds', async () => {
+  const assets = Object.fromEntries(await Promise.all([
+    ['avatar', '#eb5e8a', 64, 64], ['thumbnail', '#ff0000', 160, 90]
+  ].map(async ([name, background, width, height]) => [name,
+    await sharp({ create: { width, height, channels: 3, background } }).png().toBuffer()])));
+  const originalFetch = global.fetch;
+  global.fetch = async url => new Response(assets[String(url).split('/').pop()],
+    { headers: { 'content-type': 'image/png' } });
+  const dimensions = [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160]];
+  // Inspect rendered pixels, including the complete bounding box of each asset.
+  // This catches Sharp moving resize ahead of composite in a single pipeline.
+  const bounds = (data, info, predicate, region = [0, 0, info.width, info.height]) => {
+    const result = { left: Infinity, top: Infinity, right: -1, bottom: -1 };
+    for (let y = region[1]; y < region[3]; y++) for (let x = region[0]; x < region[2]; x++) {
+      const offset = (y * info.width + x) * info.channels;
+      if (!predicate(data[offset], data[offset + 1], data[offset + 2])) continue;
+      result.left = Math.min(result.left, x); result.right = Math.max(result.right, x);
+      result.top = Math.min(result.top, y); result.bottom = Math.max(result.bottom, y);
+    }
+    assert(result.right >= 0, 'rendered asset must exist');
+    return result;
+  };
+  const near = (actual, expected, label) => assert(Math.abs(actual - expected) <= 3,
+    `${label}: expected ${expected}, got ${actual}`);
+  try {
+    for (const [width, height] of dimensions) for (const mode of ['idle', 'next', 'music']) {
+      const scale = width / 1920;
+      const common = { baseUrl: 'https://stream.example.com/', workerId: 'one', width, height,
+        avatarUrl: 'https://images.example/avatar' };
+      const artwork = mode === 'music'
+        ? await createMusicArtwork({ ...common, title: 'Current track', thumbnail: 'https://images.example/thumbnail' })
+        : await createFillerArtwork({ ...common, next: mode === 'next'
+          ? { title: 'Next video', thumbnail: 'https://images.example/thumbnail' } : null });
+      try {
+        const { data, info } = await sharp(artwork.file).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+        assert.equal(info.width, width); assert.equal(info.height, height);
+        const avatar = bounds(data, info, (r, g, b) => r > 220 && r < 245 && g > 80 && g < 110 && b > 120 && b < 155);
+        const [cx, cy, size] = mode === 'music' ? [500, 755, 48]
+          : mode === 'next' ? [1450, 465, 72] : [960, 496, 92];
+        near((avatar.left + avatar.right + 1) / 2, cx * scale, `${mode}/${height} avatar x`);
+        near((avatar.top + avatar.bottom + 1) / 2, cy * scale, `${mode}/${height} avatar y`);
+        near(avatar.right - avatar.left + 1, size * scale, `${mode}/${height} avatar width`);
+        if (mode !== 'idle') {
+          const thumbnail = bounds(data, info, (r, g, b) => r > 200 && g < 10 && b < 10);
+          const [left, top, tw, th] = mode === 'music' ? [308, 230, 384, 216] : [90, 205, 920, 518];
+          near(thumbnail.left, left * scale, `${mode}/${height} thumbnail left`);
+          near(thumbnail.top, top * scale, `${mode}/${height} thumbnail top`);
+          near(thumbnail.right + 1, (left + tw) * scale, `${mode}/${height} thumbnail right`);
+          near(thumbnail.bottom + 1, (top + th) * scale, `${mode}/${height} thumbnail bottom`);
+        }
+        const [ql, qt, qs] = mode === 'music' ? [385, 640, 230]
+          : mode === 'next' ? [1240, 255, 420] : [704, 240, 512];
+        const qr = bounds(data, info, (r, g, b) => r > 200 && g > 235 && b < 130,
+          [Math.floor(ql * scale), Math.floor(qt * scale), Math.ceil((ql + qs) * scale), Math.ceil((qt + qs) * scale)]);
+        // QR foreground is inset by its quiet zone and spans most of the square.
+        assert(qr.left > ql * scale && qr.right < (ql + qs) * scale);
+        assert(qr.top > qt * scale && qr.bottom < (qt + qs) * scale);
+        assert(qr.right - qr.left > qs * scale * 0.75);
+        assert(qr.bottom - qr.top > qs * scale * 0.75);
+        if (mode === 'next') assert(qr.left > 1010 * scale, 'QR stays to the right of next-video panel');
+      } finally {
+        stopMusicQueueFrames(artwork);
+        await fs.rm(artwork.directory, { recursive: true, force: true });
+      }
+    }
+  } finally { global.fetch = originalFetch; }
+});
+
+test('FFmpeg scales normal and chaptered live queue overlays with the output resolution', async () => {
+  const thumbnail = await sharp({ create: { width: 160, height: 90, channels: 3, background: '#ff0000' } }).png().toBuffer();
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(thumbnail, { headers: { 'content-type': 'image/png' } });
+  try {
+    for (const chaptered of [false, true]) {
+      const artwork = await createMusicArtwork({ baseUrl: 'https://stream.example.com/', workerId: 'one', title: 'Mix',
+        chapters: chaptered ? [{ title: 'Intro', startSec: 0 }, { title: 'Next chapter', startSec: 30 }] : null,
+        getPosition: () => 0, thumbnail: 'https://images.example/thumbnail',
+        queue: Array.from({ length: 10 }, (_, index) => ({ title: `Queued song ${index + 1}`,
+          thumbnail: 'https://images.example/thumbnail' })) });
+      try {
+        const queueFile = `${artwork.directory}/queue.png`;
+        await fs.writeFile(queueFile, artwork.queueFrame);
+        for (const [width, height] of [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160]]) {
+          const output = execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error',
+            '-f', 'lavfi', '-i', `color=c=0x17232d:s=${width}x${height}`, '-i', queueFile, '-i', queueFile,
+            '-filter_complex', `[0:v]format=rgba[stage];${musicQueueFilter({ width, height, chaptered })}[out]`,
+            '-map', '[out]', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1'], { maxBuffer: 8 * 1024 * 1024 });
+          const { data, info } = await sharp(output).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+          let left = width, right = -1, top = height, bottom = -1;
+          for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+            const i = (y * width + x) * info.channels;
+            if (data[i] > 120 && data[i + 1] < 35 && data[i + 2] < 45) {
+              left = Math.min(left, x); right = Math.max(right, x);
+              top = Math.min(top, y); bottom = Math.max(bottom, y);
+            }
+          }
+          const scale = width / 1920;
+          assert(Math.abs(left - 1045 * scale) <= 3, `queue left ${left} at ${height}`);
+          assert(Math.abs(top - 272 * scale) <= 3, `queue top ${top} at ${height}`);
+          assert(Math.abs(right + 1 - 1125 * scale) <= 3, `queue right ${right} at ${height}`);
+          const lastRow = 9;
+          assert(Math.abs(bottom + 1 - (317 + lastRow * 64) * scale) <= 3, `queue bottom ${bottom} at ${height}`);
+          assert(right < width && bottom < height, 'queue thumbnails remain inside output');
+          if (chaptered) {
+            let titlePixels = 0;
+            for (let y = Math.floor(480 * scale); y < Math.ceil(550 * scale); y++) {
+              for (let x = Math.floor(200 * scale); x < Math.ceil(800 * scale); x++) {
+                const i = (y * width + x) * info.channels;
+                if (data[i] > 220 && data[i + 1] > 220 && data[i + 2] > 220) titlePixels++;
+              }
+            }
+            assert(titlePixels > 20, `chapter title remains in the now-playing panel at ${height}`);
+          }
+        }
+      } finally {
+        stopMusicQueueFrames(artwork);
+        await fs.rm(artwork.directory, { recursive: true, force: true });
+      }
+    }
+  } finally { global.fetch = originalFetch; }
+});
+
+
+test('visualizer bars and reflection stay inside every supported output frame', () => {
+  for (const [width, height] of [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160]]) {
+    const filter = musicVisualizerFilter({ width, height, fps: 30 });
+    const overlays = [...filter.matchAll(/overlay=(\d+):(\d+)/g)].map(match => [Number(match[1]), Number(match[2])]);
+    const [, bw, bh] = /scale=(\d+):(\d+):flags=neighbor/.exec(filter).map(Number);
+    assert.equal(overlays.length, 2);
+    assert(Math.abs(bw / width - 0.9) < 0.025);
+    assert(overlays.every(([x, y]) => x >= 0 && y >= 0 && x + bw <= width && y + bh <= height));
+    assert.equal(overlays[1][1], overlays[0][1] + bh);
   }
 });
